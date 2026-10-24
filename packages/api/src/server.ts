@@ -16,7 +16,14 @@ import {
   type LlmGateway
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
-import { ContextAnalyst, GeminiLlmGateway, ShadowAdvisor } from "@keel/ai";
+import {
+  ContextAnalyst,
+  EventGateAdvisor,
+  GeminiLlmGateway,
+  MarkoutForensicsAnalyst,
+  NarrativeClusterTagger,
+  ShadowAdvisor
+} from "@keel/ai";
 import { OkxBroker } from "@keel/broker";
 import { ReplayEngine } from "@keel/replay";
 import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
@@ -118,6 +125,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   const contextAnalyst = new ContextAnalyst(llmGateway);
   const shadowAdvisor = new ShadowAdvisor(llmGateway);
+  const eventGateAdvisor = new EventGateAdvisor(llmGateway);
+  const narrativeClusterTagger = new NarrativeClusterTagger(llmGateway);
+  const markoutForensicsAnalyst = new MarkoutForensicsAnalyst(llmGateway);
 
   const okxBroker =
     options.exchangeBroker ??
@@ -1349,6 +1359,131 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return {
             status: 400,
             body: { error: `Shadow evaluation failed: ${String(err)}` }
+          };
+        }
+      },
+
+      evaluateEventGate: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const asOfMs = clock.nowMs();
+          const evaluation = await eventGateAdvisor.evaluateEvent({
+            eventText: body.eventText,
+            asOfMs,
+            affectedInstruments: body.affectedInstruments,
+            openPositionsCount: body.openPositionsCount
+          });
+
+          dataStore.auditRepo.append({
+            ts: asOfMs,
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "ai.evaluate_event_gate",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              recommendation: evaluation.recommendation,
+              volatilityRisk: evaluation.volatilityRisk,
+              riskScore: evaluation.riskScore,
+              trainingContaminated: evaluation.trainingContaminated
+            }
+          });
+
+          return {
+            status: 200,
+            body: { evaluation }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: `Event gate evaluation failed: ${String(err)}` }
+          };
+        }
+      },
+
+      clusterNarratives: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const asOfMs = clock.nowMs();
+          const clusters = await narrativeClusterTagger.clusterAnnouncements({
+            announcements: body.announcements,
+            asOfMs
+          });
+
+          dataStore.auditRepo.append({
+            ts: asOfMs,
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "ai.cluster_narratives",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              clustersCount: clusters.length,
+              trainingContaminated: clusters[0]?.trainingContaminated ?? false
+            }
+          });
+
+          return {
+            status: 200,
+            body: { clusters: clusters.map((c) => ({ ...c })) }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: `Narrative clustering failed: ${String(err)}` }
+          };
+        }
+      },
+
+      analyzeMarkoutForensics: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const asOfMs = clock.nowMs();
+          const report = await markoutForensicsAnalyst.analyzeExecution({
+            orderId: body.orderId,
+            instrumentId: body.instrumentId,
+            side: body.side,
+            fillPrice: body.fillPrice,
+            markoutPrices: body.markoutPrices,
+            asOfMs
+          });
+
+          dataStore.auditRepo.append({
+            ts: asOfMs,
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "ai.analyze_markout_forensics",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              orderId: report.orderId,
+              rating: report.executionQualityRating,
+              recommendedAggressiveness: report.recommendedAggressiveness,
+              adverseSelectionScore: report.adverseSelectionScore,
+              trainingContaminated: report.trainingContaminated
+            }
+          });
+
+          return {
+            status: 200,
+            body: { report }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: `Markout forensics analysis failed: ${String(err)}` }
           };
         }
       }

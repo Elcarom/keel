@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ManualClock, createDefaultConfig, type Proposal } from "@keel/core";
-import { ContextAnalyst, GeminiLlmGateway, ShadowAdvisor } from "../src/index.js";
+import {
+  ContextAnalyst,
+  EventGateAdvisor,
+  GeminiLlmGateway,
+  MarkoutForensicsAnalyst,
+  NarrativeClusterTagger,
+  ShadowAdvisor
+} from "../src/index.js";
 
 function makeFakeProposal(id: string): Proposal {
   return {
@@ -224,5 +231,163 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
 
     expect(feature.headline).toContain("ECB interest rate decision");
     expect(feature.directionalBias).toBe("neutral");
+  });
+
+  it("EventGateAdvisor evaluates volatility risk and issues gating advice (M6)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "simulated-key"
+    });
+
+    const advisor = new EventGateAdvisor(gateway);
+    const eval1 = await advisor.evaluateEvent({
+      eventText: "Emergency FOMC announcement: surprise rate hike of 75 basis points",
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(eval1.volatilityRisk).toMatch(/high|extreme/);
+    expect(eval1.recommendation).toMatch(/REDUCE_SIZE|STAND_DOWN/);
+    expect(eval1.cooldownMinutes).toBeGreaterThan(0);
+    expect(eval1.trainingContaminated).toBe(false);
+  });
+
+  it("NarrativeClusterTagger clusters context features into semantic narratives (M6)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "simulated-key"
+    });
+
+    const tagger = new NarrativeClusterTagger(gateway);
+    const clusters = await tagger.clusterAnnouncements({
+      announcements: [
+        "Fed chair hints at rate cuts amid cooling inflation",
+        "Treasury announces lower than expected quarterly debt issuance"
+      ],
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(clusters.length).toBeGreaterThan(0);
+    expect(clusters[0]?.name).toContain("Central Bank Monetary Policy");
+    expect(clusters[0]?.sentimentBias).toBeDefined();
+  });
+
+  it("MarkoutForensicsAnalyst diagnoses post-fill markout drift and adverse selection (M6)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "simulated-key"
+    });
+
+    const analyst = new MarkoutForensicsAnalyst(gateway);
+    const report = await analyst.analyzeExecution({
+      orderId: "ord-test-123",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      fillPrice: "50000.00",
+      markoutPrices: {
+        price5m: "50025.00",
+        price15m: "50060.00",
+        price1h: "50100.00"
+      },
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(report.orderId).toBe("ord-test-123");
+    expect(report.markout5mBps).toBe(5.0);
+    expect(report.markout15mBps).toBe(12.0);
+    expect(report.markout1hBps).toBe(20.0);
+    expect(report.adverseSelectionScore).toBeLessThan(0.5);
+    expect(report.executionQualityRating).toBe("EXCELLENT");
+  });
+
+  it("detects training contamination on pre-cutoff timestamps for EventGateAdvisor and MarkoutForensics (M6 / ADR-0007)", async () => {
+    const preCutoffMs = 1_700_000_000_000; // 2023-11-14 < cutoff 2025-03-01
+    const clock = new ManualClock(preCutoffMs);
+    const config = createDefaultConfig();
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "simulated-key"
+    });
+
+    const advisor = new EventGateAdvisor(gateway);
+    const gateEval = await advisor.evaluateEvent({
+      eventText: "Historical announcement from 2023",
+      asOfMs: preCutoffMs
+    });
+    expect(gateEval.trainingContaminated).toBe(true);
+
+    const forensics = new MarkoutForensicsAnalyst(gateway);
+    const report = await forensics.analyzeExecution({
+      orderId: "ord-hist-1",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      fillPrice: "50000.00",
+      asOfMs: preCutoffMs
+    });
+    expect(report.trainingContaminated).toBe(true);
+  });
+
+  it("falls back gracefully to deterministic heuristics when LLM budget is exhausted (M6 / ADR-0007)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const exhaustedConfig = {
+      ...config,
+      ai: {
+        ...config.ai,
+        dailyBudgetUsd: 0.0001 // budget too low to allow LLM call
+      }
+    };
+
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => exhaustedConfig.ai,
+      getApiKey: () => "simulated-key"
+    });
+
+    const analyst = new MarkoutForensicsAnalyst(gateway);
+    // Execute with positive markouts
+    const favorableReport = await analyst.analyzeExecution({
+      orderId: "ord-exhausted-1",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      fillPrice: "50000.00",
+      markoutPrices: {
+        price5m: "50050.00",
+        price15m: "50100.00"
+      },
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(favorableReport.executionQualityRating).toBe("EXCELLENT");
+    expect(favorableReport.recommendedAggressiveness).toBe("OPTIMAL");
+    expect(favorableReport.adverseSelectionScore).toBe(0.1);
+    expect(favorableReport.forensicSummary).toContain("Deterministic heuristic fallback");
+
+    // Execute with severe adverse selection markouts
+    const adverseReport = await analyst.analyzeExecution({
+      orderId: "ord-exhausted-2",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      fillPrice: "50000.00",
+      markoutPrices: {
+        price5m: "49800.00",
+        price15m: "49700.00"
+      },
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(adverseReport.executionQualityRating).toBe("TOXIC");
+    expect(adverseReport.recommendedAggressiveness).toBe("MORE_PASSIVE");
+    expect(adverseReport.adverseSelectionScore).toBe(0.85);
+    expect(adverseReport.forensicSummary).toContain("adverse selection");
   });
 });

@@ -638,7 +638,14 @@ export interface LlmCallBudgetReservation {
 }
 
 export interface LlmCompletionRequest {
-  readonly featureName: "contextAnalyst" | "shadowAdvisor" | "strategyLab" | "postTradeAndCopilot";
+  readonly featureName:
+    | "contextAnalyst"
+    | "shadowAdvisor"
+    | "strategyLab"
+    | "postTradeAndCopilot"
+    | "eventGateAdvisor"
+    | "narrativeClusterTagger"
+    | "markoutForensics";
   readonly systemPrompt: string;
   readonly userPrompt: string;
   readonly asOfMs: number;
@@ -662,3 +669,58 @@ export interface LlmGateway {
   getRemainingDailyBudgetUsd(): number;
   getRemainingMonthlyBudgetUsd(): number;
 }
+
+// ============================================================================
+// Milestone M6: Advanced AI Decision Support, Event Gate, & Markout Forensics
+// ============================================================================
+
+export const EventGateRecommendationSchema = z.enum([
+  "PASS",
+  "REDUCE_SIZE",
+  "WIDEN_STOP",
+  "STAND_DOWN"
+]);
+export type EventGateRecommendation = z.infer<typeof EventGateRecommendationSchema>;
+
+export const EventGateEvaluationSchema = z.object({
+  asOfMs: z.number().int().nonnegative(),
+  eventHeadline: z.string().min(1),
+  volatilityRisk: z.enum(["low", "moderate", "high", "extreme"]),
+  riskScore: z.number().min(0).max(1),
+  recommendation: EventGateRecommendationSchema,
+  rationale: z.string().min(1),
+  affectedInstruments: z.array(z.string()),
+  cooldownMinutes: z.number().int().nonnegative(),
+  trainingContaminated: z.boolean().default(false)
+});
+export type EventGateEvaluation = z.infer<typeof EventGateEvaluationSchema>;
+
+export const NarrativeClusterRecordSchema = z.object({
+  clusterId: z.string().min(1),
+  name: z.string().min(1),
+  theme: z.string().min(1),
+  sentimentBias: ContextDirectionalBiasSchema,
+  noveltyScore: z.number().min(0).max(1),
+  affectedInstruments: z.array(z.string()),
+  announcementsCount: z.number().int().nonnegative(),
+  asOfMs: z.number().int().nonnegative(),
+  trainingContaminated: z.boolean().default(false)
+});
+export type NarrativeClusterRecord = z.infer<typeof NarrativeClusterRecordSchema>;
+
+export const MarkoutForensicReportSchema = z.object({
+  orderId: z.string().min(1),
+  instrumentId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  fillPrice: z.string(),
+  markout5mBps: z.number(),
+  markout15mBps: z.number(),
+  markout1hBps: z.number(),
+  adverseSelectionScore: z.number().min(0).max(1),
+  executionQualityRating: z.enum(["EXCELLENT", "ACCEPTABLE", "ADVERSE_SELECTION", "TOXIC"]),
+  recommendedAggressiveness: z.enum(["MORE_PASSIVE", "OPTIMAL", "MORE_AGGRESSIVE"]),
+  forensicSummary: z.string(),
+  asOfMs: z.number().int().nonnegative(),
+  trainingContaminated: z.boolean().default(false)
+});
+export type MarkoutForensicReport = z.infer<typeof MarkoutForensicReportSchema>;
