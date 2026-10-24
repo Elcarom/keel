@@ -7,6 +7,7 @@ import {
   BarTimeframeSchema,
   CircuitBreakerRecordSchema,
   ConfigSnapshotRecordSchema,
+  ContextFeatureRecordSchema,
   DataSnapshotMetadataSchema,
   ExperimentRecordSchema,
   LedgerTrialBalanceSchema,
@@ -500,6 +501,68 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Evaluate ADR-0007 promotion gates for a strategy"
+    }
+  },
+  ai: {
+    getStatus: {
+      method: "GET",
+      path: "/api/v1/ai/status",
+      responses: {
+        200: z.object({
+          enabled: z.boolean(),
+          provider: z.string(),
+          fastModel: z.string(),
+          reasoningModel: z.string(),
+          remainingDailyBudgetUsd: z.number(),
+          remainingMonthlyBudgetUsd: z.number(),
+          dailyBudgetUsd: z.number(),
+          monthlyBudgetUsd: z.number()
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Get AI Gateway status, model configuration, and remaining budgets"
+    },
+    extractContext: {
+      method: "POST",
+      path: "/api/v1/ai/extract-context",
+      body: z.object({
+        text: z.string().min(5).max(10000),
+        source: z.string().min(1).default("Operator News Feed"),
+        instrumentId: z.string().default("BTC-USDT-SWAP")
+      }),
+      responses: {
+        200: z.object({
+          feature: ContextFeatureRecordSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Extract structured ContextFeature record from market announcement or news text"
+    },
+    shadowEvaluate: {
+      method: "POST",
+      path: "/api/v1/ai/shadow-evaluate",
+      body: z.object({
+        strategyId: z.string().min(1).default("donchian-trend-v1"),
+        instrumentId: z.string().default("BTC-USDT-SWAP")
+      }),
+      responses: {
+        200: z.object({
+          strategyId: z.string(),
+          instrumentId: z.string(),
+          asOfMs: z.number(),
+          candidateCount: z.number(),
+          baselineChosenProposalId: z.string().nullable(),
+          shadowChosenProposalId: z.string().nullable(),
+          shadowConfidence: z.number(),
+          shadowRationale: z.string(),
+          agreement: z.boolean(),
+          trainingContaminated: z.boolean()
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Evaluate active ProposalMenu through ShadowAdvisor alongside BaselineChooser"
     }
   }
 });

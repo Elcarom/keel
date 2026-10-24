@@ -8,6 +8,7 @@ import {
   type ConfigFieldMetadata,
   type ConfigRiskClass,
   type ConfigSnapshotRecord,
+  type ContextFeatureRecord,
   type ExperimentRecord,
   type KeelConfig,
   type LedgerTrialBalance,
@@ -89,6 +90,31 @@ export function App() {
   const [promotions, setPromotions] = useState<readonly StrategyPromotionRecord[]>([]);
   const [paperTickRunning, setPaperTickRunning] = useState(false);
   const [flattenRunning, setFlattenRunning] = useState(false);
+  // M4 AI Decision Support & Budget state
+  const [aiStatus, setAiStatus] = useState<{
+    enabled: boolean;
+    provider: string;
+    fastModel: string;
+    reasoningModel: string;
+    remainingDailyBudgetUsd: number;
+    remainingMonthlyBudgetUsd: number;
+    dailyBudgetUsd: number;
+    monthlyBudgetUsd: number;
+  } | null>(null);
+  const [contextInputText, setContextInputText] = useState(
+    "FOMC holds federal funds rate steady; chair remarks that monetary policy remains sufficiently restrictive."
+  );
+  const [extractedFeatures, setExtractedFeatures] = useState<readonly ContextFeatureRecord[]>([]);
+  const [shadowResult, setShadowResult] = useState<{
+    baselineChosenProposalId: string | null;
+    shadowChosenProposalId: string | null;
+    shadowConfidence: number;
+    shadowRationale: string;
+    agreement: boolean;
+    trainingContaminated: boolean;
+  } | null>(null);
+  const [extractingContext, setExtractingContext] = useState(false);
+  const [evaluatingShadow, setEvaluatingShadow] = useState(false);
 
   const refreshSystemAndSession = useCallback(async () => {
     const [statusRes, sessRes] = await Promise.all([
@@ -106,14 +132,15 @@ export function App() {
   }, []);
 
   const refreshGovernanceData = useCallback(async () => {
-    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes] = await Promise.all([
+    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes, aiRes] = await Promise.all([
       apiClient.config.getActive(),
       apiClient.config.getHistory(),
       apiClient.secrets.listMetadata(),
       apiClient.audit.listRecent(),
       apiClient.market.getSummary(),
       apiClient.replay.listExperiments(),
-      apiClient.paper.getStatus()
+      apiClient.paper.getStatus(),
+      apiClient.ai.getStatus()
     ]);
     if (cfgRes.status === 200) {
       setActiveSnapshot(cfgRes.body.active);
@@ -141,6 +168,9 @@ export function App() {
       setOpenPositions(paperRes.body.openPositions);
       setRecentOrders(paperRes.body.recentOrders);
       setPromotions(paperRes.body.promotions);
+    }
+    if (aiRes.status === 200) {
+      setAiStatus(aiRes.body);
     }
   }, []);
 
@@ -1347,6 +1377,293 @@ export function App() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </section>
+
+            {/* M4 AI Decision Support, Context Analyst & Shadow Advisor Cockpit */}
+            <section data-testid="ai-decision-support-panel" className={cardClass}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold">
+                    AI Decision Support, Context Analyst &amp; Shadow Advisor
+                  </h3>
+                  <p className="text-xs opacity-70">
+                    ADR-0007 Budgeted Gemini LLM Gateway &bull; Context Feature Extraction &bull;
+                    A/B Shadow Evaluation
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    data-testid="ai-provider-badge"
+                    className="rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-xs font-semibold text-indigo-400"
+                  >
+                    AI: {aiStatus?.provider?.toUpperCase() ?? "GEMINI"} (
+                    {aiStatus?.fastModel ?? "flash"})
+                  </span>
+                  <span
+                    data-testid="ai-daily-budget-badge"
+                    className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-400"
+                  >
+                    BUDGET: ${aiStatus?.remainingDailyBudgetUsd?.toFixed(4) ?? "0.7500"} / $
+                    {aiStatus?.dailyBudgetUsd?.toFixed(2) ?? "0.75"}
+                  </span>
+                </div>
+              </div>
+
+              {/* LLM Pacing & Model Selection Progress Panel (AC2) */}
+              <div className="mt-4 grid gap-4 rounded border border-slate-700/50 bg-slate-900/30 p-3 md:grid-cols-2">
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="font-medium text-slate-300">Daily Gemini Budget</span>
+                    <span className="font-mono text-emerald-400">
+                      $
+                      {(
+                        (aiStatus?.dailyBudgetUsd ?? 0.75) -
+                        (aiStatus?.remainingDailyBudgetUsd ?? 0.75)
+                      ).toFixed(4)}{" "}
+                      / ${(aiStatus?.dailyBudgetUsd ?? 0.75).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-slate-800">
+                    <div
+                      data-testid="ai-daily-spend-progress"
+                      className="h-full bg-emerald-400 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (((aiStatus?.dailyBudgetUsd ?? 0.75) -
+                            (aiStatus?.remainingDailyBudgetUsd ?? 0.75)) /
+                            (aiStatus?.dailyBudgetUsd ?? 0.75)) *
+                            100
+                        )}%`
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="font-medium text-slate-300">Monthly Gemini Budget</span>
+                    <span className="font-mono text-sky-400">
+                      $
+                      {(
+                        (aiStatus?.monthlyBudgetUsd ?? 15.0) -
+                        (aiStatus?.remainingMonthlyBudgetUsd ?? 15.0)
+                      ).toFixed(4)}{" "}
+                      / ${(aiStatus?.monthlyBudgetUsd ?? 15.0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-slate-800">
+                    <div
+                      data-testid="ai-monthly-spend-progress"
+                      className="h-full bg-sky-400 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (((aiStatus?.monthlyBudgetUsd ?? 15.0) -
+                            (aiStatus?.remainingMonthlyBudgetUsd ?? 15.0)) /
+                            (aiStatus?.monthlyBudgetUsd ?? 15.0)) *
+                            100
+                        )}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* AI Context Analyst: Unstructured Text Ingestion */}
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                  Context Analyst: Market Announcement &amp; Macro Ingestion
+                </h4>
+                <div className="mt-2 space-y-2">
+                  <textarea
+                    data-testid="context-input-textarea"
+                    value={contextInputText}
+                    onChange={(e) => setContextInputText(e.target.value)}
+                    rows={2}
+                    className="w-full rounded border border-slate-700 bg-slate-900/50 p-2 font-mono text-xs"
+                    placeholder="Enter market announcement or macro news item..."
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      data-testid="extract-context-btn"
+                      disabled={extractingContext}
+                      onClick={async () => {
+                        setExtractingContext(true);
+                        setGovMessage(null);
+                        setGovError(null);
+                        try {
+                          const res = await apiClient.ai.extractContext({
+                            body: {
+                              text: contextInputText,
+                              source: "Operator Manual Desk",
+                              instrumentId: selectedInstrumentId
+                            }
+                          });
+                          if (res.status === 200) {
+                            setExtractedFeatures((prev) => [res.body.feature, ...prev]);
+                            setGovMessage(
+                              `Context extracted: ${res.body.feature.headline} (${res.body.feature.directionalBias})`
+                            );
+                            await refreshGovernanceData();
+                          } else {
+                            setGovError(extractApiError(res.body, "Failed to extract context"));
+                          }
+                        } catch (err) {
+                          setGovError(String(err));
+                        } finally {
+                          setExtractingContext(false);
+                        }
+                      }}
+                      className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                    >
+                      {extractingContext ? "Extracting..." : "Extract Context Feature"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Extracted Context Features Table */}
+                <div className="mt-3 overflow-x-auto">
+                  <table data-testid="context-features-table" className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-700/60 opacity-70">
+                        <th className="py-1.5">Feature ID</th>
+                        <th className="py-1.5">Headline</th>
+                        <th className="py-1.5">Bias</th>
+                        <th className="py-1.5">Confidence</th>
+                        <th className="py-1.5">Novelty</th>
+                        <th className="py-1.5">Contamination</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono-tabular">
+                      {extractedFeatures.map((feat) => (
+                        <tr key={feat.featureId} className="border-b border-slate-800/60">
+                          <td className="py-1.5">{feat.featureId.slice(0, 12)}</td>
+                          <td className="py-1.5 text-teal-400 font-semibold">{feat.headline}</td>
+                          <td className="py-1.5 uppercase font-bold">
+                            <span
+                              className={
+                                feat.directionalBias === "bullish"
+                                  ? "text-emerald-400"
+                                  : feat.directionalBias === "bearish"
+                                    ? "text-rose-400"
+                                    : "text-amber-400"
+                              }
+                            >
+                              {feat.directionalBias}
+                            </span>
+                          </td>
+                          <td className="py-1.5">{(feat.confidenceScore * 100).toFixed(0)}%</td>
+                          <td className="py-1.5">{(feat.noveltyScore * 100).toFixed(0)}%</td>
+                          <td className="py-1.5">
+                            <span
+                              className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                feat.trainingContaminated
+                                  ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
+                                  : "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                              }`}
+                            >
+                              {feat.trainingContaminated ? "CONTAMINATED" : "CLEAN"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {extractedFeatures.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="py-2.5 text-center opacity-60">
+                            No context features extracted yet. Submit announcement text above.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Shadow Advisor: A/B Scored Evaluation Alongside Baseline */}
+              <div className="mt-4 border-t border-slate-700/60 pt-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                    Shadow Advisor: A/B Baseline Control Evaluation
+                  </h4>
+                  <button
+                    type="button"
+                    data-testid="evaluate-shadow-btn"
+                    disabled={evaluatingShadow}
+                    onClick={async () => {
+                      setEvaluatingShadow(true);
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.ai.shadowEvaluate({
+                          body: {
+                            strategyId: selectedStrategyId,
+                            instrumentId: selectedInstrumentId
+                          }
+                        });
+                        if (res.status === 200) {
+                          setShadowResult(res.body);
+                          setGovMessage(
+                            `Shadow evaluated: Baseline=${res.body.baselineChosenProposalId ?? "None"}, Shadow=${res.body.shadowChosenProposalId ?? "None"} (Agreement=${res.body.agreement})`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Shadow evaluation failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      } finally {
+                        setEvaluatingShadow(false);
+                      }
+                    }}
+                    className="rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                  >
+                    {evaluatingShadow ? "Evaluating..." : "Run Shadow Evaluation"}
+                  </button>
+                </div>
+
+                {shadowResult && (
+                  <div
+                    data-testid="shadow-result-card"
+                    className="mt-3 rounded border border-slate-700/40 bg-slate-800/30 p-3"
+                  >
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <div>
+                        Baseline Pick:{" "}
+                        <span className="font-mono font-bold text-teal-400">
+                          {shadowResult.baselineChosenProposalId ?? "None"}
+                        </span>
+                      </div>
+                      <div>
+                        Shadow Advisor Pick:{" "}
+                        <span className="font-mono font-bold text-indigo-400">
+                          {shadowResult.shadowChosenProposalId ?? "None"}
+                        </span>
+                      </div>
+                      <div>
+                        Agreement:{" "}
+                        <span
+                          className={`font-bold ${
+                            shadowResult.agreement ? "text-emerald-400" : "text-amber-400"
+                          }`}
+                        >
+                          {shadowResult.agreement ? "MATCH" : "DISAGREEMENT"}
+                        </span>
+                      </div>
+                      <div>
+                        Confidence:{" "}
+                        <span className="font-mono">
+                          {(shadowResult.shadowConfidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs italic opacity-80">
+                      &quot;{shadowResult.shadowRationale}&quot;
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
 

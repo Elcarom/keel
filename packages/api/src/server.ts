@@ -11,11 +11,13 @@ import {
   keelApiContract,
   type Clock,
   type KeelConfig,
-  type LookbackValidationResult
+  type LookbackValidationResult,
+  type LlmGateway
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
+import { ContextAnalyst, GeminiLlmGateway, ShadowAdvisor } from "@keel/ai";
 import { ReplayEngine } from "@keel/replay";
-import { DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
+import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
@@ -39,6 +41,7 @@ export interface KeelServerOptions {
   readonly initialBootstrapToken?: string | undefined;
   readonly onBootstrapToken?: ((token: string) => void) | undefined;
   readonly webhookFetchFn?: WebhookFetchFn | undefined;
+  readonly llmGateway?: LlmGateway | undefined;
   readonly webDistPath?: string | undefined;
   readonly logger?: boolean | undefined;
 }
@@ -100,6 +103,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     paperAccountRepo: dataStore.paperAccountRepo,
     getRiskConfig: () => getActiveSnapshot().config.risk
   });
+
+  const llmGateway =
+    options.llmGateway ??
+    new GeminiLlmGateway({
+      clock,
+      getConfig: () => getActiveSnapshot().config.ai,
+      getApiKey: () =>
+        secretVault.getDecryptedSecret("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
+    });
+
+  const contextAnalyst = new ContextAnalyst(llmGateway);
+  const shadowAdvisor = new ShadowAdvisor(llmGateway);
 
   const getUptimeSeconds = (): number =>
     Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
@@ -1164,6 +1179,150 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             promotion: saved
           }
         };
+      }
+    },
+
+    ai: {
+      getStatus: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const cfg = getActiveSnapshot().config.ai;
+        return {
+          status: 200,
+          body: {
+            enabled: cfg.contextAnalystEnabled || cfg.shadowAdvisorEnabled,
+            provider: cfg.provider,
+            fastModel: cfg.fastModel,
+            reasoningModel: cfg.reasoningModel,
+            remainingDailyBudgetUsd: llmGateway.getRemainingDailyBudgetUsd(),
+            remainingMonthlyBudgetUsd: llmGateway.getRemainingMonthlyBudgetUsd(),
+            dailyBudgetUsd: cfg.dailyBudgetUsd,
+            monthlyBudgetUsd: cfg.monthlyBudgetUsd
+          }
+        };
+      },
+
+      extractContext: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const feature = await contextAnalyst.analyzeText({
+            text: body.text,
+            source: body.source,
+            asOfMs: clock.nowMs(),
+            targetInstruments: [body.instrumentId]
+          });
+
+          dataStore.auditRepo.append({
+            ts: clock.nowMs(),
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "ai.extract_context",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              featureId: feature.featureId,
+              headline: feature.headline,
+              directionalBias: feature.directionalBias,
+              noveltyScore: feature.noveltyScore,
+              trainingContaminated: feature.trainingContaminated
+            }
+          });
+
+          return {
+            status: 200,
+            body: { feature }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: `Context extraction failed: ${String(err)}` }
+          };
+        }
+      },
+
+      shadowEvaluate: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const strategy = resolveStrategyById(body.strategyId);
+        if (!strategy) {
+          return { status: 400, body: { error: `Strategy ${body.strategyId} not found` } };
+        }
+
+        const asOfMs = clock.nowMs();
+        const bars = dataStore.marketDataRepo.getConfirmedBarsInRange({
+          instrumentId: body.instrumentId,
+          timeframe: "1H",
+          fromOpenTs: 0,
+          toCloseTs: asOfMs
+        });
+
+        const menu = strategy.evaluate({
+          instrumentId: body.instrumentId,
+          asOfMs,
+          barsByTimeframe: { "1H": bars },
+          recentFundingRates: []
+        });
+
+        // Evaluate deterministic baseline chooser
+        const chooser = new BaselineChooser();
+        const baselineChosen = chooser.choose([menu]);
+
+        // Evaluate ShadowAdvisor
+        try {
+          const shadowResult = await shadowAdvisor.evaluateMenu({
+            menu
+          });
+
+          const agreement = baselineChosen?.proposalId === shadowResult.chosenProposalId;
+
+          dataStore.auditRepo.append({
+            ts: clock.nowMs(),
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "ai.shadow_evaluate",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              strategyId: body.strategyId,
+              instrumentId: body.instrumentId,
+              candidateCount: menu.proposals.length,
+              baselinePick: baselineChosen?.proposalId ?? null,
+              shadowPick: shadowResult.chosenProposalId,
+              agreement,
+              trainingContaminated: shadowResult.trainingContaminated
+            }
+          });
+
+          return {
+            status: 200,
+            body: {
+              strategyId: body.strategyId,
+              instrumentId: body.instrumentId,
+              asOfMs,
+              candidateCount: menu.proposals.length,
+              baselineChosenProposalId: baselineChosen?.proposalId ?? null,
+              shadowChosenProposalId: shadowResult.chosenProposalId,
+              shadowConfidence: shadowResult.confidence,
+              shadowRationale: shadowResult.rationale,
+              agreement,
+              trainingContaminated: shadowResult.trainingContaminated
+            }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: `Shadow evaluation failed: ${String(err)}` }
+          };
+        }
       }
     }
   });
