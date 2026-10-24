@@ -18,7 +18,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.11",
+    "@changesets/cli": "^3.0.3",
     "@eslint/js": "^9.18.0",
     "@playwright/test": "^1.50.0",
     "@types/node": "^22.10.7",
