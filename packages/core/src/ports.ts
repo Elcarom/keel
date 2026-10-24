@@ -517,6 +517,7 @@ export const StrategyPromotionRecordSchema = z.object({
   replayGatePassed: z.boolean(),
   paperTradesCount: z.number().int().nonnegative(),
   paperDrawdownPct: z.number().nonnegative(),
+  rampAllocationPct: z.number().nonnegative().default(100),
   eligibleNextStage: PromotionStageSchema.nullable(),
   demotionReason: z.string().nullable(),
   updatedAtMs: z.number().int().nonnegative()

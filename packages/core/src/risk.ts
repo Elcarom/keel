@@ -18,6 +18,7 @@ export interface StrategyRiskState {
   readonly currentGrossNotionalUsdt: ScaledDecimal;
   readonly tradesTodayCount: number;
   readonly feesTodayUsdt: ScaledDecimal;
+  readonly allocationFraction?: ScaledDecimal | undefined;
 }
 
 export interface PortfolioRiskState {
@@ -256,7 +257,8 @@ export class RiskGuardian {
       riskFraction: pctToFractionDecimal(this.config.strategy.riskPerTradePct),
       entryPrice,
       stopPrice,
-      maxGrossLeverage: strategyMaxGrossLev
+      maxGrossLeverage: strategyMaxGrossLev,
+      allocationFraction: strategyState.allocationFraction
     });
 
     if (!sizing.ok) {
@@ -268,7 +270,10 @@ export class RiskGuardian {
     }
 
     // 5. Strategy & Portfolio Exposure / Leverage Caps (including existing open positions)
-    const maxStrategyGrossNotional = strategyState.equityUsdt.mul(strategyMaxGrossLev);
+    let maxStrategyGrossNotional = strategyState.equityUsdt.mul(strategyMaxGrossLev);
+    if (strategyState.allocationFraction && strategyState.allocationFraction.isPositive()) {
+      maxStrategyGrossNotional = maxStrategyGrossNotional.mul(strategyState.allocationFraction);
+    }
     const projectedStrategyGross = strategyState.currentGrossNotionalUsdt.add(sizing.notionalQuote);
     if (projectedStrategyGross.gt(maxStrategyGrossNotional)) {
       return {
@@ -362,7 +367,8 @@ export class PromotionLadderEvaluator {
       exp.stressNetExpectancyR > 0 &&
       exp.walkForwardOutOfSampleAvgR > 0;
 
-    // Automatic demotion check on drawdown breach
+    // Automatic demotion checks on drawdown breach
+    // 1. Catastrophic drawdown: any stage demotes straight to Research
     if (input.paperDrawdownPct >= this.config.liveDemotionDrawdownPct) {
       return {
         strategyId: input.strategyId,
@@ -371,16 +377,81 @@ export class PromotionLadderEvaluator {
         replayGatePassed,
         paperTradesCount: input.paperTradesCount,
         paperDrawdownPct: input.paperDrawdownPct,
+        rampAllocationPct: 0,
         eligibleNextStage: replayGatePassed ? "Paper" : "Replay",
-        demotionReason: `Automatic demotion: drawdown (${input.paperDrawdownPct.toFixed(2)}%) exceeded threshold (${this.config.liveDemotionDrawdownPct}%)`,
+        demotionReason: `Automatic demotion: catastrophic drawdown (${input.paperDrawdownPct.toFixed(2)}%) breached limit (${this.config.liveDemotionDrawdownPct}%)`,
+        updatedAtMs: input.asOfMs
+      };
+    }
+
+    // 2. Live stage moderate drawdown: demotes to Live-Ramp
+    if (
+      input.currentStage === "Live" &&
+      input.paperDrawdownPct >= this.config.liveDemotionDrawdownPct / 2
+    ) {
+      return {
+        strategyId: input.strategyId,
+        currentStage: "Live-Ramp",
+        latestExperimentId: exp?.experimentId ?? null,
+        replayGatePassed,
+        paperTradesCount: input.paperTradesCount,
+        paperDrawdownPct: input.paperDrawdownPct,
+        rampAllocationPct: 25,
+        eligibleNextStage: "Live",
+        demotionReason: `Automatic demotion: live drawdown (${input.paperDrawdownPct.toFixed(2)}%) breached ${(this.config.liveDemotionDrawdownPct / 2).toFixed(1)}% threshold`,
+        updatedAtMs: input.asOfMs
+      };
+    }
+
+    // 3. Live-Ramp stage drawdown: demotes to Demo
+    if (
+      input.currentStage === "Live-Ramp" &&
+      input.paperDrawdownPct >= this.config.liveRampDemotionDrawdownPct
+    ) {
+      return {
+        strategyId: input.strategyId,
+        currentStage: "Demo",
+        latestExperimentId: exp?.experimentId ?? null,
+        replayGatePassed,
+        paperTradesCount: input.paperTradesCount,
+        paperDrawdownPct: input.paperDrawdownPct,
+        rampAllocationPct: 0,
+        eligibleNextStage: "Live-Ramp",
+        demotionReason: `Automatic demotion: live-ramp drawdown (${input.paperDrawdownPct.toFixed(2)}%) exceeded ${this.config.liveRampDemotionDrawdownPct}% limit`,
         updatedAtMs: input.asOfMs
       };
     }
 
     let nextCurrentStage: PromotionStage = input.currentStage;
     let eligibleNextStage: PromotionStage | null = null;
+    let rampAllocationPct = 100;
 
-    if (replayGatePassed) {
+    if (input.currentStage === "Live") {
+      rampAllocationPct = 100;
+      eligibleNextStage = null;
+    } else if (input.currentStage === "Live-Ramp") {
+      if (input.paperTradesCount >= 40) {
+        rampAllocationPct = 50;
+      } else if (input.paperTradesCount >= 20) {
+        rampAllocationPct = 25;
+      } else {
+        rampAllocationPct = 10;
+      }
+      if (
+        input.paperTradesCount >= this.config.liveRampPromotionMinTrades &&
+        input.paperDrawdownPct < this.config.liveRampDemotionDrawdownPct
+      ) {
+        eligibleNextStage = "Live";
+      }
+    } else if (input.currentStage === "Demo") {
+      rampAllocationPct = 100;
+      if (
+        input.paperTradesCount >= this.config.demoPromotionMinTrades &&
+        input.paperDrawdownPct < this.config.demoPromotionMaxDrawdownPct
+      ) {
+        eligibleNextStage = "Live-Ramp";
+      }
+    } else if (replayGatePassed) {
       if (
         input.currentStage === "Research" ||
         input.currentStage === "Replay" ||
@@ -407,6 +478,7 @@ export class PromotionLadderEvaluator {
       replayGatePassed,
       paperTradesCount: input.paperTradesCount,
       paperDrawdownPct: input.paperDrawdownPct,
+      rampAllocationPct,
       eligibleNextStage,
       demotionReason: null,
       updatedAtMs: input.asOfMs

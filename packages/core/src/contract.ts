@@ -21,6 +21,7 @@ import {
   NotificationDeliveryResultSchema,
   PaperOrderRecordSchema,
   PaperPositionRecordSchema,
+  PromotionStageSchema,
   ReconciliationResultSchema,
   SecretKeyNameSchema,
   SecretMetadataRecordSchema,
@@ -494,6 +495,17 @@ export const keelApiContract = c.router({
     }
   },
   promotion: {
+    list: {
+      method: "GET",
+      path: "/api/v1/promotion",
+      responses: {
+        200: z.object({
+          promotions: z.array(StrategyPromotionRecordSchema)
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "List all strategy promotion records across ladder stages"
+    },
     evaluate: {
       method: "POST",
       path: "/api/v1/promotion/evaluate",
@@ -508,6 +520,43 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Evaluate ADR-0007 promotion gates for a strategy"
+    },
+    promote: {
+      method: "POST",
+      path: "/api/v1/promotion/promote",
+      body: z.object({
+        strategyId: z.string().min(1),
+        targetStage: PromotionStageSchema,
+        stepUpPassword: z.string().optional(),
+        stepUpTotpCode: z.string().optional()
+      }),
+      responses: {
+        200: z.object({
+          promotion: StrategyPromotionRecordSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        403: ApiErrorSchema
+      },
+      summary: "Promote strategy to target stage with human gate step-up authentication (G2/G3)"
+    },
+    demote: {
+      method: "POST",
+      path: "/api/v1/promotion/demote",
+      body: z.object({
+        strategyId: z.string().min(1),
+        targetStage: PromotionStageSchema,
+        reason: z.string().min(3)
+      }),
+      responses: {
+        200: z.object({
+          promotion: StrategyPromotionRecordSchema,
+          flattenedCount: z.number().int().nonnegative()
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Demote strategy on performance degradation with auto-flattening"
     }
   },
   ai: {

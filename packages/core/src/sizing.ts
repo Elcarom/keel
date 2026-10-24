@@ -32,6 +32,8 @@ export interface StopRiskSizingInput {
   readonly entryPrice: ScaledDecimal;
   readonly stopPrice: ScaledDecimal;
   readonly maxGrossLeverage: ScaledDecimal;
+  /** Optional fractional scaling factor for Live-Ramp ladder (e.g. 0.10, 0.25, 0.50, 1.00). */
+  readonly allocationFraction?: ScaledDecimal | undefined;
 }
 
 export type SizingVetoReason =
@@ -104,9 +106,14 @@ export function sizeByStopRisk(input: StopRiskSizingInput): StopRiskSizingResult
     return { ok: false, vetoReason: "invalid_stop_direction" };
   }
 
-  const riskBudgetQuote = strategyEquityQuote.mul(riskFraction);
+  let riskBudgetQuote = strategyEquityQuote.mul(riskFraction);
   const effectiveMaxLev = ScaledDecimal.min(maxGrossLeverage, instrument.maxLeverage);
-  const maxNotionalQuote = strategyEquityQuote.mul(effectiveMaxLev);
+  let maxNotionalQuote = strategyEquityQuote.mul(effectiveMaxLev);
+
+  if (input.allocationFraction && input.allocationFraction.isPositive()) {
+    riskBudgetQuote = riskBudgetQuote.mul(input.allocationFraction);
+    maxNotionalQuote = maxNotionalQuote.mul(input.allocationFraction);
+  }
 
   const rawByRisk = riskBudgetQuote
     .divFloor(riskPerContractQuote)
