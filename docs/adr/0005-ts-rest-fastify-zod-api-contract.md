@@ -8,4 +8,3 @@ We use **`@ts-rest/core`**, **`@ts-rest/fastify`**, and **`@ts-rest/react-query`
 
 - **Considered Options**: `tRPC` vs. `ts-rest` vs. hand-rolled OpenAPI/REST.
 - **Why `ts-rest`**: Like `tRPC`, it provides zero-codegen, end-to-end TypeScript type safety and React Query hooks directly from our Zod schemas. Unlike `tRPC`'s RPC-style URLs, `ts-rest` maps to standard, human-readable REST paths and HTTP verbs (`GET /api/v1/positions`, `POST /api/v1/risk/kill-switch`), making audit logging, curl debugging, Playwright network assertions, and webhook integrations straightforward.
-

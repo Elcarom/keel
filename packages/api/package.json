@@ -1,0 +1,22 @@
+{
+  "name": "@keel/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.4",
+    "@keel/core": "workspace:*",
+    "@ts-rest/core": "^3.52.1",
+    "@ts-rest/fastify": "^3.52.1",
+    "fastify": "^5.2.0",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  }
+}

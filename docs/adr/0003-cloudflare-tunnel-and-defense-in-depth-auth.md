@@ -11,4 +11,3 @@ Remote and mobile access to the Unraid container is served through a **Cloudflar
 
 - No ports need to be port-forwarded on the home router; `cloudflared` connects outbound from Unraid.
 - A misconfigured Cloudflare Access policy cannot expose an unauthenticated dashboard or plaintext keys because application-level session auth and step-up confirmation remain mandatory.
-

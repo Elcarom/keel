@@ -113,4 +113,3 @@ _Avoid_: Peak balance, max equity
 **Kill Switch**:
 An immediate, deterministic emergency command (triggered manually from Mission Control or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions at market, and locks the system against new entries until manually reset.
 _Avoid_: Panic button, emergency stop, halt
-
