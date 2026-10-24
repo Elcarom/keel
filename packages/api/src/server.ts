@@ -3,14 +3,18 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
+  ScaledDecimal,
   SystemClock,
   createDefaultConfig,
   diffConfigs,
   keelApiContract,
   type Clock,
-  type KeelConfig
+  type KeelConfig,
+  type LookbackValidationResult
 } from "@keel/core";
-import { createSqliteDataStore } from "@keel/data";
+import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
+import { ReplayEngine } from "@keel/replay";
+import { DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
@@ -80,6 +84,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       process.env["KEEL_DISCORD_WEBHOOK_URL"] ??
       null,
     fetchFn: options.webhookFetchFn
+  });
+
+  const replayEngine = new ReplayEngine({
+    marketDataRepo: dataStore.marketDataRepo,
+    experimentRepo: dataStore.experimentRepo,
+    clock
   });
 
   const getUptimeSeconds = (): number =>
@@ -745,6 +755,185 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         return {
           status: 200,
           body: result
+        };
+      }
+    },
+
+    market: {
+      getSummary: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const instruments = [...dataStore.marketDataRepo.listInstrumentsWithCoverage()];
+        const trackedIds =
+          instruments.length > 0
+            ? instruments.map((i) => i.instrumentId)
+            : ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
+
+        const strategies = DEFAULT_STRATEGIES.map((strategy) => {
+          const lookbackRequirements: Record<string, number> = {};
+          for (const [tf, count] of Object.entries(strategy.lookbacks)) {
+            if (typeof count === "number" && count > 0) {
+              lookbackRequirements[tf] = count;
+            }
+          }
+          const lookbackStatusByInstrument: Record<string, LookbackValidationResult> = {};
+          for (const instId of trackedIds) {
+            const cov = instruments.find((i) => i.instrumentId === instId);
+            const asOfMs = cov?.latestCloseTs ?? clock.nowMs();
+            lookbackStatusByInstrument[instId] = dataStore.marketDataRepo.assertLookbackSatisfied({
+              instrumentId: instId,
+              asOfMs,
+              requirements: strategy.lookbacks
+            });
+          }
+          return {
+            id: strategy.strategyId,
+            version: strategy.version,
+            name: strategy.name,
+            description: strategy.description,
+            lookbackRequirements,
+            lookbackStatusByInstrument
+          };
+        });
+
+        return {
+          status: 200,
+          body: {
+            instruments,
+            strategies
+          }
+        };
+      },
+
+      seedSynthetic: async ({ body, request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated || !ingress.session.username) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const active = getActiveSnapshot();
+        const snapshot = seedSyntheticMarketSeries({
+          marketDataRepo: dataStore.marketDataRepo,
+          instrumentId: body.instrumentId,
+          endCloseTs: clock.nowMs(),
+          barCount1H: body.barCount1H
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username,
+          clientIp: ingress.clientIp,
+          action: "market.seed_synthetic",
+          riskClass: "safe",
+          configHash: active.configHash,
+          details: {
+            instrumentId: body.instrumentId,
+            barCount1H: body.barCount1H,
+            snapshotId: snapshot.snapshotId,
+            barCount: snapshot.barCount,
+            fundingCount: snapshot.fundingCount
+          }
+        });
+
+        return {
+          status: 200,
+          body: { snapshot }
+        };
+      }
+    },
+
+    replay: {
+      runBacktest: async ({ body, request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated || !ingress.session.username) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        let strategy;
+        try {
+          strategy = resolveStrategyById(body.strategyId);
+        } catch (err) {
+          return {
+            status: 400,
+            body: {
+              error: err instanceof Error ? err.message : "Unknown strategyId"
+            }
+          };
+        }
+
+        const coverage = dataStore.marketDataRepo
+          .listInstrumentsWithCoverage()
+          .find((i) => i.instrumentId === body.instrumentId);
+        if (
+          !coverage ||
+          coverage.earliestOpenTs === null ||
+          coverage.latestCloseTs === null ||
+          (coverage.barCounts[body.timeframe] ?? 0) === 0
+        ) {
+          return {
+            status: 400,
+            body: {
+              error: `No confirmed ${body.timeframe} bars found for ${body.instrumentId}. Seed or ingest market data first.`
+            }
+          };
+        }
+
+        const active = getActiveSnapshot();
+        const experiment = replayEngine.run({
+          instrumentId: body.instrumentId,
+          timeframe: body.timeframe,
+          strategy,
+          fromTs: coverage.earliestOpenTs,
+          toTs: coverage.latestCloseTs,
+          configHash: active.configHash,
+          initialEquityUsdt: ScaledDecimal.fromString(
+            active.config.risk.paperPortfolioEquityUsdt.toFixed(2)
+          ),
+          riskFractionPerTrade: active.config.risk.strategy.riskPerTradePct / 100,
+          maxGrossLeverage: active.config.risk.strategy.maxGrossLeverage,
+          costStressMultiplier: active.config.promotionLadder.replayCostStressMultiplier,
+          walkForwardFolds: active.config.promotionLadder.replayMinWalkForwardFolds,
+          replayMinTrades: active.config.promotionLadder.replayMinTrades,
+          replayMinSharpe: active.config.promotionLadder.replayMinSharpe,
+          replayMinDeflatedSharpeConfidence:
+            active.config.promotionLadder.replayMinDeflatedSharpeConfidence
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username,
+          clientIp: ingress.clientIp,
+          action: "replay.run_backtest",
+          riskClass: "safe",
+          configHash: active.configHash,
+          details: {
+            experimentId: experiment.experimentId,
+            strategyId: experiment.strategyId,
+            instrumentId: experiment.instrumentId,
+            dataSnapshotId: experiment.dataSnapshotId,
+            totalTrades: experiment.totalTrades,
+            avgR: experiment.avgR,
+            stressNetExpectancyR: experiment.stressNetExpectancyR,
+            deflatedSharpeRatio: experiment.deflatedSharpeRatio
+          }
+        });
+
+        return {
+          status: 200,
+          body: { experiment }
+        };
+      },
+
+      listExperiments: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        return {
+          status: 200,
+          body: {
+            experiments: [...dataStore.experimentRepo.listExperiments(50)]
+          }
         };
       }
     }

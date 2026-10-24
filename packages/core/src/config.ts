@@ -693,7 +693,7 @@ function rotr(x: number, n: number): number {
 /**
  * Pure isomorphic FIPS 180-4 SHA-256 hex digest (runs identically in Node, Workers, and Browser).
  */
-function sha256Hex(input: string): string {
+export function sha256Hex(input: string): string {
   const bytes = new TextEncoder().encode(input);
   const bitLen = bytes.length * 8;
   const totalBytes = Math.ceil((bytes.length + 9) / 64) * 64;

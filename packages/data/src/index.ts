@@ -23,13 +23,31 @@ import {
   type ConfigRepository,
   type ConfigSnapshotRecord,
   type EncryptedSecretRecord,
+  type ExperimentRepository,
   type KeelConfig,
+  type MarketDataRepository,
   type NewAuditEventInput,
   type RollbackConfigInput,
   type SaveConfigSnapshotInput,
   type SecretKeyName,
   type SecretVaultRepository
 } from "@keel/core";
+import {
+  MARKET_SCHEMA_SQL,
+  OkxPublicIngestor,
+  createExperimentRepository,
+  createMarketDataRepository,
+  seedSyntheticMarketSeries,
+  type FetchOkxHistoryCandlesFn,
+  type OkxPublicIngestorOptions
+} from "./market.js";
+
+export {
+  OkxPublicIngestor,
+  seedSyntheticMarketSeries,
+  type FetchOkxHistoryCandlesFn,
+  type OkxPublicIngestorOptions
+};
 
 export interface SqliteDataStoreOptions {
   readonly dbPath: string;
@@ -55,6 +73,8 @@ export interface SqliteDataStore extends BackupService {
   readonly auditRepo: AuditRepository;
   readonly secretVaultRepo: SecretVaultRepository;
   readonly authRepo: AuthRepository;
+  readonly marketDataRepo: MarketDataRepository;
+  readonly experimentRepo: ExperimentRepository;
   readonly backupService: BackupService;
   getPragmaStatus(): SqlitePragmaStatus;
   checkpointWal(): { busy: number; log: number; checkpointed: number };
@@ -175,6 +195,10 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     PRAGMA mmap_size = 268435456;
   `);
   db.exec(SCHEMA_SQL);
+  db.exec(MARKET_SCHEMA_SQL);
+
+  const marketDataRepo = createMarketDataRepository(db);
+  const experimentRepo = createExperimentRepository(db);
 
   // Seed default version 1 config if empty
   const existingCountRow = db.prepare("SELECT COUNT(*) AS cnt FROM config_snapshots").get();
@@ -510,6 +534,8 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     auditRepo,
     secretVaultRepo,
     authRepo,
+    marketDataRepo,
+    experimentRepo,
     backupService,
 
     getPragmaStatus(): SqlitePragmaStatus {

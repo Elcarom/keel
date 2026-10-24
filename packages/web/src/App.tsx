@@ -7,7 +7,9 @@ import {
   type ConfigFieldMetadata,
   type ConfigRiskClass,
   type ConfigSnapshotRecord,
+  type ExperimentRecord,
   type KeelConfig,
+  type MarketSummaryResponse,
   type SecretKeyName,
   type SecretMetadataRecord,
   type SystemStatusResponse
@@ -67,6 +69,13 @@ export function App() {
   const [selectedSecretKey, setSelectedSecretKey] = useState<SecretKeyName>("geminiApiKey");
   const [secretPlaintext, setSecretPlaintext] = useState("");
 
+  // M2 Market Data & Replay Research Lab state
+  const [marketSummary, setMarketSummary] = useState<MarketSummaryResponse | null>(null);
+  const [experiments, setExperiments] = useState<readonly ExperimentRecord[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState("donchian-trend-v1");
+  const [selectedInstrumentId, setSelectedInstrumentId] = useState("BTC-USDT-SWAP");
+  const [replayRunning, setReplayRunning] = useState(false);
+
   const refreshSystemAndSession = useCallback(async () => {
     const [statusRes, sessRes] = await Promise.all([
       apiClient.system.getStatus(),
@@ -83,11 +92,13 @@ export function App() {
   }, []);
 
   const refreshGovernanceData = useCallback(async () => {
-    const [cfgRes, histRes, secRes, audRes] = await Promise.all([
+    const [cfgRes, histRes, secRes, audRes, mktRes, expRes] = await Promise.all([
       apiClient.config.getActive(),
       apiClient.config.getHistory(),
       apiClient.secrets.listMetadata(),
-      apiClient.audit.listRecent()
+      apiClient.audit.listRecent(),
+      apiClient.market.getSummary(),
+      apiClient.replay.listExperiments()
     ]);
     if (cfgRes.status === 200) {
       setActiveSnapshot(cfgRes.body.active);
@@ -102,6 +113,12 @@ export function App() {
     }
     if (audRes.status === 200) {
       setAuditEvents(audRes.body.events);
+    }
+    if (mktRes.status === 200) {
+      setMarketSummary(mktRes.body);
+    }
+    if (expRes.status === 200) {
+      setExperiments(expRes.body.experiments);
     }
   }, []);
 
@@ -256,6 +273,51 @@ export function App() {
       await refreshGovernanceData();
     } else {
       setGovError(extractApiError(res.body));
+    }
+  };
+
+  const handleSeedMarket = async () => {
+    setGovError(null);
+    setGovMessage(null);
+    const res = await apiClient.market.seedSynthetic({
+      body: {
+        instrumentId: selectedInstrumentId,
+        barCount1H: 240
+      }
+    });
+    if (res.status === 200) {
+      setGovMessage(
+        `Seeded confirmed market bars (${res.body.snapshot.barCount} bars, snapshot=${res.body.snapshot.snapshotId.slice(0, 12)})`
+      );
+      await refreshGovernanceData();
+    } else {
+      setGovError(extractApiError(res.body));
+    }
+  };
+
+  const handleRunReplay = async () => {
+    setGovError(null);
+    setGovMessage(null);
+    setReplayRunning(true);
+    try {
+      const res = await apiClient.replay.runBacktest({
+        body: {
+          strategyId: selectedStrategyId,
+          instrumentId: selectedInstrumentId,
+          timeframe: "1H"
+        }
+      });
+      if (res.status === 200) {
+        const exp = res.body.experiment;
+        setGovMessage(
+          `Replay complete: ${exp.strategyId} on ${exp.instrumentId} (${exp.totalTrades} trades, AvgR=${exp.avgR.toFixed(2)}, 2x-StressR=${exp.stressNetExpectancyR.toFixed(2)}, DSR=${exp.deflatedSharpeRatio.toFixed(2)})`
+        );
+        await refreshGovernanceData();
+      } else {
+        setGovError(extractApiError(res.body));
+      }
+    } finally {
+      setReplayRunning(false);
     }
   };
 
@@ -771,6 +833,187 @@ export function App() {
                 </ul>
               </section>
             </div>
+
+            {/* M2 Market Data & Replay Research Lab */}
+            <section data-testid="replay-lab-panel" className={cardClass}>
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700/50 pb-4">
+                <div>
+                  <h3 className="text-sm font-bold">
+                    Confirmed Market Store &amp; Event-Driven Replay Research Lab (M2)
+                  </h3>
+                  <p className="text-xs opacity-75">
+                    Strictly causal confirmed-bar views (`confirm === &quot;1&quot;`), 8h settled
+                    funding, 2x cost-stress expectancy, Purged Walk-Forward, and Deflated Sharpe
+                    Ratio.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    data-testid="instrument-select"
+                    value={selectedInstrumentId}
+                    onChange={(e) => setSelectedInstrumentId(e.target.value)}
+                    className={
+                      isDark
+                        ? "rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                        : "rounded-md border border-stone-400 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                    }
+                  >
+                    <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                    <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                  </select>
+                  <button
+                    data-testid="seed-market-btn"
+                    type="button"
+                    onClick={() => void handleSeedMarket()}
+                    className="rounded-md border border-teal-500/40 bg-teal-500/15 px-3 py-1.5 text-xs font-semibold text-teal-300 hover:bg-teal-500/25"
+                  >
+                    Seed Confirmed Bars (240h)
+                  </button>
+                  <select
+                    data-testid="strategy-select"
+                    value={selectedStrategyId}
+                    onChange={(e) => setSelectedStrategyId(e.target.value)}
+                    className={
+                      isDark
+                        ? "rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                        : "rounded-md border border-stone-400 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                    }
+                  >
+                    {(marketSummary?.strategies ?? []).map((strat) => (
+                      <option key={strat.id} value={strat.id}>
+                        {strat.name} ({strat.id})
+                      </option>
+                    ))}
+                    {(!marketSummary || marketSummary.strategies.length === 0) && (
+                      <>
+                        <option value="donchian-trend-v1">Donchian Trend Breakout v1</option>
+                        <option value="vol-mean-reversion-v1">
+                          Vol-Normalized Mean Reversion v1
+                        </option>
+                        <option value="vol-momentum-v1">Vol-Normalized Momentum Impulse v1</option>
+                      </>
+                    )}
+                  </select>
+                  <button
+                    data-testid="run-replay-btn"
+                    type="button"
+                    disabled={replayRunning}
+                    onClick={() => void handleRunReplay()}
+                    className="rounded-md bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-600 disabled:opacity-50"
+                  >
+                    {replayRunning ? "Running..." : "Run Event-Driven Replay"}
+                  </button>
+                </div>
+              </div>
+
+              {marketSummary && marketSummary.instruments.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-3 text-xs">
+                  {marketSummary.instruments.map((inst) => (
+                    <div
+                      key={inst.instrumentId}
+                      data-testid={`coverage-${inst.instrumentId}`}
+                      className="font-mono-tabular rounded border border-slate-700/60 px-3 py-1.5"
+                    >
+                      <span className="font-bold text-teal-400">{inst.instrumentId}</span> · 15m:{" "}
+                      {inst.barCounts["15m"]} · 1H: {inst.barCounts["1H"]} · 4H:{" "}
+                      {inst.barCounts["4H"]} · 1D: {inst.barCounts["1D"]} · Funding:{" "}
+                      {inst.fundingCount}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {marketSummary && marketSummary.strategies.length > 0 && (
+                <div
+                  data-testid="strategy-readiness-list"
+                  className="mt-3 grid gap-2 md:grid-cols-3"
+                >
+                  {marketSummary.strategies.map((strat) => {
+                    const statusForInst = strat.lookbackStatusByInstrument[selectedInstrumentId];
+                    const isReady = statusForInst?.satisfied === true;
+                    const reqText = Object.entries(strat.lookbackRequirements)
+                      .map(([tf, cnt]) => `${tf}>=${cnt}`)
+                      .join(", ");
+                    return (
+                      <div
+                        key={strat.id}
+                        data-testid={`strategy-readiness-${strat.id}`}
+                        className="flex items-center justify-between rounded border border-slate-700/50 px-3 py-1.5 text-xs"
+                      >
+                        <div>
+                          <div className="font-semibold">{strat.name}</div>
+                          <div className="font-mono-tabular text-[11px] opacity-70">
+                            Lookback: {reqText}
+                          </div>
+                        </div>
+                        <span
+                          className={
+                            isReady
+                              ? "rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400"
+                              : "rounded border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-400"
+                          }
+                        >
+                          {isReady ? "SATISFIED" : "DEFICIT"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="mt-4 overflow-x-auto">
+                <table data-testid="experiments-table" className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-700/60 opacity-70">
+                      <th className="py-1.5">Strategy</th>
+                      <th className="py-1.5">Instrument</th>
+                      <th className="py-1.5">Snapshot ID</th>
+                      <th className="py-1.5">Trades</th>
+                      <th className="py-1.5">Avg R</th>
+                      <th className="py-1.5">2x Stress R</th>
+                      <th className="py-1.5">OOS Walk-Fwd R</th>
+                      <th className="py-1.5">DSR</th>
+                      <th className="py-1.5">Net PnL (USDT)</th>
+                      <th className="py-1.5">ADR-0007 Gate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono-tabular">
+                    {experiments.map((exp) => (
+                      <tr key={exp.experimentId} className="border-b border-slate-800/60">
+                        <td className="py-1.5 text-teal-400">{exp.strategyId}</td>
+                        <td className="py-1.5">{exp.instrumentId}</td>
+                        <td className="py-1.5">{exp.dataSnapshotId.slice(0, 12)}</td>
+                        <td className="py-1.5">{exp.totalTrades}</td>
+                        <td className="py-1.5">{exp.avgR.toFixed(3)}R</td>
+                        <td className="py-1.5">{exp.stressNetExpectancyR.toFixed(3)}R</td>
+                        <td className="py-1.5">{exp.walkForwardOutOfSampleAvgR.toFixed(3)}R</td>
+                        <td className="py-1.5">{exp.deflatedSharpeRatio.toFixed(3)}</td>
+                        <td className="py-1.5">{exp.netPnlUsdt}</td>
+                        <td className="py-1.5">
+                          <span
+                            data-testid={`gate-badge-${exp.experimentId}`}
+                            className={
+                              exp.replayGatePassed
+                                ? "rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"
+                                : "rounded border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-400"
+                            }
+                          >
+                            {exp.replayGatePassed ? "PASS" : "HOLD"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {experiments.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="py-3 text-center opacity-60">
+                          No experiments recorded yet. Seed confirmed bars and run a replay.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
 
             {/* Complete CONFIG_FIELD_REGISTRY Specification Table */}
             <section className={cardClass}>
