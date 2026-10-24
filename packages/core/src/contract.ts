@@ -10,11 +10,14 @@ import {
   ContextFeatureRecordSchema,
   DataSnapshotMetadataSchema,
   DmsStatusSchema,
+  EventGateEvaluationSchema,
   ExchangeOrderInputSchema,
   ExchangeOrderResultSchema,
   ExperimentRecordSchema,
   LedgerTrialBalanceSchema,
   LookbackValidationResultSchema,
+  MarkoutForensicReportSchema,
+  NarrativeClusterRecordSchema,
   NotificationDeliveryResultSchema,
   PaperOrderRecordSchema,
   PaperPositionRecordSchema,
@@ -567,6 +570,63 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Evaluate active ProposalMenu through ShadowAdvisor alongside BaselineChooser"
+    },
+    evaluateEventGate: {
+      method: "POST",
+      path: "/api/v1/ai/event-gate",
+      body: z.object({
+        eventText: z.string().min(3),
+        affectedInstruments: z.array(z.string()).optional(),
+        openPositionsCount: z.number().int().nonnegative().optional()
+      }),
+      responses: {
+        200: z.object({
+          evaluation: EventGateEvaluationSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Evaluate event shock volatility risk and gating recommendation (M6)"
+    },
+    clusterNarratives: {
+      method: "POST",
+      path: "/api/v1/ai/narratives",
+      body: z.object({
+        announcements: z.array(z.string().min(1)).min(1)
+      }),
+      responses: {
+        200: z.object({
+          clusters: z.array(NarrativeClusterRecordSchema)
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Group context announcements into thematic narrative clusters (M6)"
+    },
+    analyzeMarkoutForensics: {
+      method: "POST",
+      path: "/api/v1/ai/markout-forensics",
+      body: z.object({
+        orderId: z.string().min(1),
+        instrumentId: z.string().min(1),
+        side: z.enum(["long", "short"]),
+        fillPrice: z.string().min(1),
+        markoutPrices: z
+          .object({
+            price5m: z.string().optional(),
+            price15m: z.string().optional(),
+            price1h: z.string().optional()
+          })
+          .optional()
+      }),
+      responses: {
+        200: z.object({
+          report: MarkoutForensicReportSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Analyze post-fill markout price drift and adverse selection (M6)"
     }
   },
   broker: {

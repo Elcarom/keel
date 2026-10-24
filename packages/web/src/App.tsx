@@ -10,11 +10,14 @@ import {
   type ConfigSnapshotRecord,
   type ContextFeatureRecord,
   type DmsStatus,
+  type EventGateEvaluation,
   type ExchangeOrderResult,
   type ExperimentRecord,
   type KeelConfig,
   type LedgerTrialBalance,
   type MarketSummaryResponse,
+  type MarkoutForensicReport,
+  type NarrativeClusterRecord,
   type PaperOrderRecord,
   type PaperPositionRecord,
   type ReconciliationResult,
@@ -118,6 +121,17 @@ export function App() {
   } | null>(null);
   const [extractingContext, setExtractingContext] = useState(false);
   const [evaluatingShadow, setEvaluatingShadow] = useState(false);
+
+  // M6 Advanced AI Decision Support state
+  const [eventGateEvaluation, setEventGateEvaluation] = useState<EventGateEvaluation | null>(null);
+  const [evaluatingEventGate, setEvaluatingEventGate] = useState(false);
+  const [eventShockInput, setEventShockInput] = useState(
+    "Emergency Fed rate decision: surprise 50 bps inter-meeting hike announced"
+  );
+  const [narrativeClusters, setNarrativeClusters] = useState<readonly NarrativeClusterRecord[]>([]);
+  const [clusteringNarratives, setClusteringNarratives] = useState(false);
+  const [markoutReport, setMarkoutReport] = useState<MarkoutForensicReport | null>(null);
+  const [analyzingMarkout, setAnalyzingMarkout] = useState(false);
 
   // M5 Exchange Broker & Attached Stops state
   const [brokerStatus, setBrokerStatus] = useState<{
@@ -1693,6 +1707,291 @@ export function App() {
                     </div>
                   </div>
                 )}
+
+                {/* M6 EventGateAdvisor Sub-Section */}
+                <div
+                  data-testid="event-gate-panel"
+                  className="mt-5 border-t border-slate-700/60 pt-4"
+                >
+                  <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                    Event Gate Advisor: Macro &amp; Geopolitical Shock Gating (M6)
+                  </h4>
+                  <div className="mt-2 flex flex-col gap-2">
+                    <textarea
+                      data-testid="event-gate-input"
+                      rows={2}
+                      value={eventShockInput}
+                      onChange={(e) => setEventShockInput(e.target.value)}
+                      className={inputClass}
+                      placeholder="Enter emergency macro shock or geopolitical announcement..."
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        data-testid="evaluate-event-gate-btn"
+                        disabled={evaluatingEventGate}
+                        onClick={async () => {
+                          setEvaluatingEventGate(true);
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.ai.evaluateEventGate({
+                              body: { eventText: eventShockInput }
+                            });
+                            if (res.status === 200) {
+                              setEventGateEvaluation(res.body.evaluation);
+                              setGovMessage(
+                                `Event Gate Evaluated: ${res.body.evaluation.recommendation} (${res.body.evaluation.volatilityRisk} risk)`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(
+                                extractApiError(res.body, "Event gate evaluation failed")
+                              );
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          } finally {
+                            setEvaluatingEventGate(false);
+                          }
+                        }}
+                        className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                      >
+                        {evaluatingEventGate ? "Evaluating Gate..." : "Evaluate Event Gate"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {eventGateEvaluation && (
+                    <div
+                      data-testid="event-gate-result-card"
+                      className="mt-3 rounded border border-slate-700/80 bg-slate-800/40 p-3 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-2">
+                        <span className="font-semibold text-teal-300">
+                          {eventGateEvaluation.eventHeadline}
+                        </span>
+                        <span
+                          data-testid="event-gate-recommendation-badge"
+                          className={`rounded border px-2 py-0.5 text-xs font-bold uppercase ${
+                            eventGateEvaluation.recommendation === "STAND_DOWN"
+                              ? "border-rose-500/60 bg-rose-500/20 text-rose-300"
+                              : eventGateEvaluation.recommendation === "REDUCE_SIZE"
+                                ? "border-amber-500/60 bg-amber-500/20 text-amber-300"
+                                : "border-emerald-500/60 bg-emerald-500/20 text-emerald-300"
+                          }`}
+                        >
+                          {eventGateEvaluation.recommendation}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        <div>
+                          Volatility Risk:{" "}
+                          <span className="font-bold uppercase text-amber-400">
+                            {eventGateEvaluation.volatilityRisk}
+                          </span>
+                        </div>
+                        <div>
+                          Risk Score:{" "}
+                          <span className="font-mono">
+                            {(eventGateEvaluation.riskScore * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <div>
+                          Cooldown:{" "}
+                          <span className="font-mono">
+                            {eventGateEvaluation.cooldownMinutes} min
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-2 text-xs italic opacity-85">
+                        &quot;{eventGateEvaluation.rationale}&quot;
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* M6 Narrative Cluster Tagger Sub-Section */}
+                <div className="mt-5 border-t border-slate-700/60 pt-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                      Narrative Cluster Tagger (M6)
+                    </h4>
+                    <button
+                      type="button"
+                      data-testid="cluster-narratives-btn"
+                      disabled={clusteringNarratives}
+                      onClick={async () => {
+                        setClusteringNarratives(true);
+                        setGovMessage(null);
+                        setGovError(null);
+                        try {
+                          const announcements =
+                            extractedFeatures.length > 0
+                              ? extractedFeatures.map((f) => f.headline)
+                              : [
+                                  "Federal Reserve signals slower balance sheet runoff",
+                                  "Crypto ETF institutional inflows accelerate in Q3"
+                                ];
+                          const res = await apiClient.ai.clusterNarratives({
+                            body: { announcements }
+                          });
+                          if (res.status === 200) {
+                            setNarrativeClusters(res.body.clusters);
+                            setGovMessage(`Tagged ${res.body.clusters.length} narrative clusters`);
+                            await refreshGovernanceData();
+                          } else {
+                            setGovError(extractApiError(res.body, "Failed to cluster narratives"));
+                          }
+                        } catch (err) {
+                          setGovError(String(err));
+                        } finally {
+                          setClusteringNarratives(false);
+                        }
+                      }}
+                      className="rounded border border-indigo-500/50 bg-indigo-500/15 px-3 py-1 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-50"
+                    >
+                      {clusteringNarratives ? "Clustering..." : "Tag Narrative Clusters"}
+                    </button>
+                  </div>
+
+                  <div className="mt-2 overflow-x-auto">
+                    <table
+                      data-testid="narrative-clusters-table"
+                      className="w-full text-left text-xs font-mono"
+                    >
+                      <thead>
+                        <tr className="border-b border-slate-700/60 opacity-70">
+                          <th className="py-1">Cluster ID</th>
+                          <th className="py-1">Narrative Name</th>
+                          <th className="py-1">Theme</th>
+                          <th className="py-1">Bias</th>
+                          <th className="py-1">Novelty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {narrativeClusters.map((c) => (
+                          <tr key={c.clusterId} className="border-b border-slate-800/60">
+                            <td className="py-1.5">{c.clusterId.slice(0, 10)}</td>
+                            <td className="py-1.5 font-bold text-teal-300">{c.name}</td>
+                            <td className="py-1.5">{c.theme}</td>
+                            <td className="py-1.5 uppercase font-bold text-amber-400">
+                              {c.sentimentBias}
+                            </td>
+                            <td className="py-1.5">{(c.noveltyScore * 100).toFixed(0)}%</td>
+                          </tr>
+                        ))}
+                        {narrativeClusters.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="py-2 text-center opacity-60">
+                              No narrative clusters tagged yet. Click &quot;Tag Narrative
+                              Clusters&quot; above.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* M6 Markout Forensics Analyst Sub-Section */}
+                <div className="mt-5 border-t border-slate-700/60 pt-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                      Markout Forensics Analyst: Execution Quality &amp; Adverse Selection (M6)
+                    </h4>
+                    <button
+                      type="button"
+                      data-testid="analyze-markout-btn"
+                      disabled={analyzingMarkout}
+                      onClick={async () => {
+                        setAnalyzingMarkout(true);
+                        setGovMessage(null);
+                        setGovError(null);
+                        try {
+                          const res = await apiClient.ai.analyzeMarkoutForensics({
+                            body: {
+                              orderId: submittedExchangeOrders[0]?.orderId ?? "ord_e2e_demo_001",
+                              instrumentId: "BTC-USDT-SWAP",
+                              side: "long",
+                              fillPrice: "50000.00",
+                              markoutPrices: {
+                                price5m: "50030.00",
+                                price15m: "50075.00",
+                                price1h: "50120.00"
+                              }
+                            }
+                          });
+                          if (res.status === 200) {
+                            setMarkoutReport(res.body.report);
+                            setGovMessage(
+                              `Markout Forensics: ${res.body.report.executionQualityRating} quality`
+                            );
+                            await refreshGovernanceData();
+                          } else {
+                            setGovError(extractApiError(res.body, "Failed to analyze markouts"));
+                          }
+                        } catch (err) {
+                          setGovError(String(err));
+                        } finally {
+                          setAnalyzingMarkout(false);
+                        }
+                      }}
+                      className="rounded border border-teal-500/50 bg-teal-500/15 px-3 py-1 text-xs font-semibold text-teal-300 hover:bg-teal-500/25 disabled:opacity-50"
+                    >
+                      {analyzingMarkout ? "Analyzing..." : "Analyze Execution Markouts"}
+                    </button>
+                  </div>
+
+                  {markoutReport && (
+                    <div
+                      data-testid="markout-forensics-card"
+                      className="mt-3 rounded border border-slate-700/80 bg-slate-800/40 p-3 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-2">
+                        <span className="font-mono text-teal-300">
+                          Order: {markoutReport.orderId} ({markoutReport.instrumentId}{" "}
+                          {markoutReport.side.toUpperCase()})
+                        </span>
+                        <span
+                          data-testid="markout-quality-badge"
+                          className="rounded border border-emerald-500/50 bg-emerald-500/15 px-2 py-0.5 text-xs font-bold text-emerald-400"
+                        >
+                          {markoutReport.executionQualityRating}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-4 font-mono-tabular">
+                        <div>
+                          5m Drift:{" "}
+                          <span className="font-bold text-emerald-400">
+                            +{markoutReport.markout5mBps} bps
+                          </span>
+                        </div>
+                        <div>
+                          15m Drift:{" "}
+                          <span className="font-bold text-emerald-400">
+                            +{markoutReport.markout15mBps} bps
+                          </span>
+                        </div>
+                        <div>
+                          1h Drift:{" "}
+                          <span className="font-bold text-emerald-400">
+                            +{markoutReport.markout1hBps} bps
+                          </span>
+                        </div>
+                        <div>
+                          Aggressiveness:{" "}
+                          <span className="font-bold text-indigo-400">
+                            {markoutReport.recommendedAggressiveness}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-2 text-xs italic opacity-85">
+                        &quot;{markoutReport.forensicSummary}&quot;
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
