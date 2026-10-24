@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Keel</Name>
+  <Repository>ghcr.io/elcarom/psychic-octo-funicular:latest</Repository>
+  <Registry>https://github.com/Elcarom/psychic-octo-funicular/pkgs/container/psychic-octo-funicular</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Elcarom/psychic-octo-funicular/issues</Support>
+  <Project>https://github.com/Elcarom/psychic-octo-funicular</Project>
+  <Overview>Keel — Self-hosted systematic crypto-derivatives research lab and execution platform. Paper-first by default with deterministic risk engine, SQLite WAL state, and measurable Gemini AI decision support.</Overview>
+  <Category>Tools:Utilities Productivity:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/Elcarom/psychic-octo-funicular/main/deploy/unraid/keel-icon.svg</Icon>
+  <ExtraParams>--stop-timeout=30</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI &amp; API Port" Target="8080" Default="8080" Mode="tcp" Description="Single HTTP port serving both the Keel dashboard and Fastify API (route your Cloudflare Tunnel here)." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Appdata Storage (/data)" Target="/data" Default="/mnt/user/appdata/keel/data" Mode="rw" Description="Persistent SQLite WAL database, encrypted secret key, and market data store." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/keel/data</Config>
+  <Config Name="Backups Directory (/backups)" Target="/backups" Default="/mnt/user/appdata/keel/backups" Mode="rw" Description="Mounted volume for scheduled and on-demand atomic SQLite VACUUM INTO backups." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/keel/backups</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Unraid user ID (nobody = 99)." Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Unraid group ID (users = 100)." Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation umask." Type="Variable" Display="advanced" Required="true" Mask="false">022</Config>
+</Container>
+

@@ -2,8 +2,24 @@
 
 ## Overview
 
-Self-hosted systematic crypto-derivatives research and execution platform.
+**Keel** (`@keel/*`) — Self-hosted systematic crypto-derivatives research and execution platform.
 Read [`GLOSSARY.md`](./GLOSSARY.md) before writing code, specs, or issues, and check [`docs/adr/`](./docs/adr/) for architectural decisions.
+
+## Commands
+
+- `pnpm install` — Install workspace dependencies
+- `pnpm build` — Build all workspace packages (`@keel/core`, `@keel/api`, `@keel/web`)
+- `pnpm typecheck` — Strict TypeScript check across packages
+- `pnpm lint` — ESLint strict check (`no-explicit-any` enforced)
+- `pnpm format:check` — Prettier formatting check (`pnpm format` to write)
+- `pnpm test` — Vitest unit and `fast-check` property test suites
+- `pnpm test:e2e` — Playwright end-to-end dashboard tests
+
+## Conventions
+
+- **Deep modules & explicit ports**: Depend on ports (`Clock`, `Broker`, `LlmGateway`, `NotificationChannel`, repository interfaces) and test only at public package seams.
+- **Exact decimal accounting**: Use `ScaledDecimal` from `@keel/core` for all money, prices, fees, funding, and contract quantities.
+- **Single config source of truth**: Every setting belongs in `@keel/core`'s `KeelConfigSchema` and `CONFIG_FIELD_REGISTRY` with an explicit `ConfigRiskClass` (`safe`, `confirm`, `restart-required`, `locked-in-live`).
 
 ## Never Do
 
@@ -30,4 +46,3 @@ Uses the five default canonical triage labels (`needs-triage`, `needs-info`, `re
 ### Domain docs
 
 Single-context layout with [`GLOSSARY.md`](./GLOSSARY.md) at the repo root and ADRs in `docs/adr/`. See [`docs/agents/domain.md`](./docs/agents/domain.md).
-

@@ -9,4 +9,3 @@ Every opening or adding trade proposal is sized deterministically from its initi
 - Strategies must always supply an initial `stopPx` alongside any opening `Proposal`; a proposal without a stop is unsizeable and rejected at the type/schema boundary.
 - Small live accounts (`500–2,500 USDT`) during `Live-Ramp` automatically skip instruments whose contract granularity (`ctVal * minSz`) is too coarse for the `1R` budget instead of silently taking oversized tail risk.
 - Simultaneous same-direction entries across multiple strategies are bounded by the portfolio net directional exposure cap (`±1.25x`).
-

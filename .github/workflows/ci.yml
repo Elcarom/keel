@@ -1,0 +1,106 @@
+name: CI & Container Quality Gates
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gates:
+    name: Lint, Typecheck, Unit/Property & E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enable Corepack & pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting (Prettier)
+        run: pnpm format:check
+
+      - name: Lint (ESLint strict, zero any)
+        run: pnpm lint
+
+      - name: Typecheck (TypeScript strict)
+        run: pnpm typecheck
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run unit & fast-check property tests (Vitest)
+        run: pnpm test
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright e2e smoke suite
+        run: pnpm test:e2e
+
+  container-and-security:
+    name: Docker Build, Unraid Volume Smoke Test, Trivy & SBOM
+    runs-on: ubuntu-latest
+    needs: [quality-gates]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Keel Docker image
+        run: docker build -t ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }} .
+
+      - name: Verify clean volume startup, healthcheck, and restart persistence
+        run: |
+          mkdir -p /tmp/keel-data /tmp/keel-backups
+          echo "persistence-sentinel" > /tmp/keel-data/sentinel.txt
+          docker run -d --name keel-test \
+            -p 8080:8080 \
+            -e PUID=99 -e PGID=100 -e UMASK=022 \
+            -v /tmp/keel-data:/data \
+            -v /tmp/keel-backups:/backups \
+            ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/healthz && curl -fsS http://127.0.0.1:8080/readyz; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:8080/api/v1/system/status | grep -q '"appName":"Keel"'
+          docker restart keel-test
+          sleep 3
+          curl -fsS http://127.0.0.1:8080/healthz | grep -q '"status":"ok"'
+          grep -q "persistence-sentinel" /tmp/keel-data/sentinel.txt
+          docker stop keel-test && docker rm keel-test
+
+      - name: Run Trivy vulnerability scanner on image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+          format: "table"
+          exit-code: "0"
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0.17.8
+        with:
+          image: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+          format: cyclonedx-json
+          output-file: keel-sbom.cdx.json

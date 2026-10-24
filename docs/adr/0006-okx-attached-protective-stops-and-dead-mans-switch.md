@@ -8,4 +8,3 @@ Every live or demo opening order on OKX must atomically include an exchange-resi
 
 - **No naked positions**: An entry order cannot be submitted without its protective stop attached in the same request. When ratcheting a stop in the position's favor, the adapter amends the existing exchange algo order (`POST /api/v5/trade/amend-algos`) rather than cancelling first, so there is zero window without exchange-side protection. If an attached stop is ever missing during periodic reconciliation, the engine immediately places a replacement stop or flattens the position at market and fires a `CRITICAL` alert.
 - **Crash behavior**: If the Unraid container crashes, hangs, or loses network connectivity for >60 seconds, OKX's `cancel-all-after` automatically cancels all resting unexecuted entry/add limit orders while leaving the position-attached mark-price Protective Stops active on the exchange.
-
