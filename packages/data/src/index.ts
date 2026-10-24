@@ -25,8 +25,11 @@ import {
   type EncryptedSecretRecord,
   type ExperimentRepository,
   type KeelConfig,
+  type LedgerRepository,
   type MarketDataRepository,
   type NewAuditEventInput,
+  type PaperAccountRepository,
+  type PromotionRepository,
   type RollbackConfigInput,
   type SaveConfigSnapshotInput,
   type SecretKeyName,
@@ -41,9 +44,18 @@ import {
   type FetchOkxHistoryCandlesFn,
   type OkxPublicIngestorOptions
 } from "./market.js";
+import {
+  PAPER_SCHEMA_SQL,
+  createLedgerRepository,
+  createPaperAccountRepository,
+  createPromotionRepository
+} from "./paper.js";
 
 export {
   OkxPublicIngestor,
+  createLedgerRepository,
+  createPaperAccountRepository,
+  createPromotionRepository,
   seedSyntheticMarketSeries,
   type FetchOkxHistoryCandlesFn,
   type OkxPublicIngestorOptions
@@ -55,6 +67,7 @@ export interface SqliteDataStoreOptions {
   readonly backupsDir?: string | undefined;
   readonly maxBackupsToKeep?: number | undefined;
   readonly initialConfig?: KeelConfig | undefined;
+  readonly initialPaperCapitalUsdt?: string | undefined;
 }
 
 export interface SqlitePragmaStatus {
@@ -75,6 +88,9 @@ export interface SqliteDataStore extends BackupService {
   readonly authRepo: AuthRepository;
   readonly marketDataRepo: MarketDataRepository;
   readonly experimentRepo: ExperimentRepository;
+  readonly ledgerRepo: LedgerRepository;
+  readonly paperAccountRepo: PaperAccountRepository;
+  readonly promotionRepo: PromotionRepository;
   readonly backupService: BackupService;
   getPragmaStatus(): SqlitePragmaStatus;
   checkpointWal(): { busy: number; log: number; checkpointed: number };
@@ -196,9 +212,16 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   `);
   db.exec(SCHEMA_SQL);
   db.exec(MARKET_SCHEMA_SQL);
+  db.exec(PAPER_SCHEMA_SQL);
 
   const marketDataRepo = createMarketDataRepository(db);
   const experimentRepo = createExperimentRepository(db);
+  const ledgerRepo = createLedgerRepository(
+    db,
+    options.initialPaperCapitalUsdt ?? "10000.00000000"
+  );
+  const paperAccountRepo = createPaperAccountRepository(db);
+  const promotionRepo = createPromotionRepository(db);
 
   // Seed default version 1 config if empty
   const existingCountRow = db.prepare("SELECT COUNT(*) AS cnt FROM config_snapshots").get();
@@ -536,6 +559,9 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     authRepo,
     marketDataRepo,
     experimentRepo,
+    ledgerRepo,
+    paperAccountRepo,
+    promotionRepo,
     backupService,
 
     getPragmaStatus(): SqlitePragmaStatus {

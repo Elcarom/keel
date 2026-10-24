@@ -3,15 +3,20 @@ import {
   keelApiContract,
   type AuditEventRecord,
   type AuthSessionResponse,
+  type CircuitBreakerRecord,
   type ConfigDiffResult,
   type ConfigFieldMetadata,
   type ConfigRiskClass,
   type ConfigSnapshotRecord,
   type ExperimentRecord,
   type KeelConfig,
+  type LedgerTrialBalance,
   type MarketSummaryResponse,
+  type PaperOrderRecord,
+  type PaperPositionRecord,
   type SecretKeyName,
   type SecretMetadataRecord,
+  type StrategyPromotionRecord,
   type SystemStatusResponse
 } from "@keel/core";
 import { initClient } from "@ts-rest/core";
@@ -76,6 +81,15 @@ export function App() {
   const [selectedInstrumentId, setSelectedInstrumentId] = useState("BTC-USDT-SWAP");
   const [replayRunning, setReplayRunning] = useState(false);
 
+  // M3 Risk Guardian, Paper Execution, Double-Entry Ledger, & Promotion state
+  const [paperCircuitBreaker, setPaperCircuitBreaker] = useState<CircuitBreakerRecord | null>(null);
+  const [trialBalance, setTrialBalance] = useState<LedgerTrialBalance | null>(null);
+  const [openPositions, setOpenPositions] = useState<readonly PaperPositionRecord[]>([]);
+  const [_recentOrders, setRecentOrders] = useState<readonly PaperOrderRecord[]>([]);
+  const [promotions, setPromotions] = useState<readonly StrategyPromotionRecord[]>([]);
+  const [paperTickRunning, setPaperTickRunning] = useState(false);
+  const [flattenRunning, setFlattenRunning] = useState(false);
+
   const refreshSystemAndSession = useCallback(async () => {
     const [statusRes, sessRes] = await Promise.all([
       apiClient.system.getStatus(),
@@ -92,13 +106,14 @@ export function App() {
   }, []);
 
   const refreshGovernanceData = useCallback(async () => {
-    const [cfgRes, histRes, secRes, audRes, mktRes, expRes] = await Promise.all([
+    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes] = await Promise.all([
       apiClient.config.getActive(),
       apiClient.config.getHistory(),
       apiClient.secrets.listMetadata(),
       apiClient.audit.listRecent(),
       apiClient.market.getSummary(),
-      apiClient.replay.listExperiments()
+      apiClient.replay.listExperiments(),
+      apiClient.paper.getStatus()
     ]);
     if (cfgRes.status === 200) {
       setActiveSnapshot(cfgRes.body.active);
@@ -119,6 +134,13 @@ export function App() {
     }
     if (expRes.status === 200) {
       setExperiments(expRes.body.experiments);
+    }
+    if (paperRes.status === 200) {
+      setPaperCircuitBreaker(paperRes.body.circuitBreaker);
+      setTrialBalance(paperRes.body.trialBalance);
+      setOpenPositions(paperRes.body.openPositions);
+      setRecentOrders(paperRes.body.recentOrders);
+      setPromotions(paperRes.body.promotions);
     }
   }, []);
 
@@ -1012,6 +1034,319 @@ export function App() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </section>
+
+            {/* M3 Paper Execution Cockpit & Double-Entry Ledger */}
+            <section data-testid="paper-cockpit-panel" className={cardClass}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold">
+                    Paper Execution, Risk Guardian &amp; Double-Entry Ledger
+                  </h3>
+                  <p className="text-xs opacity-70">
+                    ADR-0002 Two-Tier Risk Controls &bull; ADR-0006 Attached Protective Stop &bull;
+                    ADR-0008 Exact Double-Entry
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    data-testid="circuit-breaker-badge"
+                    className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                      paperCircuitBreaker?.status === "NORMAL"
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                        : "border-rose-500/40 bg-rose-500/15 text-rose-400"
+                    }`}
+                  >
+                    CB: {paperCircuitBreaker?.status ?? "NORMAL"}
+                  </span>
+                  <span
+                    data-testid="trial-balance-badge"
+                    className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                      trialBalance?.isBalanced
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                        : "border-rose-500/40 bg-rose-500/15 text-rose-400"
+                    }`}
+                  >
+                    LEDGER: {trialBalance?.isBalanced ? "BALANCED" : "IMBALANCED"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Ledger Trial Balance Overview */}
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="rounded border border-slate-700/40 bg-slate-800/30 p-2">
+                  <div className="text-[11px] opacity-70">Cash Balance</div>
+                  <div
+                    data-testid="cash-balance-val"
+                    className="font-mono text-sm font-bold text-emerald-400"
+                  >
+                    {trialBalance?.cashBalanceUsdt ?? "10000.00000000"} USDT
+                  </div>
+                </div>
+                <div className="rounded border border-slate-700/40 bg-slate-800/30 p-2">
+                  <div className="text-[11px] opacity-70">Realized PnL</div>
+                  <div
+                    data-testid="realized-pnl-val"
+                    className="font-mono text-sm font-bold text-teal-400"
+                  >
+                    {trialBalance?.realizedPnlUsdt ?? "0.00000000"} USDT
+                  </div>
+                </div>
+                <div className="rounded border border-slate-700/40 bg-slate-800/30 p-2">
+                  <div className="text-[11px] opacity-70">Fees Paid</div>
+                  <div
+                    data-testid="fees-expense-val"
+                    className="font-mono text-sm font-bold text-amber-400"
+                  >
+                    {trialBalance?.feesExpenseUsdt ?? "0.00000000"} USDT
+                  </div>
+                </div>
+                <div className="rounded border border-slate-700/40 bg-slate-800/30 p-2">
+                  <div className="text-[11px] opacity-70">Net Equity</div>
+                  <div
+                    data-testid="net-equity-val"
+                    className="font-mono text-sm font-bold text-sky-400"
+                  >
+                    {trialBalance?.netEquityUsdt ?? "10000.00000000"} USDT
+                  </div>
+                </div>
+              </div>
+
+              {/* Paper Controls: Step Tick & Emergency Flatten */}
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  data-testid="execute-paper-tick-btn"
+                  disabled={paperTickRunning}
+                  onClick={async () => {
+                    setPaperTickRunning(true);
+                    setGovMessage(null);
+                    setGovError(null);
+                    try {
+                      const res = await apiClient.paper.executeTick({
+                        body: {
+                          instrumentId: selectedInstrumentId,
+                          strategyId: selectedStrategyId
+                        }
+                      });
+                      if (res.status === 200) {
+                        setGovMessage(
+                          `Paper tick executed: ${res.body.positionsOpenedCount} opened, ${res.body.positionsClosedCount} closed`
+                        );
+                        await refreshGovernanceData();
+                      } else {
+                        setGovError(extractApiError(res.body, "Paper tick failed"));
+                      }
+                    } catch (err) {
+                      setGovError(String(err));
+                    } finally {
+                      setPaperTickRunning(false);
+                    }
+                  }}
+                  className="rounded bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-50"
+                >
+                  {paperTickRunning ? "Stepping..." : "Step Paper Tick"}
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="flatten-positions-btn"
+                  disabled={flattenRunning}
+                  onClick={async () => {
+                    setFlattenRunning(true);
+                    setGovMessage(null);
+                    setGovError(null);
+                    try {
+                      const res = await apiClient.paper.flatten({
+                        body: { reason: "Operator cockpit flatten" }
+                      });
+                      if (res.status === 200) {
+                        setGovMessage(`Flattened ${res.body.flattenedCount} paper positions`);
+                        await refreshGovernanceData();
+                      } else {
+                        setGovError(extractApiError(res.body, "Flatten failed"));
+                      }
+                    } catch (err) {
+                      setGovError(String(err));
+                    } finally {
+                      setFlattenRunning(false);
+                    }
+                  }}
+                  className="rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-50"
+                >
+                  {flattenRunning ? "Flattening..." : "Emergency Flatten All"}
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="trip-kill-switch-btn"
+                  onClick={async () => {
+                    setGovMessage(null);
+                    setGovError(null);
+                    const newStatus =
+                      paperCircuitBreaker?.status === "MANUAL_KILL_SWITCH"
+                        ? "NORMAL"
+                        : "MANUAL_KILL_SWITCH";
+                    const res = await apiClient.paper.setCircuitBreaker({
+                      body: {
+                        status: newStatus,
+                        reason:
+                          newStatus === "NORMAL"
+                            ? "Operator re-armed system"
+                            : "Manual operator emergency halt"
+                      }
+                    });
+                    if (res.status === 200) {
+                      setGovMessage(`Circuit breaker updated to ${res.body.circuitBreaker.status}`);
+                      await refreshGovernanceData();
+                    } else {
+                      setGovError(extractApiError(res.body, "Failed to toggle kill switch"));
+                    }
+                  }}
+                  className="rounded border border-rose-500/60 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-500/20"
+                >
+                  {paperCircuitBreaker?.status === "MANUAL_KILL_SWITCH"
+                    ? "Re-Arm Circuit Breaker"
+                    : "Trip Manual Kill-Switch"}
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="evaluate-promotion-btn"
+                  onClick={async () => {
+                    setGovMessage(null);
+                    setGovError(null);
+                    const res = await apiClient.promotion.evaluate({
+                      body: { strategyId: selectedStrategyId }
+                    });
+                    if (res.status === 200) {
+                      setGovMessage(
+                        `Strategy ${res.body.promotion.strategyId} evaluated: Current Stage = ${res.body.promotion.currentStage}, Next = ${res.body.promotion.eligibleNextStage ?? "None"}`
+                      );
+                      await refreshGovernanceData();
+                    } else {
+                      setGovError(extractApiError(res.body, "Failed to evaluate promotion"));
+                    }
+                  }}
+                  className="rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                >
+                  Evaluate ADR-0007 Promotion
+                </button>
+              </div>
+
+              {/* Open Positions Table */}
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                  Open Paper Positions ({openPositions.length}) — Attached Protective Stops
+                </h4>
+                <div className="mt-2 overflow-x-auto">
+                  <table data-testid="open-positions-table" className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-700/60 opacity-70">
+                        <th className="py-1.5">Position ID</th>
+                        <th className="py-1.5">Strategy</th>
+                        <th className="py-1.5">Instrument</th>
+                        <th className="py-1.5">Side</th>
+                        <th className="py-1.5">Contracts</th>
+                        <th className="py-1.5">Entry Price</th>
+                        <th className="py-1.5 text-rose-400">Protective Stop</th>
+                        <th className="py-1.5">Take Profit</th>
+                        <th className="py-1.5">Initial Risk (1R)</th>
+                        <th className="py-1.5">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono-tabular">
+                      {openPositions.map((pos) => (
+                        <tr key={pos.positionId} className="border-b border-slate-800/60">
+                          <td className="py-1.5">{pos.positionId}</td>
+                          <td className="py-1.5 text-teal-400">{pos.strategyId}</td>
+                          <td className="py-1.5">{pos.instrumentId}</td>
+                          <td className="py-1.5 uppercase font-semibold">
+                            <span
+                              className={pos.side === "long" ? "text-emerald-400" : "text-rose-400"}
+                            >
+                              {pos.side}
+                            </span>
+                          </td>
+                          <td className="py-1.5">{pos.contracts}</td>
+                          <td className="py-1.5">{pos.entryPrice}</td>
+                          <td className="py-1.5 font-bold text-rose-400">
+                            {pos.protectiveStopPrice}
+                          </td>
+                          <td className="py-1.5">{pos.takeProfitPrice ?? "-"}</td>
+                          <td className="py-1.5">{pos.initialRiskUsdt} USDT</td>
+                          <td className="py-1.5">
+                            <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">
+                              {pos.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {openPositions.length === 0 && (
+                        <tr>
+                          <td colSpan={10} className="py-3 text-center opacity-60">
+                            No open paper positions. Step paper ticks with active strategy signals.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Strategy Promotion Ladder Status */}
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                  Quantitative Promotion Ladder (ADR-0007)
+                </h4>
+                <div className="mt-2 overflow-x-auto">
+                  <table data-testid="promotion-ladder-table" className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-700/60 opacity-70">
+                        <th className="py-1.5">Strategy</th>
+                        <th className="py-1.5">Current Stage</th>
+                        <th className="py-1.5">Replay Gate</th>
+                        <th className="py-1.5">Paper Trades</th>
+                        <th className="py-1.5">Paper Drawdown</th>
+                        <th className="py-1.5">Eligible Next Stage</th>
+                        <th className="py-1.5">Demotion Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono-tabular">
+                      {promotions.map((promo) => (
+                        <tr key={promo.strategyId} className="border-b border-slate-800/60">
+                          <td className="py-1.5 text-teal-400">{promo.strategyId}</td>
+                          <td className="py-1.5 font-bold text-sky-400">{promo.currentStage}</td>
+                          <td className="py-1.5">
+                            <span
+                              className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                promo.replayGatePassed
+                                  ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                                  : "border-amber-500/40 bg-amber-500/15 text-amber-400"
+                              }`}
+                            >
+                              {promo.replayGatePassed ? "PASS" : "HOLD"}
+                            </span>
+                          </td>
+                          <td className="py-1.5">{promo.paperTradesCount}</td>
+                          <td className="py-1.5">{promo.paperDrawdownPct.toFixed(2)}%</td>
+                          <td className="py-1.5 text-emerald-400">
+                            {promo.eligibleNextStage ?? "None"}
+                          </td>
+                          <td className="py-1.5 text-rose-400">{promo.demotionReason ?? "None"}</td>
+                        </tr>
+                      ))}
+                      {promotions.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="py-3 text-center opacity-60">
+                            No strategy promotion evaluations recorded yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </section>
 

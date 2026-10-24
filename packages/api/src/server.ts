@@ -3,6 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
+  PromotionLadderEvaluator,
   ScaledDecimal,
   SystemClock,
   createDefaultConfig,
@@ -18,6 +19,7 @@ import { DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
+import { PaperBroker } from "./paper-broker.js";
 import { PINO_REDACT_PATHS } from "./redact.js";
 import {
   AuthManager,
@@ -92,6 +94,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     clock
   });
 
+  const paperBroker = new PaperBroker({
+    clock,
+    ledgerRepo: dataStore.ledgerRepo,
+    paperAccountRepo: dataStore.paperAccountRepo,
+    getRiskConfig: () => getActiveSnapshot().config.risk
+  });
+
   const getUptimeSeconds = (): number =>
     Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
 
@@ -110,6 +119,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   });
 
   app.addHook("onClose", async () => {
+    const active = getActiveSnapshot();
+    if (active.config.system.shutdownPolicy === "flatten") {
+      paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+    }
     dataStore.close();
   });
 
@@ -933,6 +946,222 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           status: 200,
           body: {
             experiments: [...dataStore.experimentRepo.listExperiments(50)]
+          }
+        };
+      }
+    },
+
+    paper: {
+      getStatus: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        return {
+          status: 200,
+          body: {
+            circuitBreaker: paperBroker.getCircuitBreaker(),
+            trialBalance: dataStore.ledgerRepo.getTrialBalance(),
+            openPositions: [...paperBroker.getOpenPositions()],
+            recentOrders: [...paperBroker.getOrders(20)],
+            promotions: [...dataStore.promotionRepo.listPromotions()]
+          }
+        };
+      },
+
+      executeTick: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const strategy = resolveStrategyById(body.strategyId);
+        if (!strategy) {
+          return { status: 400, body: { error: `Strategy ${body.strategyId} not found` } };
+        }
+
+        const bars = dataStore.marketDataRepo.getConfirmedBarsInRange({
+          instrumentId: body.instrumentId,
+          timeframe: "1H",
+          fromOpenTs: 0,
+          toCloseTs: clock.nowMs()
+        });
+
+        if (bars.length === 0) {
+          return {
+            status: 400,
+            body: { error: `No confirmed bars available for ${body.instrumentId}` }
+          };
+        }
+
+        const latestBar = bars[bars.length - 1];
+        if (!latestBar) {
+          return {
+            status: 400,
+            body: { error: `No valid latest bar for ${body.instrumentId}` }
+          };
+        }
+
+        // Settle funding rates and pass recent funding to tick
+        const fundingRates = dataStore.marketDataRepo.getSettledFundingInRange({
+          instrumentId: body.instrumentId,
+          fromTs: 0,
+          toTs: clock.nowMs()
+        });
+
+        const tickResult = paperBroker.executeConfirmedBarTick({
+          bar: latestBar,
+          strategy,
+          featureBars: { "1H": bars },
+          settledFundingRates: fundingRates
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "paper.execute_tick",
+          riskClass: "safe",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            instrumentId: body.instrumentId,
+            strategyId: body.strategyId,
+            positionsOpened: tickResult.positionsOpened.length,
+            positionsClosed: tickResult.positionsClosed.length,
+            vetoedCount: tickResult.vetoedProposals.length
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            positionsOpenedCount: tickResult.positionsOpened.length,
+            positionsClosedCount: tickResult.positionsClosed.length,
+            trialBalance: tickResult.trialBalance,
+            openPositions: [...paperBroker.getOpenPositions()]
+          }
+        };
+      },
+
+      flatten: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const closed = paperBroker.flattenAllPositions(body.reason);
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "paper.flatten_all",
+          riskClass: "confirm",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            reason: body.reason,
+            flattenedCount: closed.length
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            flattenedCount: closed.length
+          }
+        };
+      },
+
+      setCircuitBreaker: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const updated = paperBroker.setCircuitBreaker({
+          status: body.status,
+          reason: body.reason,
+          triggeredAtMs: clock.nowMs(),
+          cooldownUntilMs: body.status === "NORMAL" ? null : clock.nowMs() + 3600_000,
+          updatedBy: ingress.session.username ?? "system"
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "paper.set_circuit_breaker",
+          riskClass: "confirm",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            status: body.status,
+            reason: body.reason
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            circuitBreaker: updated
+          }
+        };
+      }
+    },
+
+    promotion: {
+      evaluate: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const active = getActiveSnapshot();
+        const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
+        const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
+        const currentStage = existingPromo?.currentStage ?? "Research";
+
+        // Find latest experiment for strategy
+        const experiments = dataStore.experimentRepo.listExperiments(50);
+        const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
+
+        // Compute actual paper trades count and drawdown from ledger
+        const allPositions = dataStore.paperAccountRepo.listAllPositions();
+        const strategyPositions = allPositions.filter(
+          (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
+        );
+        const actualPaperTradesCount = strategyPositions.length;
+
+        const evaluated = evaluator.evaluate({
+          strategyId: body.strategyId,
+          currentStage,
+          latestExperiment: latestExp,
+          paperTradesCount: actualPaperTradesCount,
+          paperDrawdownPct: existingPromo?.paperDrawdownPct ?? 0,
+          asOfMs: clock.nowMs()
+        });
+
+        const saved = dataStore.promotionRepo.upsertPromotion(evaluated);
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "promotion.evaluate",
+          riskClass: "safe",
+          configHash: active.configHash,
+          details: {
+            strategyId: body.strategyId,
+            currentStage: saved.currentStage,
+            eligibleNextStage: saved.eligibleNextStage,
+            replayGatePassed: saved.replayGatePassed
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            promotion: saved
           }
         };
       }

@@ -5,13 +5,18 @@ import {
   AuditEventRecordSchema,
   BackupRecordSchema,
   BarTimeframeSchema,
+  CircuitBreakerRecordSchema,
   ConfigSnapshotRecordSchema,
   DataSnapshotMetadataSchema,
   ExperimentRecordSchema,
+  LedgerTrialBalanceSchema,
   LookbackValidationResultSchema,
   NotificationDeliveryResultSchema,
+  PaperOrderRecordSchema,
+  PaperPositionRecordSchema,
   SecretKeyNameSchema,
-  SecretMetadataRecordSchema
+  SecretMetadataRecordSchema,
+  StrategyPromotionRecordSchema
 } from "./ports.js";
 
 const c = initContract();
@@ -405,6 +410,96 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "List recorded replay experiments from the append-only ExperimentRegistry"
+    }
+  },
+  paper: {
+    getStatus: {
+      method: "GET",
+      path: "/api/v1/paper/status",
+      responses: {
+        200: z.object({
+          circuitBreaker: CircuitBreakerRecordSchema,
+          trialBalance: LedgerTrialBalanceSchema,
+          openPositions: z.array(PaperPositionRecordSchema),
+          recentOrders: z.array(PaperOrderRecordSchema),
+          promotions: z.array(StrategyPromotionRecordSchema)
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Get live Paper Execution status, circuit breaker, ledger balance, and positions"
+    },
+    executeTick: {
+      method: "POST",
+      path: "/api/v1/paper/execute-tick",
+      body: z.object({
+        instrumentId: z.string().default("BTC-USDT-SWAP"),
+        strategyId: z.string().default("donchian-trend")
+      }),
+      responses: {
+        200: z.object({
+          ok: z.literal(true),
+          positionsOpenedCount: z.number().int().nonnegative(),
+          positionsClosedCount: z.number().int().nonnegative(),
+          trialBalance: LedgerTrialBalanceSchema,
+          openPositions: z.array(PaperPositionRecordSchema)
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Simulate a live confirmed bar tick through RiskGuardian and PaperBroker"
+    },
+    flatten: {
+      method: "POST",
+      path: "/api/v1/paper/flatten",
+      body: z.object({
+        reason: z.string().min(3).max(500).default("Manual operator flatten")
+      }),
+      responses: {
+        200: z.object({
+          ok: z.literal(true),
+          flattenedCount: z.number().int().nonnegative()
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Emergency flatten all open paper positions"
+    },
+    setCircuitBreaker: {
+      method: "POST",
+      path: "/api/v1/paper/circuit-breaker",
+      body: z.object({
+        status: z.enum([
+          "NORMAL",
+          "DAILY_LOSS_HALT",
+          "WEEKLY_LOSS_HALT",
+          "DRAWDOWN_KILL_SWITCH",
+          "MANUAL_KILL_SWITCH"
+        ]),
+        reason: z.string().min(3).max(500)
+      }),
+      responses: {
+        200: z.object({
+          circuitBreaker: CircuitBreakerRecordSchema
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Manually arm or trip the system CircuitBreaker / Kill Switch"
+    }
+  },
+  promotion: {
+    evaluate: {
+      method: "POST",
+      path: "/api/v1/promotion/evaluate",
+      body: z.object({
+        strategyId: z.string().min(1)
+      }),
+      responses: {
+        200: z.object({
+          promotion: StrategyPromotionRecordSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Evaluate ADR-0007 promotion gates for a strategy"
     }
   }
 });
