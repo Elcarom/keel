@@ -538,23 +538,6 @@ export interface PaperTickResult {
   readonly trialBalance: LedgerTrialBalance;
 }
 
-export interface Broker {
-  getCircuitBreaker(): CircuitBreakerRecord;
-  setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
-  getOpenPositions(): readonly PaperPositionRecord[];
-  getAllPositions(limit?: number): readonly PaperPositionRecord[];
-  getOrders(limit?: number): readonly PaperOrderRecord[];
-  flattenAllPositions(reason: string): readonly PaperPositionRecord[];
-  executeConfirmedBarTick(params: {
-    readonly bar: ConfirmedBar;
-    readonly strategy?: unknown;
-    readonly spec?: unknown;
-    readonly featureBars?:
-      Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
-    readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
-  }): PaperTickResult;
-}
-
 export interface PaperTickResult {
   readonly asOfMs: number;
   readonly barEvaluated: ConfirmedBar | null;
@@ -579,4 +562,56 @@ export interface Broker {
       Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
     readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
   }): PaperTickResult;
+}
+
+export const ContextDirectionalBiasSchema = z.enum(["bullish", "bearish", "neutral"]);
+export type ContextDirectionalBias = z.infer<typeof ContextDirectionalBiasSchema>;
+
+export const ContextFeatureRecordSchema = z.object({
+  featureId: z.string().min(1),
+  source: z.string().min(1),
+  headline: z.string().min(1),
+  directionalBias: ContextDirectionalBiasSchema,
+  noveltyScore: z.number().min(0).max(1),
+  confidenceScore: z.number().min(0).max(1),
+  asOfMs: z.number().int().nonnegative(),
+  affectedInstruments: z.array(z.string()),
+  tags: z.array(z.string()),
+  trainingContaminated: z.boolean().default(false)
+});
+export type ContextFeatureRecord = z.infer<typeof ContextFeatureRecordSchema>;
+
+export interface LlmCallBudgetReservation {
+  readonly reservationId: string;
+  readonly featureName: string;
+  readonly estimatedTokens: number;
+  readonly estimatedCostUsd: number;
+  readonly approved: boolean;
+  readonly rejectionReason?: string | undefined;
+}
+
+export interface LlmCompletionRequest {
+  readonly featureName: "contextAnalyst" | "shadowAdvisor" | "strategyLab" | "postTradeAndCopilot";
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly asOfMs: number;
+  readonly modelCutoffDate?: string | undefined;
+}
+
+export interface LlmCompletionResponse<T = unknown> {
+  readonly parsed: T;
+  readonly rawText: string;
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly actualCostUsd: number;
+  readonly trainingContaminated: boolean;
+}
+
+export interface LlmGateway {
+  completeStructured<T>(
+    request: LlmCompletionRequest,
+    schema: z.ZodType<T>
+  ): Promise<LlmCompletionResponse<T>>;
+  getRemainingDailyBudgetUsd(): number;
+  getRemainingMonthlyBudgetUsd(): number;
 }

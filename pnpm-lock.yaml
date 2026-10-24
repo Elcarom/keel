@@ -39,11 +39,23 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.5)(lightningcss@1.32.0)
 
+  packages/ai:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
   packages/api:
     dependencies:
       '@fastify/static':
         specifier: ^8.0.4
         version: 8.3.0
+      '@keel/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@keel/core':
         specifier: workspace:*
         version: link:../core

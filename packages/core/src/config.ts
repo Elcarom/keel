@@ -97,6 +97,7 @@ export const AiGatewayConfigSchema = z.object({
   postTradeAnalystEnabled: z.boolean().default(false),
   eventGateAdvisorEnabled: z.boolean().default(true)
 });
+export type AiGatewayConfig = z.infer<typeof AiGatewayConfigSchema>;
 
 export const NotificationsConfigSchema = z.object({
   discordEnabled: z.boolean().default(false),
