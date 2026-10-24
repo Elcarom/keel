@@ -1,0 +1,9 @@
+# 0007. Quantitative Promotion-Ladder Gates and Contamination-Free AI Evaluation
+
+**Status**: accepted
+
+Every Strategy and AI capability progresses through a six-stage Promotion Ladder (`Idea → Replay-Validated → Forward Shadow → Paper Capital → Live-Ramp → Live`) governed by deterministic gates and automatic demotion rules:
+
+1. **Replay-Validated Gate (Strategies)**: Requires `≥ 150` trades across `≥ 5` purged and embargoed walk-forward folds over 3 years plus a locked 6-month holdout, net OOS Sharpe `≥ 1.0`, Deflated Sharpe Ratio confidence `≥ 0.90` across all cumulative trials recorded in the Experiment Registry, `PBO ≤ 0.20`, and positive expectancy (`E[R] > 0`) under a `2.0x` cost-stress multiplier.
+2. **Training-Contamination Rule (AI Capabilities)**: Because LLMs may have memorized historical market outcomes prior to their `trainingCutoffDate`, any historical replay invoking an unrecorded LLM call on pre-cutoff timestamps is flagged as `Training Contamination` and excluded from promotion evidence. AI capabilities (`Shadow Advisor`, `EventGateAdvisor`, etc.) can only earn promotion on uncontaminated forward decisions (`Forward Shadow` and `Paper Capital`) where the AI pick and the deterministic `Baseline Chooser` disagreed across `≥ 50` decisions with a one-sided bootstrap `p < 0.10` (`ΔE[R] > 0` net of costs).
+3. **Automatic Demotion**: Strategies in `Live` or `Live-Ramp` (`0.25x → 0.50x → 1.0x`) are automatically flattened and demoted to `Forward Shadow` if realized drawdown reaches `12%` (or `1.5×` the 95th-percentile replay drawdown), or demoted to `Paper Capital` if realized implementation shortfall exceeds `2.5×` modeled cost over 20 fills. Active AI advisors are automatically reverted to the deterministic `Baseline Chooser` if their rolling 50-decision net value-add drops below `-0.15R` per decision.

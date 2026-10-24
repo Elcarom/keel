@@ -1,0 +1,34 @@
+# Read-only reference inspiration (must never ship)
+reference/
+
+# Dependencies & build outputs
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & local secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Local runtime data & SQLite WAL files
+/data/
+/backups/
+*.db
+*.db-shm
+*.db-wal
+
+# Test & coverage artifacts
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# OS & editor files
+.DS_Store
+Thumbs立
+*.log
+.scratch/
