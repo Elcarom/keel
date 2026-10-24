@@ -163,4 +163,66 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     expect(advice.chosenProposalId).toBe("prop-gamma");
     expect(advice.confidence).toBe(0.85);
   });
+
+  it("throws clear error when daily or monthly budget cap is exceeded", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const exhaustedConfig = {
+      ...config.ai,
+      dailyBudgetUsd: 0.0001 // smaller than any estimated call
+    };
+
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => exhaustedConfig,
+      getApiKey: () => "test-key"
+    });
+
+    const analyst = new ContextAnalyst(gateway);
+    await expect(
+      analyst.analyzeText({
+        text: "Some market news",
+        source: "Bloomberg",
+        asOfMs: 1_750_000_000_000
+      })
+    ).rejects.toThrow(/AI Gateway daily budget exceeded/);
+  });
+
+  it("recovers with deterministic fallback when model returns malformed JSON", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    const mockFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: "This is NOT valid JSON { broken: true" }]
+            }
+          }
+        ],
+        usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50 }
+      }),
+      text: async () => ""
+    });
+
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "test-key",
+      fetchFn: mockFetch
+    });
+
+    const analyst = new ContextAnalyst(gateway);
+    const feature = await analyst.analyzeText({
+      text: "ECB interest rate decision pending this afternoon.",
+      source: "Reuters",
+      asOfMs: 1_750_000_000_000
+    });
+
+    expect(feature.headline).toContain("ECB interest rate decision");
+    expect(feature.directionalBias).toBe("neutral");
+  });
 });

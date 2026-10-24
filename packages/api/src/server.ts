@@ -11,12 +11,13 @@ import {
   keelApiContract,
   type Clock,
   type KeelConfig,
-  type LookbackValidationResult
+  type LookbackValidationResult,
+  type LlmGateway
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { ContextAnalyst, GeminiLlmGateway, ShadowAdvisor } from "@keel/ai";
 import { ReplayEngine } from "@keel/replay";
-import { DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
+import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
@@ -40,6 +41,7 @@ export interface KeelServerOptions {
   readonly initialBootstrapToken?: string | undefined;
   readonly onBootstrapToken?: ((token: string) => void) | undefined;
   readonly webhookFetchFn?: WebhookFetchFn | undefined;
+  readonly llmGateway?: LlmGateway | undefined;
   readonly webDistPath?: string | undefined;
   readonly logger?: boolean | undefined;
 }
@@ -102,12 +104,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     getRiskConfig: () => getActiveSnapshot().config.risk
   });
 
-  const llmGateway = new GeminiLlmGateway({
-    clock,
-    getConfig: () => getActiveSnapshot().config.ai,
-    getApiKey: () =>
-      secretVault.getDecryptedSecret("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
-  });
+  const llmGateway =
+    options.llmGateway ??
+    new GeminiLlmGateway({
+      clock,
+      getConfig: () => getActiveSnapshot().config.ai,
+      getApiKey: () =>
+        secretVault.getDecryptedSecret("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
+    });
 
   const contextAnalyst = new ContextAnalyst(llmGateway);
   const shadowAdvisor = new ShadowAdvisor(llmGateway);
@@ -1269,7 +1273,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         });
 
         // Evaluate deterministic baseline chooser
-        const chooser = new (await import("@keel/strategy")).BaselineChooser();
+        const chooser = new BaselineChooser();
         const baselineChosen = chooser.choose([menu]);
 
         // Evaluate ShadowAdvisor

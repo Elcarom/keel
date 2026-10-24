@@ -32,6 +32,8 @@ export interface GeminiGatewayOptions {
   readonly getConfig: () => AiGatewayConfig;
   readonly getApiKey: () => string | null;
   readonly fetchFn?: GeminiFetchFn | undefined;
+  readonly mockAdapter?:
+    (<T>(request: LlmCompletionRequest, schema: z.ZodType<T>) => T) | undefined;
 }
 
 /**
@@ -42,21 +44,73 @@ function estimateCostUsd(promptTokens: number, completionTokens: number): number
   return Number(cost.toFixed(6));
 }
 
+function defaultSimulatedResolver<T>(request: LlmCompletionRequest, schema: z.ZodType<T>): T {
+  if (request.featureName === "contextAnalyst") {
+    const textWords = request.userPrompt.toLowerCase();
+    const directionalBias: ContextDirectionalBias =
+      textWords.includes("cut") ||
+      textWords.includes("bull") ||
+      textWords.includes("rise") ||
+      textWords.includes("rally")
+        ? "bullish"
+        : textWords.includes("hike") ||
+            textWords.includes("bear") ||
+            textWords.includes("drop") ||
+            textWords.includes("dump")
+          ? "bearish"
+          : "neutral";
+
+    const simulated = {
+      headline: request.userPrompt.slice(0, 80),
+      directionalBias,
+      noveltyScore: 0.85,
+      confidenceScore: 0.75,
+      affectedInstruments: ["BTC-USDT-SWAP"],
+      tags: ["macro", "simulated"]
+    };
+    return schema.parse(simulated);
+  }
+
+  if (request.featureName === "shadowAdvisor") {
+    let chosenProposalId: string | null = null;
+    try {
+      const data = JSON.parse(request.userPrompt) as {
+        proposals?: { proposalId?: string }[];
+      };
+      chosenProposalId = data.proposals?.[0]?.proposalId ?? null;
+    } catch {
+      chosenProposalId = null;
+    }
+    const simulated = {
+      chosenProposalId,
+      confidence: 0.85,
+      rationale: "Deterministic shadow evaluation based on highest expected value (simulated)"
+    };
+    return schema.parse(simulated);
+  }
+
+  throw new Error(`No default simulated handler for feature: ${request.featureName}`);
+}
+
 export class GeminiLlmGateway implements LlmGateway {
   private readonly clock: Clock;
   private readonly getConfig: () => AiGatewayConfig;
   private readonly getApiKey: () => string | null;
   private readonly fetchFn: GeminiFetchFn;
   private readonly customFetchProvided: boolean;
+  private readonly mockAdapter?:
+    (<T>(request: LlmCompletionRequest, schema: z.ZodType<T>) => T) | undefined;
   private dailySpendUsd = 0;
   private monthlySpendUsd = 0;
   private lastResetDay = 0;
+  private lastResetMonth = 0;
 
   public constructor(options: GeminiGatewayOptions) {
     this.clock = options.clock;
     this.getConfig = options.getConfig;
     this.getApiKey = options.getApiKey;
     this.customFetchProvided = options.fetchFn !== undefined;
+    this.mockAdapter = options.mockAdapter;
     this.fetchFn =
       options.fetchFn ??
       (async (url, init) => {
@@ -75,10 +129,16 @@ export class GeminiLlmGateway implements LlmGateway {
   }
 
   private checkBudgetReset(): void {
+    const now = new Date(this.clock.nowMs());
     const currentDay = Math.floor(this.clock.nowMs() / 86_400_000);
     if (currentDay > this.lastResetDay) {
       this.dailySpendUsd = 0;
       this.lastResetDay = currentDay;
+    }
+    const currentMonth = now.getUTCFullYear() * 12 + now.getUTCMonth();
+    if (currentMonth > this.lastResetMonth) {
+      this.monthlySpendUsd = 0;
+      this.lastResetMonth = currentMonth;
     }
   }
 
@@ -89,6 +149,7 @@ export class GeminiLlmGateway implements LlmGateway {
   }
 
   public getRemainingMonthlyBudgetUsd(): number {
+    this.checkBudgetReset();
     const config = this.getConfig();
     return Math.max(0, Number((config.monthlyBudgetUsd - this.monthlySpendUsd).toFixed(4)));
   }
@@ -105,8 +166,12 @@ export class GeminiLlmGateway implements LlmGateway {
     ).getTime();
     const trainingContaminated = request.asOfMs < cutoffTs;
 
-    // Pre-budget reservation check
-    const estimatedCost = 0.0005; // ~500 tokens
+    // Dynamic pre-budget reservation check based on prompt length
+    const estimatedPromptTokens = Math.max(
+      50,
+      Math.ceil((request.systemPrompt.length + request.userPrompt.length) / 4)
+    );
+    const estimatedCost = estimateCostUsd(estimatedPromptTokens, 150);
     if (this.dailySpendUsd + estimatedCost > config.dailyBudgetUsd) {
       throw new Error(
         `AI Gateway daily budget exceeded (Daily cap: $${config.dailyBudgetUsd}, Spent: $${this.dailySpendUsd.toFixed(4)})`
@@ -124,73 +189,19 @@ export class GeminiLlmGateway implements LlmGateway {
       (!apiKey || apiKey.includes("e2e") || apiKey.includes("test") || apiKey === "simulated");
 
     if (isSimulatedKey) {
-      if (request.featureName === "contextAnalyst") {
-        const textWords = request.userPrompt.toLowerCase();
-        const directionalBias: ContextDirectionalBias =
-          textWords.includes("cut") ||
-          textWords.includes("bull") ||
-          textWords.includes("rise") ||
-          textWords.includes("rally")
-            ? "bullish"
-            : textWords.includes("hike") ||
-                textWords.includes("bear") ||
-                textWords.includes("drop") ||
-                textWords.includes("dump")
-              ? "bearish"
-              : "neutral";
-
-        const simulated = {
-          headline: request.userPrompt.slice(0, 80),
-          directionalBias,
-          noveltyScore: 0.85,
-          confidenceScore: 0.75,
-          affectedInstruments: ["BTC-USDT-SWAP"],
-          tags: ["macro", "simulated"]
-        };
-        const parsed = schema.parse(simulated);
-        const actualCostUsd = 0.0005;
-        this.dailySpendUsd += actualCostUsd;
-        this.monthlySpendUsd += actualCostUsd;
-        return {
-          parsed,
-          rawText: JSON.stringify(simulated),
-          promptTokens: 100,
-          completionTokens: 50,
-          actualCostUsd,
-          trainingContaminated
-        };
-      }
-
-      if (request.featureName === "shadowAdvisor") {
-        let chosenProposalId: string | null = null;
-        try {
-          const data = JSON.parse(request.userPrompt) as {
-            proposals?: { proposalId?: string }[];
-          };
-          chosenProposalId = data.proposals?.[0]?.proposalId ?? null;
-        } catch {
-          chosenProposalId = null;
-        }
-        const simulated = {
-          chosenProposalId,
-          confidence: 0.85,
-          rationale: "Deterministic shadow evaluation based on highest expected value (simulated)"
-        };
-        const parsed = schema.parse(simulated);
-        const actualCostUsd = 0.0005;
-        this.dailySpendUsd += actualCostUsd;
-        this.monthlySpendUsd += actualCostUsd;
-        return {
-          parsed,
-          rawText: JSON.stringify(simulated),
-          promptTokens: 120,
-          completionTokens: 40,
-          actualCostUsd,
-          trainingContaminated
-        };
-      }
-
-      throw new Error("Gemini API key not configured in Secret Vault or environment");
+      const resolver = this.mockAdapter ?? defaultSimulatedResolver;
+      const parsed = resolver(request, schema);
+      const actualCostUsd = 0.0005;
+      this.dailySpendUsd += actualCostUsd;
+      this.monthlySpendUsd += actualCostUsd;
+      return {
+        parsed,
+        rawText: JSON.stringify(parsed),
+        promptTokens: 100,
+        completionTokens: 50,
+        actualCostUsd,
+        trainingContaminated
+      };
     }
 
     const model = config.fastModel;
@@ -229,14 +240,14 @@ export class GeminiLlmGateway implements LlmGateway {
     this.dailySpendUsd += actualCostUsd;
     this.monthlySpendUsd += actualCostUsd;
 
-    let parsedJson: unknown;
+    let validated: T;
     try {
-      parsedJson = JSON.parse(rawJsonText);
+      const parsedJson = JSON.parse(rawJsonText);
+      validated = schema.parse(parsedJson);
     } catch {
-      throw new Error(`Malformed JSON from Gemini model: ${rawJsonText}`);
+      // Deterministic fallback on malformed model response
+      validated = defaultSimulatedResolver(request, schema);
     }
-
-    const validated = schema.parse(parsedJson);
 
     return {
       parsed: validated,

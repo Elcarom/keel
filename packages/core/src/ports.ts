@@ -538,15 +538,6 @@ export interface PaperTickResult {
   readonly trialBalance: LedgerTrialBalance;
 }
 
-export interface PaperTickResult {
-  readonly asOfMs: number;
-  readonly barEvaluated: ConfirmedBar | null;
-  readonly positionsClosed: readonly PaperPositionRecord[];
-  readonly positionsOpened: readonly PaperPositionRecord[];
-  readonly vetoedProposals: readonly { proposal: Proposal; reason: string }[];
-  readonly trialBalance: LedgerTrialBalance;
-}
-
 export interface Broker {
   getCircuitBreaker(): CircuitBreakerRecord;
   setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;

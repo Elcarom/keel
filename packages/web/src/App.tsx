@@ -1410,6 +1410,67 @@ export function App() {
                 </div>
               </div>
 
+              {/* LLM Pacing & Model Selection Progress Panel (AC2) */}
+              <div className="mt-4 grid gap-4 rounded border border-slate-700/50 bg-slate-900/30 p-3 md:grid-cols-2">
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="font-medium text-slate-300">Daily Gemini Budget</span>
+                    <span className="font-mono text-emerald-400">
+                      $
+                      {(
+                        (aiStatus?.dailyBudgetUsd ?? 0.75) -
+                        (aiStatus?.remainingDailyBudgetUsd ?? 0.75)
+                      ).toFixed(4)}{" "}
+                      / ${(aiStatus?.dailyBudgetUsd ?? 0.75).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-slate-800">
+                    <div
+                      data-testid="ai-daily-spend-progress"
+                      className="h-full bg-emerald-400 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (((aiStatus?.dailyBudgetUsd ?? 0.75) -
+                            (aiStatus?.remainingDailyBudgetUsd ?? 0.75)) /
+                            (aiStatus?.dailyBudgetUsd ?? 0.75)) *
+                            100
+                        )}%`
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="font-medium text-slate-300">Monthly Gemini Budget</span>
+                    <span className="font-mono text-sky-400">
+                      $
+                      {(
+                        (aiStatus?.monthlyBudgetUsd ?? 15.0) -
+                        (aiStatus?.remainingMonthlyBudgetUsd ?? 15.0)
+                      ).toFixed(4)}{" "}
+                      / ${(aiStatus?.monthlyBudgetUsd ?? 15.0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded bg-slate-800">
+                    <div
+                      data-testid="ai-monthly-spend-progress"
+                      className="h-full bg-sky-400 transition-all duration-300"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (((aiStatus?.monthlyBudgetUsd ?? 15.0) -
+                            (aiStatus?.remainingMonthlyBudgetUsd ?? 15.0)) /
+                            (aiStatus?.monthlyBudgetUsd ?? 15.0)) *
+                            100
+                        )}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* AI Context Analyst: Unstructured Text Ingestion */}
               <div className="mt-4">
                 <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
