@@ -99,7 +99,7 @@ jobs:
           severity: "CRITICAL,HIGH"
 
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0.17.8
+        uses: anchore/sbom-action@v0.24.3
         with:
           image: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
           format: cyclonedx-json
