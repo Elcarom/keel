@@ -36,6 +36,7 @@ export interface StopRiskSizingInput {
 
 export type SizingVetoReason =
   | "non_positive_equity"
+  | "non_positive_risk_fraction"
   | "invalid_stop_direction"
   | "min_lot_exceeds_risk_cap"
   | "min_lot_exceeds_leverage_cap";
@@ -70,8 +71,12 @@ export function sizeByStopRisk(input: StopRiskSizingInput): StopRiskSizingResult
     maxGrossLeverage
   } = input;
 
-  if (!strategyEquityQuote.isPositive() || !riskFraction.isPositive()) {
+  if (!strategyEquityQuote.isPositive()) {
     return { ok: false, vetoReason: "non_positive_equity" };
+  }
+
+  if (!riskFraction.isPositive()) {
+    return { ok: false, vetoReason: "non_positive_risk_fraction" };
   }
 
   // Round protective stop conservatively to tick (away from entry so stop loss is never optimistic)
@@ -105,10 +110,10 @@ export function sizeByStopRisk(input: StopRiskSizingInput): StopRiskSizingResult
 
   const rawByRisk = riskBudgetQuote
     .divFloor(riskPerContractQuote)
-    .roundDownToStep(instrument.lotSize);
+    .roundDownToLot(instrument.lotSize);
   const rawByLeverage = maxNotionalQuote
     .divFloor(notionalPerContractQuote)
-    .roundDownToStep(instrument.lotSize);
+    .roundDownToLot(instrument.lotSize);
 
   if (rawByRisk.lt(instrument.minOrderSize)) {
     return { ok: false, vetoReason: "min_lot_exceeds_risk_cap" };

@@ -32,7 +32,7 @@ describe("@keel/api — Fastify Server, Observability, and Cloudflare Tunnel Con
     await app.close();
   });
 
-  it("serves /api/v1/system/status via ts-rest contract and extracts CF-Connecting-IP (ADR-0003, ADR-0005)", async () => {
+  it("serves /api/v1/system/status via ts-rest contract and extracts CF-Connecting-IP & X-Forwarded-Proto (ADR-0003, ADR-0005)", async () => {
     const clock = new ManualClock(1_730_000_000_000);
     const config = createDefaultConfig();
     const app = await createKeelServer({ config, clock });
@@ -58,6 +58,7 @@ describe("@keel/api — Fastify Server, Observability, and Cloudflare Tunnel Con
       serverTimeIso: "2024-10-27T03:34:05.000Z",
       uptimeSeconds: 45,
       cloudflareTunnelActive: true,
+      forwardedProto: "https",
       clientIp: "203.0.113.42",
       status: "ok"
     });
@@ -65,14 +66,17 @@ describe("@keel/api — Fastify Server, Observability, and Cloudflare Tunnel Con
     await app.close();
   });
 
-  it("redacts sensitive credentials and tokens from structured log payloads", () => {
+  it("redacts both exact and prefixed credential/token keys from structured log payloads", () => {
     const rawPayload = {
       event: "config_updated",
       apiKey: "okx-live-key-12345",
+      okxApiKey: "okx-prefixed-key",
+      geminiApiKey: "gemini-prefixed-key",
       secret: "super-secret-value",
       passphrase: "my-passphrase",
       nested: {
         webhookUrl: "https://discord.com/api/webhooks/123/secret-token",
+        cfAccessToken: "jwt-token-value",
         safeField: "BTC-USDT-SWAP"
       }
     };
@@ -81,10 +85,13 @@ describe("@keel/api — Fastify Server, Observability, and Cloudflare Tunnel Con
     expect(redacted).toEqual({
       event: "config_updated",
       apiKey: "[REDACTED]",
+      okxApiKey: "[REDACTED]",
+      geminiApiKey: "[REDACTED]",
       secret: "[REDACTED]",
       passphrase: "[REDACTED]",
       nested: {
         webhookUrl: "[REDACTED]",
+        cfAccessToken: "[REDACTED]",
         safeField: "BTC-USDT-SWAP"
       }
     });

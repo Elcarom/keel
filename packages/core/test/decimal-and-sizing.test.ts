@@ -27,17 +27,21 @@ describe("@keel/core — ScaledDecimal fixed-point arithmetic", () => {
     expect(a.add(b).toString()).toBe("0.3");
   });
 
-  it("rounds prices to exchange tickSize according to side (protective stop safety)", () => {
+  it("rounds prices to exchange tickSize and quantities to lotSize", () => {
     const rawStop = ScaledDecimal.fromString("65432.17");
     const tick = ScaledDecimal.fromString("0.1");
 
-    // Long protective stop rounds down (floor) to tick; short protective stop rounds up (ceil) to tick
     expect(rawStop.roundToTick(tick, "floor").toString()).toBe("65432.1");
     expect(rawStop.roundToTick(tick, "ceil").toString()).toBe("65432.2");
+
+    const rawQty = ScaledDecimal.fromString("14.95");
+    const lot = ScaledDecimal.fromString("1");
+    expect(rawQty.roundDownToLot(lot).toString()).toBe("14");
   });
 
-  it("satisfies exact string round-trip, additive associativity, and tick-rounding invariants (fast-check)", () => {
+  it("satisfies exact string round-trip, additive associativity, mul/divFloor, and tick/lot rounding invariants (fast-check)", () => {
     const arbCents = fc.bigInt({ min: -1_000_000_000_000n, max: 1_000_000_000_000n });
+    const arbPos = fc.bigInt({ min: 1n, max: 1_000_000_000_000n });
 
     fc.assert(
       fc.property(arbCents, arbCents, arbCents, (xRaw, yRaw, zRaw) => {
@@ -60,15 +64,33 @@ describe("@keel/core — ScaledDecimal fixed-point arithmetic", () => {
         expect(x.add(y).sub(y).equals(x)).toBe(true);
       })
     );
+
+    const tick = ScaledDecimal.fromString("0.1");
+    const lot = ScaledDecimal.fromString("0.5");
+
+    fc.assert(
+      fc.property(arbPos, (posRaw) => {
+        const val = ScaledDecimal.fromScaledBigInt(posRaw);
+        const flooredTick = val.roundToTick(tick, "floor");
+        const ceiledTick = val.roundToTick(tick, "ceil");
+
+        expect(flooredTick.lte(val)).toBe(true);
+        expect(ceiledTick.gte(val)).toBe(true);
+        expect(ceiledTick.sub(flooredTick).lte(tick)).toBe(true);
+
+        const roundedLot = val.roundDownToLot(lot);
+        expect(roundedLot.lte(val)).toBe(true);
+        expect(val.sub(roundedLot).lt(lot)).toBe(true);
+
+        const doubled = val.mul(ScaledDecimal.fromString("2"));
+        expect(doubled.divFloor(ScaledDecimal.fromString("2")).equals(val)).toBe(true);
+      })
+    );
   });
 });
 
 describe("@keel/core — Stop-distance 1R contract sizing (ADR-0002)", () => {
   it("sizes integer contracts from 1R stop distance on a worked example", () => {
-    // Strategy equity = 10,000 USDT, 1R = 0.75% => 75 USDT risk budget.
-    // BTC-USDT-SWAP: ctVal = 0.01 BTC/contract.
-    // Entry = 60,000.0, Stop = 58,800.0 => distance = 1,200 USDT per BTC => 12 USDT risk per contract.
-    // Expected contracts = floor(75 / 12) = 6 contracts (risking 72 USDT <= 75 USDT, notional = 3,600 USDT <= 20,000 cap).
     const result = sizeByStopRisk({
       instrument: BTC_USDT_SWAP,
       side: "long",
@@ -89,8 +111,6 @@ describe("@keel/core — Stop-distance 1R contract sizing (ADR-0002)", () => {
   });
 
   it("vetoes with min_lot_exceeds_risk_cap when 1 minimum lot risks more than 1R (small account guard)", () => {
-    // Strategy equity = 500 USDT, 1R = 0.75% => 3.75 USDT risk budget.
-    // 1 contract of BTC-USDT-SWAP (0.01 BTC) with a 1,000 USDT stop distance risks 10 USDT > 3.75 USDT.
     const result = sizeByStopRisk({
       instrument: BTC_USDT_SWAP,
       side: "long",
@@ -107,17 +127,42 @@ describe("@keel/core — Stop-distance 1R contract sizing (ADR-0002)", () => {
     });
   });
 
-  it("Rejects invalid stop placement on the wrong side of entry", () => {
-    const badLong = sizeByStopRisk({
-      instrument: BTC_USDT_SWAP,
-      side: "long",
-      strategyEquityQuote: ScaledDecimal.fromString("10000"),
-      riskFraction: ScaledDecimal.fromString("0.0075"),
-      entryPrice: ScaledDecimal.fromString("60000"),
-      stopPrice: ScaledDecimal.fromString("60100"),
-      maxGrossLeverage: ScaledDecimal.fromString("2")
-    });
-    expect(badLong).toEqual({ ok: false, vetoReason: "invalid_stop_direction" });
+  it("distinguishes non_positive_equity, non_positive_risk_fraction, and invalid_stop_direction", () => {
+    expect(
+      sizeByStopRisk({
+        instrument: BTC_USDT_SWAP,
+        side: "long",
+        strategyEquityQuote: ScaledDecimal.zero(),
+        riskFraction: ScaledDecimal.fromString("0.0075"),
+        entryPrice: ScaledDecimal.fromString("60000"),
+        stopPrice: ScaledDecimal.fromString("59000"),
+        maxGrossLeverage: ScaledDecimal.fromString("2")
+      })
+    ).toEqual({ ok: false, vetoReason: "non_positive_equity" });
+
+    expect(
+      sizeByStopRisk({
+        instrument: BTC_USDT_SWAP,
+        side: "long",
+        strategyEquityQuote: ScaledDecimal.fromString("10000"),
+        riskFraction: ScaledDecimal.zero(),
+        entryPrice: ScaledDecimal.fromString("60000"),
+        stopPrice: ScaledDecimal.fromString("59000"),
+        maxGrossLeverage: ScaledDecimal.fromString("2")
+      })
+    ).toEqual({ ok: false, vetoReason: "non_positive_risk_fraction" });
+
+    expect(
+      sizeByStopRisk({
+        instrument: BTC_USDT_SWAP,
+        side: "long",
+        strategyEquityQuote: ScaledDecimal.fromString("10000"),
+        riskFraction: ScaledDecimal.fromString("0.0075"),
+        entryPrice: ScaledDecimal.fromString("60000"),
+        stopPrice: ScaledDecimal.fromString("60100"),
+        maxGrossLeverage: ScaledDecimal.fromString("2")
+      })
+    ).toEqual({ ok: false, vetoReason: "invalid_stop_direction" });
   });
 
   it("never exceeds 1R risk or maxGrossLeverage across arbitrary prices, stops, and equities (fast-check)", () => {

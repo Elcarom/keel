@@ -62,7 +62,7 @@ export class ScaledDecimal {
   }
 
   /**
-   * Divides this by divisor, truncating towards zero at 8 decimal places.
+   * Divides this by divisor, flooring towards negative infinity at 8 decimal places.
    */
   public divFloor(divisor: ScaledDecimal): ScaledDecimal {
     if (divisor.raw === 0n) {
@@ -78,17 +78,24 @@ export class ScaledDecimal {
   }
 
   /**
-   * Rounds down (floor) to an integer multiple of `step` (used for contract lot sizing).
+   * Rounds down (floor) to an integer multiple of `lotSize` (used for exchange contract lot sizing).
    */
-  public roundDownToStep(step: ScaledDecimal): ScaledDecimal {
-    if (step.raw <= 0n) {
-      throw new Error("Step size must be strictly positive");
+  public roundDownToLot(lotSize: ScaledDecimal): ScaledDecimal {
+    if (lotSize.raw <= 0n) {
+      throw new Error("Lot size must be strictly positive");
     }
     if (this.raw < 0n) {
-      throw new Error("roundDownToStep requires a non-negative value");
+      throw new Error("roundDownToLot requires a non-negative value");
     }
-    const steps = this.raw / step.raw;
-    return new ScaledDecimal(steps * step.raw);
+    const lots = this.raw / lotSize.raw;
+    return new ScaledDecimal(lots * lotSize.raw);
+  }
+
+  /**
+   * Alias for `roundDownToLot` for general step increments.
+   */
+  public roundDownToStep(step: ScaledDecimal): ScaledDecimal {
+    return this.roundDownToLot(step);
   }
 
   /**

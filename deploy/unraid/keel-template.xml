@@ -27,3 +27,4 @@
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Unraid group ID (users = 100)." Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
   <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation umask." Type="Variable" Display="advanced" Required="true" Mask="false">022</Config>
 </Container>
+

@@ -77,6 +77,9 @@ importers:
       '@keel/core':
         specifier: workspace:*
         version: link:../core
+      '@ts-rest/core':
+        specifier: ^3.52.1
+        version: 3.52.1(@types/node@22.20.5)(zod@3.25.76)
       react:
         specifier: ^19.0.0
         version: 19.3.1

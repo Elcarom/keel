@@ -1,5 +1,5 @@
 const SENSITIVE_KEY_PATTERN =
-  /^(api[-_]?key|secret|passphrase|password|token|webhook[-_]?url|authorization|cookie|cf-access-jwt-assertion)$/i;
+  /(api[-_]?key|secret|passphrase|password|token|webhook[-_]?url|authorization|cookie|cf-access-jwt-assertion)/i;
 
 export const PINO_REDACT_PATHS: string[] = [
   "apiKey",

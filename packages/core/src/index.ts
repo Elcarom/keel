@@ -1,5 +1,6 @@
 export { ManualClock, SystemClock, type Clock } from "./clock.js";
 export {
+  AiFeatureSubBudgetsConfigSchema,
   AiGatewayConfigSchema,
   CONFIG_FIELD_REGISTRY,
   ConfigRiskClassSchema,
@@ -14,6 +15,7 @@ export {
   computeConfigHash,
   createDefaultConfig,
   diffConfigs,
+  flattenConfigPaths,
   type ConfigChangeEntry,
   type ConfigDiffResult,
   type ConfigFieldMetadata,

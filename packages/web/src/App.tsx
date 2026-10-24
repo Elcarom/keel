@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import type { SystemStatusResponse } from "@keel/core";
+import { keelApiContract, type SystemStatusResponse } from "@keel/core";
+import { initClient } from "@ts-rest/core";
+
+const apiClient = initClient(keelApiContract, {
+  baseUrl: "",
+  baseHeaders: {}
+});
 
 export function App() {
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
@@ -8,11 +14,11 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/v1/system/status")
-      .then((res) => res.json() as Promise<SystemStatusResponse>)
-      .then((data) => {
-        if (active) {
-          setStatus(data);
+    void apiClient.system
+      .getStatus()
+      .then((res) => {
+        if (active && res.status === 200) {
+          setStatus(res.body);
         }
       })
       .catch(() => {
@@ -39,6 +45,10 @@ export function App() {
 
   const isDark = theme === "dark";
   const executionMode = status?.executionMode ?? "Paper";
+  const isHealthy = streamConnected && status?.status === "ok";
+  const cardClass = isDark
+    ? "rounded-xl border border-[#222C36] bg-[#161D24] p-5"
+    : "rounded-xl border border-stone-300 bg-[#F3EFE6] p-5";
 
   return (
     <div
@@ -112,12 +122,12 @@ export function App() {
             >
               <span
                 className={
-                  streamConnected || status?.status === "ok"
+                  isHealthy
                     ? "h-2 w-2 rounded-full bg-emerald-400"
                     : "h-2 w-2 rounded-full bg-amber-400"
                 }
               />
-              {status?.status === "ok" ? "HEARTBEAT OK" : "CONNECTING"}
+              {isHealthy ? "HEARTBEAT OK" : "CONNECTING"}
             </span>
 
             <button
@@ -133,13 +143,7 @@ export function App() {
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="grid gap-6 md:grid-cols-3">
-          <section
-            className={
-              isDark
-                ? "rounded-xl border border-[#222C36] bg-[#161D24] p-5"
-                : "rounded-xl border border-stone-300 bg-[#F3EFE6] p-5"
-            }
-          >
+          <section className={cardClass}>
             <h2 className="text-xs font-semibold tracking-wider uppercase opacity-70">
               Paper Portfolio Equity
             </h2>
@@ -154,13 +158,7 @@ export function App() {
             </p>
           </section>
 
-          <section
-            className={
-              isDark
-                ? "rounded-xl border border-[#222C36] bg-[#161D24] p-5"
-                : "rounded-xl border border-stone-300 bg-[#F3EFE6] p-5"
-            }
-          >
+          <section className={cardClass}>
             <h2 className="text-xs font-semibold tracking-wider uppercase opacity-70">
               Deterministic Config Hash
             </h2>
@@ -176,13 +174,7 @@ export function App() {
             </p>
           </section>
 
-          <section
-            className={
-              isDark
-                ? "rounded-xl border border-[#222C36] bg-[#161D24] p-5"
-                : "rounded-xl border border-stone-300 bg-[#F3EFE6] p-5"
-            }
-          >
+          <section className={cardClass}>
             <h2 className="text-xs font-semibold tracking-wider uppercase opacity-70">
               Ingress &amp; Clock Telemetry
             </h2>

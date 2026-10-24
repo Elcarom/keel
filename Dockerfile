@@ -21,7 +21,7 @@ RUN pnpm build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-RUN apk add --no-cache su-exec tini wget && \
+RUN apk add --no-cache su-exec tini wget sqlite && \
     corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 ENV NODE_ENV=production \
@@ -55,3 +55,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "packages/api/dist/cli.js"]
+

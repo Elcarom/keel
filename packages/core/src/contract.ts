@@ -13,6 +13,7 @@ export const SystemStatusResponseSchema = z.object({
   serverTimeIso: z.string(),
   uptimeSeconds: z.number().nonnegative(),
   cloudflareTunnelActive: z.boolean(),
+  forwardedProto: z.enum(["http", "https"]),
   clientIp: z.string(),
   status: z.literal("ok")
 });

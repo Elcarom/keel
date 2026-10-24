@@ -20,20 +20,37 @@ export interface KeelServerOptions {
   readonly logger?: boolean;
 }
 
-function resolveClientIp(
+function resolveIngressTelemetry(
   req: FastifyRequest,
   trustCloudflare: boolean
 ): {
   readonly clientIp: string;
   readonly cloudflareTunnelActive: boolean;
+  readonly forwardedProto: "http" | "https";
 } {
   if (trustCloudflare) {
     const cfIp = req.headers["cf-connecting-ip"];
+    const xfp = req.headers["x-forwarded-proto"];
+    const proto: "http" | "https" =
+      typeof xfp === "string" && xfp.trim().toLowerCase() === "https" ? "https" : "http";
     if (typeof cfIp === "string" && cfIp.trim().length > 0) {
-      return { clientIp: cfIp.trim(), cloudflareTunnelActive: true };
+      return {
+        clientIp: cfIp.trim(),
+        cloudflareTunnelActive: true,
+        forwardedProto: proto
+      };
     }
+    return {
+      clientIp: req.ip,
+      cloudflareTunnelActive: false,
+      forwardedProto: proto
+    };
   }
-  return { clientIp: req.ip, cloudflareTunnelActive: false };
+  return {
+    clientIp: req.ip,
+    cloudflareTunnelActive: false,
+    forwardedProto: "http"
+  };
 }
 
 export async function createKeelServer(options: KeelServerOptions = {}): Promise<FastifyInstance> {
@@ -41,6 +58,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   const clock = options.clock ?? new SystemClock();
   const startedAtMs = clock.nowMs();
   const configHash = computeConfigHash(config);
+
+  const getUptimeSeconds = (): number =>
+    Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
 
   const app = Fastify({
     trustProxy: config.system.trustCloudflareHeaders,
@@ -72,7 +92,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   });
 
   app.get("/metrics", async (_req, reply) => {
-    const uptimeSeconds = Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
+    const uptimeSeconds = getUptimeSeconds();
     const lines = [
       "# HELP keel_up Whether the Keel process is healthy (1 = up).",
       "# TYPE keel_up gauge",
@@ -120,8 +140,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     system: {
       getStatus: async ({ request }) => {
         const nowMs = clock.nowMs();
-        const uptimeSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
-        const { clientIp, cloudflareTunnelActive } = resolveClientIp(
+        const uptimeSeconds = getUptimeSeconds();
+        const { clientIp, cloudflareTunnelActive, forwardedProto } = resolveIngressTelemetry(
           request,
           config.system.trustCloudflareHeaders
         );
@@ -136,6 +156,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             serverTimeIso: clock.isoNow(),
             uptimeSeconds,
             cloudflareTunnelActive,
+            forwardedProto,
             clientIp,
             status: "ok"
           }

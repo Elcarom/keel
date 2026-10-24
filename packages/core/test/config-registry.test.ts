@@ -5,7 +5,8 @@ import {
   KeelConfigSchema,
   computeConfigHash,
   createDefaultConfig,
-  diffConfigs
+  diffConfigs,
+  flattenConfigPaths
 } from "../src/index.js";
 
 describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
@@ -37,10 +38,16 @@ describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
     expect(cfg.promotionLadder.aiMinDisagreementSample).toBe(50);
     expect(cfg.promotionLadder.liveDemotionDrawdownPct).toBe(12.0);
 
-    // AI Gateway defaults (Gemini only, $15/mo, $0.75/day)
+    // AI Gateway defaults (Gemini only, $15/mo, $0.75/day, per-feature sub-budgets)
     expect(cfg.ai.provider).toBe("gemini");
     expect(cfg.ai.monthlyBudgetUsd).toBe(15.0);
     expect(cfg.ai.dailyBudgetUsd).toBe(0.75);
+    expect(cfg.ai.subBudgets).toEqual({
+      contextAnalystPct: 40,
+      shadowAdvisorPct: 30,
+      strategyLabPct: 20,
+      postTradeAndCopilotPct: 10
+    });
   });
 
   it("rejects risk settings that exceed hard ceilings (riskPerTradePct > 1.5% or leverage > 3.0x)", () => {
@@ -70,13 +77,21 @@ describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
     expect(KeelConfigSchema.safeParse(invalidLeverage).success).toBe(false);
   });
 
-  it("exposes complete UI registry metadata with ConfigRiskClass for every registered path", () => {
-    expect(CONFIG_FIELD_REGISTRY.length).toBeGreaterThanOrEqual(20);
-    for (const field of CONFIG_FIELD_REGISTRY) {
-      expect(field.path.length).toBeGreaterThan(0);
-      expect(field.label.length).toBeGreaterThan(0);
-      expect(field.helpText.length).toBeGreaterThan(0);
-      expect(["safe", "confirm", "restart-required", "locked-in-live"]).toContain(field.riskClass);
+  it("registers 100% of leaf paths in KeelConfigSchema with key, label, helpText, defaultValue, and ConfigRiskClass", () => {
+    const defaults = createDefaultConfig();
+    const flatDefaults = flattenConfigPaths(defaults);
+    const registryByPath = new Map(CONFIG_FIELD_REGISTRY.map((f) => [f.path, f]));
+
+    expect(CONFIG_FIELD_REGISTRY.length).toBe(flatDefaults.size);
+
+    for (const [path, expectedDefault] of flatDefaults.entries()) {
+      const meta = registryByPath.get(path);
+      expect(meta, `Missing CONFIG_FIELD_REGISTRY entry for "${path}"`).toBeDefined();
+      expect(meta?.key).toBe(path);
+      expect(meta?.label.length).toBeGreaterThan(0);
+      expect(meta?.helpText.length).toBeGreaterThan(0);
+      expect(meta?.defaultValue).toEqual(expectedDefault);
+      expect(["safe", "confirm", "restart-required", "locked-in-live"]).toContain(meta?.riskClass);
     }
   });
 
@@ -88,13 +103,13 @@ describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 100 }), (seed) => {
         const reordered = {
-          ai: { ...cfg.ai },
+          ai: { ...cfg.ai, subBudgets: { ...cfg.ai.subBudgets } },
           notifications: { ...cfg.notifications },
           promotionLadder: { ...cfg.promotionLadder },
           risk: {
             portfolio: { ...cfg.risk.portfolio },
             strategy: { ...cfg.risk.strategy },
-            liveRampMultipliers: [...cfg.risk.liveRampMultipliers],
+            liveRampMultipliers: [...cfg.risk.liveRampMultipliers] as [number, number, number],
             paperPortfolioEquityUsdt: cfg.risk.paperPortfolioEquityUsdt
           },
           system: { ...cfg.system }
