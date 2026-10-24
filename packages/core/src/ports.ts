@@ -528,3 +528,55 @@ export interface PromotionRepository {
   getPromotion(strategyId: string): StrategyPromotionRecord | null;
   listPromotions(): readonly StrategyPromotionRecord[];
 }
+
+export interface PaperTickResult {
+  readonly asOfMs: number;
+  readonly barEvaluated: ConfirmedBar | null;
+  readonly positionsClosed: readonly PaperPositionRecord[];
+  readonly positionsOpened: readonly PaperPositionRecord[];
+  readonly vetoedProposals: readonly { proposal: Proposal; reason: string }[];
+  readonly trialBalance: LedgerTrialBalance;
+}
+
+export interface Broker {
+  getCircuitBreaker(): CircuitBreakerRecord;
+  setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
+  getOpenPositions(): readonly PaperPositionRecord[];
+  getAllPositions(limit?: number): readonly PaperPositionRecord[];
+  getOrders(limit?: number): readonly PaperOrderRecord[];
+  flattenAllPositions(reason: string): readonly PaperPositionRecord[];
+  executeConfirmedBarTick(params: {
+    readonly bar: ConfirmedBar;
+    readonly strategy?: unknown;
+    readonly spec?: unknown;
+    readonly featureBars?:
+      Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
+    readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
+  }): PaperTickResult;
+}
+
+export interface PaperTickResult {
+  readonly asOfMs: number;
+  readonly barEvaluated: ConfirmedBar | null;
+  readonly positionsClosed: readonly PaperPositionRecord[];
+  readonly positionsOpened: readonly PaperPositionRecord[];
+  readonly vetoedProposals: readonly { proposal: Proposal; reason: string }[];
+  readonly trialBalance: LedgerTrialBalance;
+}
+
+export interface Broker {
+  getCircuitBreaker(): CircuitBreakerRecord;
+  setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
+  getOpenPositions(): readonly PaperPositionRecord[];
+  getAllPositions(limit?: number): readonly PaperPositionRecord[];
+  getOrders(limit?: number): readonly PaperOrderRecord[];
+  flattenAllPositions(reason: string): readonly PaperPositionRecord[];
+  executeConfirmedBarTick(params: {
+    readonly bar: ConfirmedBar;
+    readonly strategy?: unknown;
+    readonly spec?: unknown;
+    readonly featureBars?:
+      Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
+    readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
+  }): PaperTickResult;
+}

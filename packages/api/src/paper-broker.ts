@@ -2,6 +2,7 @@ import {
   RiskGuardian,
   ScaledDecimal,
   type BarTimeframe,
+  type Broker,
   type CircuitBreakerRecord,
   type Clock,
   type ConfirmedBar,
@@ -10,9 +11,11 @@ import {
   type PaperAccountRepository,
   type PaperOrderRecord,
   type PaperPositionRecord,
+  type PaperTickResult,
   type PortfolioRiskState,
   type Proposal,
   type RiskConfig,
+  type SettledFundingRate,
   type StrategyRiskState
 } from "@keel/core";
 import { BaselineChooser, type Strategy } from "@keel/strategy";
@@ -27,14 +30,7 @@ export interface PaperBrokerOptions {
   readonly slippageBps?: number | undefined;
 }
 
-export interface PaperTickResult {
-  readonly asOfMs: number;
-  readonly barEvaluated: ConfirmedBar | null;
-  readonly positionsClosed: readonly PaperPositionRecord[];
-  readonly positionsOpened: readonly PaperPositionRecord[];
-  readonly vetoedProposals: readonly { proposal: Proposal; reason: string }[];
-  readonly trialBalance: ReturnType<LedgerRepository["getTrialBalance"]>;
-}
+export { type PaperTickResult };
 
 function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
   const baseCurrency = instrumentId.split("-")[0] ?? "BTC";
@@ -57,10 +53,11 @@ function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
  * Enforces:
  * 1. Attached ProtectiveStop validation for every position entry.
  * 2. Conservative intrabar stop-loss precedence over take-profit.
- * 3. Exact double-entry ledger bookkeeping for cash, fees, funding, and realized PnL.
- * 4. CircuitBreaker manual kill-switch and re-arm.
+ * 3. Periodic 8h settled funding and mark-to-market unrealized PnL updates.
+ * 4. Exact double-entry ledger bookkeeping for cash, fees, funding, and realized PnL.
+ * 5. CircuitBreaker manual kill-switch and re-arm.
  */
-export class PaperBroker {
+export class PaperBroker implements Broker {
   private readonly clock: Clock;
   private readonly ledgerRepo: LedgerRepository;
   private readonly paperAccountRepo: PaperAccountRepository;
@@ -105,6 +102,7 @@ export class PaperBroker {
     readonly spec?: InstrumentSpec | undefined;
     readonly featureBars?:
       Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
+    readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
   }): PaperTickResult {
     const { bar, strategy } = params;
     const spec = params.spec ?? defaultInstrumentSpec(bar.instrumentId);
@@ -113,7 +111,7 @@ export class PaperBroker {
     const positionsOpened: PaperPositionRecord[] = [];
     const vetoedProposals: { proposal: Proposal; reason: string }[] = [];
 
-    // 1. Evaluate open positions against confirmed bar high/low (conservative ProtectiveStop precedence)
+    // 1. Evaluate open positions against confirmed bar high/low & 8h settled funding
     const openPositions = this.paperAccountRepo.listOpenPositions();
     for (const pos of openPositions) {
       if (pos.instrumentId !== bar.instrumentId) continue;
@@ -122,8 +120,59 @@ export class PaperBroker {
       const tpPrice = pos.takeProfitPrice ? ScaledDecimal.fromString(pos.takeProfitPrice) : null;
       const barHigh = ScaledDecimal.fromString(bar.high);
       const barLow = ScaledDecimal.fromString(bar.low);
+      const barClose = ScaledDecimal.fromString(bar.close);
       const entryPrice = ScaledDecimal.fromString(pos.entryPrice);
       const contracts = ScaledDecimal.fromString(pos.contracts);
+
+      // Settle periodic 8h funding (ADR-0001, ADR-0008)
+      let updatedLastFundingTs = pos.lastFundingSettledTs;
+      let totalFundingPaid = ScaledDecimal.fromString(pos.fundingPaidUsdt);
+      if (params.settledFundingRates && params.settledFundingRates.length > 0) {
+        for (const funding of params.settledFundingRates) {
+          if (
+            funding.instrumentId === pos.instrumentId &&
+            funding.fundingTs > pos.lastFundingSettledTs &&
+            funding.fundingTs <= asOfMs
+          ) {
+            const fundingRate = ScaledDecimal.fromString(funding.fundingRate);
+            const positionNotional = contracts.mul(spec.contractValue).mul(barClose);
+            const fundingPayment =
+              pos.side === "long"
+                ? positionNotional.mul(fundingRate)
+                : ScaledDecimal.zero().sub(positionNotional.mul(fundingRate));
+
+            if (fundingPayment.gt(ScaledDecimal.zero())) {
+              this.ledgerRepo.recordJournal({
+                txGroupId: `fund-${pos.positionId}-${funding.fundingTs}`,
+                ts: funding.fundingTs,
+                strategyId: pos.strategyId,
+                instrumentId: pos.instrumentId,
+                debitAccount: "funding_pnl:usdt",
+                creditAccount: "cash:usdt",
+                amountUsdt: fundingPayment.toFixed(8),
+                description: `8h funding payment on ${pos.positionId} (${funding.fundingRate})`
+              });
+              totalFundingPaid = totalFundingPaid.add(fundingPayment);
+            } else if (fundingPayment.lt(ScaledDecimal.zero())) {
+              const creditAmt = fundingPayment.abs();
+              this.ledgerRepo.recordJournal({
+                txGroupId: `fund-${pos.positionId}-${funding.fundingTs}`,
+                ts: funding.fundingTs,
+                strategyId: pos.strategyId,
+                instrumentId: pos.instrumentId,
+                debitAccount: "cash:usdt",
+                creditAccount: "funding_pnl:usdt",
+                amountUsdt: creditAmt.toFixed(8),
+                description: `8h funding receipt on ${pos.positionId} (${funding.fundingRate})`
+              });
+              totalFundingPaid = totalFundingPaid.sub(creditAmt);
+            }
+            if (funding.fundingTs > updatedLastFundingTs) {
+              updatedLastFundingTs = funding.fundingTs;
+            }
+          }
+        }
+      }
 
       let closed = false;
       let exitPrice: ScaledDecimal | null = null;
@@ -211,7 +260,9 @@ export class PaperBroker {
           exitReason,
           realizedPnlUsdt: grossPnl.toFixed(8),
           unrealizedPnlUsdt: "0.00000000",
-          feesPaidUsdt: totalFees.toFixed(8)
+          feesPaidUsdt: totalFees.toFixed(8),
+          fundingPaidUsdt: totalFundingPaid.toFixed(8),
+          lastFundingSettledTs: updatedLastFundingTs
         };
         this.paperAccountRepo.savePosition(updatedPos);
         positionsClosed.push(updatedPos);
@@ -231,6 +282,19 @@ export class PaperBroker {
           status: "FILLED",
           createdAtMs: asOfMs
         });
+      } else {
+        // Mark-to-market unrealized PnL refresh for ongoing position
+        const unrealizedPnl =
+          pos.side === "long"
+            ? contracts.mul(spec.contractValue).mul(barClose.sub(entryPrice))
+            : contracts.mul(spec.contractValue).mul(entryPrice.sub(barClose));
+
+        this.paperAccountRepo.savePosition({
+          ...pos,
+          unrealizedPnlUsdt: unrealizedPnl.toFixed(8),
+          fundingPaidUsdt: totalFundingPaid.toFixed(8),
+          lastFundingSettledTs: updatedLastFundingTs
+        });
       }
     }
 
@@ -244,7 +308,7 @@ export class PaperBroker {
         instrumentId: bar.instrumentId,
         asOfMs,
         barsByTimeframe: params.featureBars ?? { [bar.timeframe]: [bar] },
-        recentFundingRates: []
+        recentFundingRates: params.settledFundingRates ?? []
       });
 
       const chosen = this.chooser.choose([menu]);
@@ -262,13 +326,38 @@ export class PaperBroker {
           const trialBal = this.ledgerRepo.getTrialBalance();
           const equity = ScaledDecimal.fromString(trialBal.netEquityUsdt);
 
+          // Aggregate existing open positions exposure
+          const currentOpen = this.paperAccountRepo.listOpenPositions();
+          let grossNotional = ScaledDecimal.zero();
+          let netSignedNotional = ScaledDecimal.zero();
+          const notionalByInstrument: Record<string, ScaledDecimal> = {};
+          let strategyGrossNotional = ScaledDecimal.zero();
+
+          for (const p of currentOpen) {
+            const pContracts = ScaledDecimal.fromString(p.contracts);
+            const pPrice = ScaledDecimal.fromString(p.entryPrice);
+            const pSpec = defaultInstrumentSpec(p.instrumentId);
+            const pNotional = pContracts.mul(pSpec.contractValue).mul(pPrice);
+
+            grossNotional = grossNotional.add(pNotional);
+            const signed = p.side === "long" ? pNotional : ScaledDecimal.zero().sub(pNotional);
+            netSignedNotional = netSignedNotional.add(signed);
+
+            const existingInst = notionalByInstrument[p.instrumentId] ?? ScaledDecimal.zero();
+            notionalByInstrument[p.instrumentId] = existingInst.add(pNotional);
+
+            if (p.strategyId === prop.strategyId) {
+              strategyGrossNotional = strategyGrossNotional.add(pNotional);
+            }
+          }
+
           const strategyState: StrategyRiskState = {
             strategyId: prop.strategyId,
             equityUsdt: equity,
             dayStartEquityUsdt: equity,
             weekStartEquityUsdt: equity,
             highWaterMarkEquityUsdt: equity,
-            currentGrossNotionalUsdt: ScaledDecimal.zero(),
+            currentGrossNotionalUsdt: strategyGrossNotional,
             tradesTodayCount: 0,
             feesTodayUsdt: ScaledDecimal.zero()
           };
@@ -277,9 +366,9 @@ export class PaperBroker {
             equityUsdt: equity,
             dayStartEquityUsdt: equity,
             highWaterMarkEquityUsdt: equity,
-            grossNotionalUsdt: ScaledDecimal.zero(),
-            netSignedNotionalUsdt: ScaledDecimal.zero(),
-            notionalByInstrumentUsdt: {},
+            grossNotionalUsdt: grossNotional,
+            netSignedNotionalUsdt: netSignedNotional,
+            notionalByInstrumentUsdt: notionalByInstrument,
             circuitBreaker: this.paperAccountRepo.getCircuitBreaker()
           };
 
@@ -302,7 +391,8 @@ export class PaperBroker {
             const entryFee = notional.mul(
               ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
             );
-            const posId = `pos-${prop.strategyId}-${asOfMs}-${Math.floor(Math.random() * 1000)}`;
+            const existingPosCount = this.paperAccountRepo.listAllPositions().length;
+            const posId = `pos-${prop.strategyId}-${asOfMs}-${existingPosCount + 1}`;
 
             // Record entry fee in double-entry ledger
             const txGroup = `open-${posId}`;

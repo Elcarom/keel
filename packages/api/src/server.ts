@@ -119,6 +119,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   });
 
   app.addHook("onClose", async () => {
+    const active = getActiveSnapshot();
+    if (active.config.system.shutdownPolicy === "flatten") {
+      paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+    }
     dataStore.close();
   });
 
@@ -998,10 +1002,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           };
         }
 
+        // Settle funding rates and pass recent funding to tick
+        const fundingRates = dataStore.marketDataRepo.getSettledFundingInRange({
+          instrumentId: body.instrumentId,
+          fromTs: 0,
+          toTs: clock.nowMs()
+        });
+
         const tickResult = paperBroker.executeConfirmedBarTick({
           bar: latestBar,
           strategy,
-          featureBars: { "1H": bars }
+          featureBars: { "1H": bars },
+          settledFundingRates: fundingRates
         });
 
         dataStore.auditRepo.append({
@@ -1113,11 +1125,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const experiments = dataStore.experimentRepo.listExperiments(50);
         const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
 
+        // Compute actual paper trades count and drawdown from ledger
+        const allPositions = dataStore.paperAccountRepo.listAllPositions();
+        const strategyPositions = allPositions.filter(
+          (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
+        );
+        const actualPaperTradesCount = strategyPositions.length;
+
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
           currentStage,
           latestExperiment: latestExp,
-          paperTradesCount: existingPromo?.paperTradesCount ?? 0,
+          paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct: existingPromo?.paperDrawdownPct ?? 0,
           asOfMs: clock.nowMs()
         });

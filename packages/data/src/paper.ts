@@ -188,7 +188,9 @@ export function createLedgerRepository(
       if (!amountDec.isPositive()) {
         throw new Error("Ledger journal amount must be strictly positive");
       }
-      const entryId = `entry-${input.txGroupId}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      const seqRow = db.prepare("SELECT COUNT(*) AS cnt FROM ledger_entries").get();
+      const seq = Number(seqRow?.["cnt"] ?? 0) + 1;
+      const entryId = `entry-${input.txGroupId}-${input.ts}-${seq}`;
       db.prepare(
         `INSERT INTO ledger_entries (
           entry_id, tx_group_id, ts, strategy_id, instrument_id, debit_account, credit_account, amount_usdt, description
