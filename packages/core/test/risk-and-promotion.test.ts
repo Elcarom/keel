@@ -5,6 +5,7 @@ import {
   RiskGuardian,
   ScaledDecimal,
   createDefaultConfig,
+  sizeByStopRisk,
   type ExperimentRecord,
   type InstrumentSpec,
   type Proposal
@@ -370,5 +371,90 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
 
     expect(demoted.currentStage).toBe("Research");
     expect(demoted.demotionReason).toContain("drawdown");
+  });
+
+  it("evaluates Live-Ramp stage progression, fractional sizing, and automated degradation demotion (M7)", () => {
+    const config = createDefaultConfig();
+    const evaluator = new PromotionLadderEvaluator(config.promotionLadder);
+
+    // 1. Verify fractional lot sizing with 25% Live-Ramp allocation
+    const fullSizing = sizeByStopRisk({
+      instrument: BTC_SPEC,
+      side: "long",
+      strategyEquityQuote: ScaledDecimal.fromString("10000.00"),
+      riskFraction: ScaledDecimal.fromString("0.0075"), // 1R = 75 USDT
+      entryPrice: ScaledDecimal.fromString("50000.00"),
+      stopPrice: ScaledDecimal.fromString("49000.00"), // distance = 1000 -> 10 USDT/contract
+      maxGrossLeverage: ScaledDecimal.fromString("2.0")
+    });
+    expect(fullSizing.ok).toBe(true);
+    if (fullSizing.ok) {
+      expect(fullSizing.contracts.toString()).toBe("7.5");
+      expect(fullSizing.riskBudgetQuote.toString()).toBe("75");
+    }
+
+    const rampSizing = sizeByStopRisk({
+      instrument: BTC_SPEC,
+      side: "long",
+      strategyEquityQuote: ScaledDecimal.fromString("10000.00"),
+      riskFraction: ScaledDecimal.fromString("0.0075"),
+      entryPrice: ScaledDecimal.fromString("50000.00"),
+      stopPrice: ScaledDecimal.fromString("49000.00"),
+      maxGrossLeverage: ScaledDecimal.fromString("2.0"),
+      allocationFraction: ScaledDecimal.fromString("0.25") // 25% Live-Ramp step
+    });
+    expect(rampSizing.ok).toBe(true);
+    if (rampSizing.ok) {
+      // 75 * 0.25 = 18.75 USDT budget -> 18.75 / 10 = 1.875 -> rounded to lot 0.01 = 1.87 contracts
+      expect(rampSizing.contracts.toString()).toBe("1.87");
+      expect(rampSizing.riskBudgetQuote.toString()).toBe("18.75");
+    }
+
+    // 2. Demo -> Live-Ramp progression
+    const demoEval = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Demo",
+      latestExperiment: null,
+      paperTradesCount: 25,
+      paperDrawdownPct: 2.1,
+      asOfMs: 1_702_800_000_000
+    });
+    expect(demoEval.eligibleNextStage).toBe("Live-Ramp");
+
+    // 3. Live-Ramp -> Live progression
+    const rampEval = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Live-Ramp",
+      latestExperiment: null,
+      paperTradesCount: 55,
+      paperDrawdownPct: 2.0,
+      asOfMs: 1_702_900_000_000
+    });
+    expect(rampEval.eligibleNextStage).toBe("Live");
+    expect(rampEval.rampAllocationPct).toBe(50);
+
+    // 4. Automated Demotion on Live-Ramp drawdown breach (> 3%)
+    const rampDemoted = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Live-Ramp",
+      latestExperiment: null,
+      paperTradesCount: 30,
+      paperDrawdownPct: 3.8, // > 3% threshold
+      asOfMs: 1_703_000_000_000
+    });
+    expect(rampDemoted.currentStage).toBe("Demo");
+    expect(rampDemoted.demotionReason).toContain("live-ramp drawdown");
+
+    // 5. Automated Demotion from Live on drawdown breach (> 6%)
+    const liveDemoted = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Live",
+      latestExperiment: null,
+      paperTradesCount: 80,
+      paperDrawdownPct: 6.5, // > 6%
+      asOfMs: 1_703_100_000_000
+    });
+    expect(liveDemoted.currentStage).toBe("Live-Ramp");
+    expect(liveDemoted.demotionReason).toContain("live drawdown");
   });
 });

@@ -15,7 +15,7 @@ import {
   type LookbackValidationResult,
   type LlmGateway
 } from "@keel/core";
-import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
+import { createSqliteDataStore, seedSyntheticMarketSeries, type SqliteDataStore } from "@keel/data";
 import {
   ContextAnalyst,
   EventGateAdvisor,
@@ -46,6 +46,7 @@ export interface KeelServerOptions {
   readonly clock?: Clock | undefined;
   readonly dbPath?: string | undefined;
   readonly backupsDir?: string | undefined;
+  readonly dataStore?: SqliteDataStore | undefined;
   readonly masterKeyMaterial?: string | undefined;
   readonly initialBootstrapToken?: string | undefined;
   readonly onBootstrapToken?: ((token: string) => void) | undefined;
@@ -63,12 +64,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   const dbPath = options.dbPath ?? process.env["KEEL_DB_PATH"] ?? ":memory:";
   const backupsDir = options.backupsDir ?? process.env["KEEL_BACKUPS_DIR"];
 
-  const dataStore = createSqliteDataStore({
-    dbPath,
-    clock,
-    backupsDir,
-    initialConfig
-  });
+  const dataStore =
+    options.dataStore ??
+    createSqliteDataStore({
+      dbPath,
+      clock,
+      backupsDir,
+      initialConfig
+    });
 
   const secretVault = new SecretVault({
     repo: dataStore.secretVaultRepo,
@@ -1163,6 +1166,20 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     },
 
     promotion: {
+      list: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const promotions = dataStore.promotionRepo.listPromotions();
+        return {
+          status: 200,
+          body: {
+            promotions: promotions.map((p) => ({ ...p }))
+          }
+        };
+      },
+
       evaluate: async ({ request, body }) => {
         const ingress = getIngress(request);
         if (!ingress.session.authenticated) {
@@ -1196,6 +1213,27 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         const saved = dataStore.promotionRepo.upsertPromotion(evaluated);
 
+        // Auto-flatten open positions and alert if evaluation detected an automatic demotion
+        if (
+          evaluated.demotionReason !== null &&
+          evaluated.currentStage !== existingPromo?.currentStage
+        ) {
+          const paperClosed = paperBroker.flattenAllPositions(
+            `Auto-Demotion: ${evaluated.demotionReason}`
+          );
+          const exchangeClosed = okxBroker.flattenAllPositions(
+            `Auto-Demotion: ${evaluated.demotionReason}`
+          );
+          const flattenedCount = paperClosed.length + exchangeClosed.length;
+
+          await notifier.send({
+            severity: evaluated.currentStage === "Research" ? "CRITICAL" : "WARNING",
+            title: `STRATEGY AUTO-DEMOTION: ${body.strategyId}`,
+            body: `Strategy auto-demoted to ${evaluated.currentStage}. Reason: ${evaluated.demotionReason}. Flattened ${flattenedCount} positions.`,
+            dedupKey: `demote-${body.strategyId}`
+          });
+        }
+
         dataStore.auditRepo.append({
           ts: clock.nowMs(),
           actor: ingress.session.username ?? "system",
@@ -1207,7 +1245,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             strategyId: body.strategyId,
             currentStage: saved.currentStage,
             eligibleNextStage: saved.eligibleNextStage,
-            replayGatePassed: saved.replayGatePassed
+            replayGatePassed: saved.replayGatePassed,
+            autoDemoted: evaluated.demotionReason !== null
           }
         });
 
@@ -1215,6 +1254,190 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           status: 200,
           body: {
             promotion: saved
+          }
+        };
+      },
+
+      promote: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        // Enforce Human Gates G2 (Demo, Live-Ramp) and G3 (Live) with step-up verification (AGENTS.md)
+        if (
+          body.targetStage === "Demo" ||
+          body.targetStage === "Live-Ramp" ||
+          body.targetStage === "Live"
+        ) {
+          if (!body.stepUpPassword && !body.stepUpTotpCode) {
+            return {
+              status: 403,
+              body: {
+                error:
+                  "Step-up credential required for Demo (Gate G2), Live-Ramp (Gate G2), or Live (Gate G3)",
+                requiresStepUp: true
+              }
+            };
+          }
+          const stepUpOk = authManager.verifyStepUp({
+            sessionToken: ingress.sessionToken,
+            password: body.stepUpPassword,
+            totpCode: body.stepUpTotpCode
+          });
+          if (!stepUpOk) {
+            return {
+              status: 403,
+              body: {
+                error:
+                  "Step-up authentication failed for Demo (Gate G2), Live-Ramp (Gate G2), or Live (Gate G3)",
+                requiresStepUp: true
+              }
+            };
+          }
+        }
+
+        const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
+        if (!existingPromo) {
+          return {
+            status: 400,
+            body: {
+              error: `No promotion record found for strategy ${body.strategyId}. Evaluate strategy first.`
+            }
+          };
+        }
+        if (!existingPromo.replayGatePassed) {
+          return {
+            status: 400,
+            body: {
+              error: `Strategy ${body.strategyId} has not passed the quantitative replay gate.`
+            }
+          };
+        }
+        if (existingPromo.eligibleNextStage !== body.targetStage) {
+          return {
+            status: 400,
+            body: {
+              error: `Strategy ${body.strategyId} is not eligible for ${body.targetStage} (eligible: ${existingPromo.eligibleNextStage ?? "None"}).`
+            }
+          };
+        }
+
+        let rampAllocationPct = 100;
+        if (body.targetStage === "Live-Ramp") {
+          rampAllocationPct =
+            existingPromo.paperTradesCount >= 40
+              ? 50
+              : existingPromo.paperTradesCount >= 20
+                ? 25
+                : 10;
+        }
+
+        let eligibleNextStage: PromotionStage | null = null;
+        if (body.targetStage === "Paper") {
+          eligibleNextStage = "Demo";
+        } else if (body.targetStage === "Demo") {
+          eligibleNextStage = "Live-Ramp";
+        } else if (body.targetStage === "Live-Ramp") {
+          eligibleNextStage = "Live";
+        }
+
+        const updatedPromo = dataStore.promotionRepo.upsertPromotion({
+          strategyId: body.strategyId,
+          currentStage: body.targetStage,
+          latestExperimentId: existingPromo.latestExperimentId,
+          replayGatePassed: existingPromo.replayGatePassed,
+          paperTradesCount: existingPromo.paperTradesCount,
+          paperDrawdownPct: existingPromo.paperDrawdownPct,
+          rampAllocationPct,
+          eligibleNextStage,
+          demotionReason: null,
+          updatedAtMs: clock.nowMs()
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "promotion.promote",
+          riskClass: body.targetStage === "Live" ? "locked-in-live" : "confirm",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            strategyId: body.strategyId,
+            promotedTo: body.targetStage
+          }
+        });
+
+        return {
+          status: 200,
+          body: { promotion: updatedPromo }
+        };
+      },
+
+      demote: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        // Auto-flatten any open positions for that strategy across brokers
+        const paperClosed = paperBroker.flattenAllPositions(`Demotion: ${body.reason}`);
+        const exchangeClosed = okxBroker.flattenAllPositions(`Demotion: ${body.reason}`);
+        const flattenedCount = paperClosed.length + exchangeClosed.length;
+
+        const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
+
+        let eligibleNextStage: PromotionStage | null = null;
+        if (body.targetStage === "Live-Ramp") {
+          eligibleNextStage = "Live";
+        } else if (body.targetStage === "Demo") {
+          eligibleNextStage = "Live-Ramp";
+        } else if (body.targetStage === "Paper") {
+          eligibleNextStage = "Demo";
+        } else if (body.targetStage === "Research") {
+          eligibleNextStage = existingPromo?.replayGatePassed ? "Paper" : "Replay";
+        }
+
+        const updatedPromo = dataStore.promotionRepo.upsertPromotion({
+          strategyId: body.strategyId,
+          currentStage: body.targetStage,
+          latestExperimentId: existingPromo?.latestExperimentId ?? null,
+          replayGatePassed: existingPromo?.replayGatePassed ?? false,
+          paperTradesCount: existingPromo?.paperTradesCount ?? 0,
+          paperDrawdownPct: existingPromo?.paperDrawdownPct ?? 0,
+          rampAllocationPct: 0,
+          eligibleNextStage,
+          demotionReason: body.reason,
+          updatedAtMs: clock.nowMs()
+        });
+
+        await notifier.send({
+          severity: body.targetStage === "Research" ? "CRITICAL" : "WARNING",
+          title: `STRATEGY DEMOTION: ${body.strategyId}`,
+          body: `Strategy demoted to ${body.targetStage}. Reason: ${body.reason}. Flattened ${flattenedCount} positions.`,
+          dedupKey: `demote-${body.strategyId}`
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "promotion.demote",
+          riskClass: "confirm",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            strategyId: body.strategyId,
+            demotedTo: body.targetStage,
+            reason: body.reason,
+            flattenedCount
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            promotion: updatedPromo,
+            flattenedCount
           }
         };
       }

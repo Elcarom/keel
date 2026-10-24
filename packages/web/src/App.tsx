@@ -74,6 +74,7 @@ export function App() {
   const [diffPreview, setDiffPreview] = useState<ConfigDiffResult | null>(null);
   const [changeReason, setChangeReason] = useState("Operator tuning");
   const [stepUpPassword, setStepUpPassword] = useState("");
+  const [stepUpTotpCode, setStepUpTotpCode] = useState("");
   const [govMessage, setGovMessage] = useState<string | null>(null);
   const [govError, setGovError] = useState<string | null>(null);
 
@@ -1370,20 +1371,71 @@ export function App() {
 
               {/* Strategy Promotion Ladder Status */}
               <div className="mt-4">
-                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
-                  Quantitative Promotion Ladder (ADR-0007)
-                </h4>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                      Quantitative Promotion Ladder &amp; Live-Ramp (ADR-0007 / M7)
+                    </h4>
+                    <input
+                      type="password"
+                      placeholder="Step-Up Password (G2/G3)"
+                      data-testid="promote-step-up-password-input"
+                      value={stepUpPassword}
+                      onChange={(e) => setStepUpPassword(e.target.value)}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-200"
+                    />
+                    <input
+                      type="text"
+                      placeholder="TOTP Code"
+                      data-testid="promote-step-up-totp-input"
+                      value={stepUpTotpCode}
+                      onChange={(e) => setStepUpTotpCode(e.target.value)}
+                      className="w-24 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-200"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="evaluate-ladder-btn"
+                    onClick={async () => {
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.promotion.evaluate({
+                          body: { strategyId: selectedStrategyId }
+                        });
+                        if (res.status === 200) {
+                          setPromotions((prev) => [
+                            res.body.promotion,
+                            ...prev.filter((p) => p.strategyId !== res.body.promotion.strategyId)
+                          ]);
+                          setGovMessage(
+                            `Evaluated promotion ladder for ${res.body.promotion.strategyId}: stage=${res.body.promotion.currentStage}, eligibleNext=${res.body.promotion.eligibleNextStage ?? "None"}`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Promotion evaluation failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      }
+                    }}
+                    className="rounded border border-sky-500/50 bg-sky-500/15 px-3 py-1 text-xs font-semibold text-sky-300 hover:bg-sky-500/25"
+                  >
+                    Evaluate Promotion Ladder
+                  </button>
+                </div>
                 <div className="mt-2 overflow-x-auto">
                   <table data-testid="promotion-ladder-table" className="w-full text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-700/60 opacity-70">
                         <th className="py-1.5">Strategy</th>
                         <th className="py-1.5">Current Stage</th>
+                        <th className="py-1.5">Ramp Alloc</th>
                         <th className="py-1.5">Replay Gate</th>
                         <th className="py-1.5">Paper Trades</th>
-                        <th className="py-1.5">Paper Drawdown</th>
+                        <th className="py-1.5">Drawdown</th>
                         <th className="py-1.5">Eligible Next Stage</th>
-                        <th className="py-1.5">Demotion Reason</th>
+                        <th className="py-1.5">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="font-mono-tabular">
@@ -1391,6 +1443,9 @@ export function App() {
                         <tr key={promo.strategyId} className="border-b border-slate-800/60">
                           <td className="py-1.5 text-teal-400">{promo.strategyId}</td>
                           <td className="py-1.5 font-bold text-sky-400">{promo.currentStage}</td>
+                          <td className="py-1.5 font-semibold text-amber-300">
+                            {promo.rampAllocationPct ?? 100}%
+                          </td>
                           <td className="py-1.5">
                             <span
                               className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
@@ -1404,16 +1459,105 @@ export function App() {
                           </td>
                           <td className="py-1.5">{promo.paperTradesCount}</td>
                           <td className="py-1.5">{promo.paperDrawdownPct.toFixed(2)}%</td>
-                          <td className="py-1.5 text-emerald-400">
+                          <td className="py-1.5 text-emerald-400 font-semibold">
                             {promo.eligibleNextStage ?? "None"}
                           </td>
-                          <td className="py-1.5 text-rose-400">{promo.demotionReason ?? "None"}</td>
+                          <td className="py-1.5">
+                            <div className="flex items-center gap-1.5">
+                              {promo.eligibleNextStage && (
+                                <button
+                                  type="button"
+                                  data-testid="promote-strategy-btn"
+                                  onClick={async () => {
+                                    setGovMessage(null);
+                                    setGovError(null);
+                                    try {
+                                      const target = promo.eligibleNextStage;
+                                      if (!target) return;
+                                      const res = await apiClient.promotion.promote({
+                                        body: {
+                                          strategyId: promo.strategyId,
+                                          targetStage: target,
+                                          stepUpPassword: stepUpPassword || undefined,
+                                          stepUpTotpCode: stepUpTotpCode || undefined
+                                        }
+                                      });
+                                      if (res.status === 200) {
+                                        setPromotions((prev) => [
+                                          res.body.promotion,
+                                          ...prev.filter(
+                                            (p) => p.strategyId !== res.body.promotion.strategyId
+                                          )
+                                        ]);
+                                        setGovMessage(
+                                          `Promoted ${promo.strategyId} to ${res.body.promotion.currentStage} (alloc=${res.body.promotion.rampAllocationPct}%)`
+                                        );
+                                        await refreshGovernanceData();
+                                      } else {
+                                        setGovError(extractApiError(res.body, "Promotion failed"));
+                                      }
+                                    } catch (err) {
+                                      setGovError(String(err));
+                                    }
+                                  }}
+                                  className="rounded bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                                >
+                                  Promote
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                data-testid="demote-strategy-btn"
+                                onClick={async () => {
+                                  setGovMessage(null);
+                                  setGovError(null);
+                                  try {
+                                    const priorStage =
+                                      promo.currentStage === "Live"
+                                        ? "Live-Ramp"
+                                        : promo.currentStage === "Live-Ramp"
+                                          ? "Demo"
+                                          : promo.currentStage === "Demo"
+                                            ? "Paper"
+                                            : "Research";
+                                    const res = await apiClient.promotion.demote({
+                                      body: {
+                                        strategyId: promo.strategyId,
+                                        targetStage: priorStage,
+                                        reason: `Operator manual safety demotion to ${priorStage}`
+                                      }
+                                    });
+                                    if (res.status === 200) {
+                                      setPromotions((prev) => [
+                                        res.body.promotion,
+                                        ...prev.filter(
+                                          (p) => p.strategyId !== res.body.promotion.strategyId
+                                        )
+                                      ]);
+                                      setGovMessage(
+                                        `Demoted ${promo.strategyId} to ${priorStage} (flattened ${res.body.flattenedCount} positions)`
+                                      );
+                                      await refreshGovernanceData();
+                                    } else {
+                                      setGovError(extractApiError(res.body, "Demotion failed"));
+                                    }
+                                  } catch (err) {
+                                    setGovError(String(err));
+                                  }
+                                }}
+                                className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[11px] font-semibold text-rose-400 hover:bg-rose-500/20"
+                              >
+                                Demote
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                       {promotions.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="py-3 text-center opacity-60">
-                            No strategy promotion evaluations recorded yet.
+                          <td colSpan={8} className="py-3 text-center opacity-60">
+                            No strategy promotion evaluations recorded yet. Click &quot;Evaluate
+                            Promotion Ladder&quot; above.
                           </td>
                         </tr>
                       )}

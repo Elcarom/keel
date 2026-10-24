@@ -68,6 +68,10 @@ export const PromotionLadderConfigSchema = z.object({
   paperMinDays: z.number().int().min(14).max(365).default(30),
   paperMinTrades: z.number().int().min(20).max(1000).default(50),
   liveDemotionDrawdownPct: z.number().min(3.0).max(25.0).default(12.0),
+  liveRampDemotionDrawdownPct: z.number().min(1.0).max(10.0).default(3.0),
+  demoPromotionMinTrades: z.number().int().min(5).max(100).default(20),
+  demoPromotionMaxDrawdownPct: z.number().min(1.0).max(15.0).default(8.0),
+  liveRampPromotionMinTrades: z.number().int().min(10).max(200).default(50),
   aiDemotionEdgeDecayR: z.number().min(-1.0).max(-0.01).default(-0.15),
   slippageDriftMultiplierCap: z.number().min(1.5).max(5.0).default(2.5)
 });
@@ -460,6 +464,46 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     max: 25.0,
     defaultValue: 12.0,
     riskClass: "locked-in-live"
+  },
+  {
+    path: "promotionLadder.liveRampDemotionDrawdownPct",
+    label: "Live-Ramp Auto-Demotion Drawdown Threshold",
+    helpText: "Drawdown percentage in Live-Ramp that auto-flattens and demotes back to Demo.",
+    unit: "%",
+    min: 1.0,
+    max: 10.0,
+    defaultValue: 3.0,
+    riskClass: "confirm"
+  },
+  {
+    path: "promotionLadder.demoPromotionMinTrades",
+    label: "Demo Promotion Min Trades",
+    helpText: "Minimum closed paper/demo trades required to become eligible for Live-Ramp.",
+    unit: "trades",
+    min: 5,
+    max: 100,
+    defaultValue: 20,
+    riskClass: "confirm"
+  },
+  {
+    path: "promotionLadder.demoPromotionMaxDrawdownPct",
+    label: "Demo Promotion Max Drawdown",
+    helpText: "Maximum paper/demo drawdown percentage permitted to enter Live-Ramp.",
+    unit: "%",
+    min: 1.0,
+    max: 15.0,
+    defaultValue: 8.0,
+    riskClass: "confirm"
+  },
+  {
+    path: "promotionLadder.liveRampPromotionMinTrades",
+    label: "Live-Ramp Promotion Min Trades",
+    helpText: "Minimum closed live trades required to progress from Live-Ramp to full Live.",
+    unit: "trades",
+    min: 10,
+    max: 200,
+    defaultValue: 50,
+    riskClass: "confirm"
   },
   {
     path: "promotionLadder.aiDemotionEdgeDecayR",
