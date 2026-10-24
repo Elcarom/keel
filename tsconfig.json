@@ -3,6 +3,8 @@
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/data" },
+    { "path": "./packages/strategy" },
+    { "path": "./packages/replay" },
     { "path": "./packages/api" },
     { "path": "./packages/web" }
   ]

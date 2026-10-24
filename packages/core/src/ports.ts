@@ -157,3 +157,223 @@ export const BackupRecordSchema = z.object({
   integrityOk: z.boolean()
 });
 export type BackupRecord = z.infer<typeof BackupRecordSchema>;
+
+// ============================================================================
+// Milestone M2: Market Data, Confirmed Bars, Proposals, & Experiment Registry
+// ============================================================================
+
+export const BarTimeframeSchema = z.enum(["15m", "1H", "4H", "1D"]);
+export type BarTimeframe = z.infer<typeof BarTimeframeSchema>;
+
+export const ALL_BAR_TIMEFRAMES: readonly BarTimeframe[] = BarTimeframeSchema.options;
+
+export const TIMEFRAME_DURATION_MS: Record<BarTimeframe, number> = {
+  "15m": 15 * 60 * 1000,
+  "1H": 60 * 60 * 1000,
+  "4H": 4 * 60 * 60 * 1000,
+  "1D": 24 * 60 * 60 * 1000
+};
+
+export const ConfirmedBarSchema = z.object({
+  instrumentId: z.string().min(1),
+  timeframe: BarTimeframeSchema,
+  openTs: z.number().int().nonnegative(),
+  closeTs: z.number().int().positive(),
+  open: z.string(),
+  high: z.string(),
+  low: z.string(),
+  close: z.string(),
+  volumeContracts: z.string(),
+  volumeQuote: z.string(),
+  confirm: z.literal("1")
+});
+export type ConfirmedBar = z.infer<typeof ConfirmedBarSchema>;
+
+export interface RawOkxCandlePayload {
+  readonly openTs: number | string;
+  readonly open: string;
+  readonly high: string;
+  readonly low: string;
+  readonly close: string;
+  readonly volumeContracts: string;
+  readonly volumeQuote: string;
+  readonly confirm: string;
+}
+
+export const SettledFundingRateSchema = z.object({
+  instrumentId: z.string().min(1),
+  fundingTs: z.number().int().nonnegative(),
+  fundingRate: z.string(),
+  realizedRate: z.string()
+});
+export type SettledFundingRate = z.infer<typeof SettledFundingRateSchema>;
+
+export type LookbackRequirement = Partial<Record<BarTimeframe, number>>;
+
+export const MarketGapRangeSchema = z.object({
+  instrumentId: z.string(),
+  timeframe: BarTimeframeSchema,
+  missingFromOpenTs: z.number().int().nonnegative(),
+  missingToOpenTs: z.number().int().nonnegative(),
+  missingBarCount: z.number().int().positive()
+});
+export type MarketGapRange = z.infer<typeof MarketGapRangeSchema>;
+
+export const LookbackDeficitSchema = z.object({
+  timeframe: BarTimeframeSchema,
+  requiredBars: z.number().int().positive(),
+  availableBars: z.number().int().nonnegative(),
+  hasGaps: z.boolean()
+});
+export type LookbackDeficit = z.infer<typeof LookbackDeficitSchema>;
+
+export const LookbackValidationResultSchema = z.object({
+  instrumentId: z.string(),
+  asOfMs: z.number().int().nonnegative(),
+  satisfied: z.boolean(),
+  deficits: z.array(LookbackDeficitSchema)
+});
+export type LookbackValidationResult = z.infer<typeof LookbackValidationResultSchema>;
+
+export const DataSnapshotMetadataSchema = z.object({
+  snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
+  instrumentIds: z.array(z.string()),
+  fromTs: z.number().int().nonnegative(),
+  toTs: z.number().int().nonnegative(),
+  barCount: z.number().int().nonnegative(),
+  fundingCount: z.number().int().nonnegative()
+});
+export type DataSnapshotMetadata = z.infer<typeof DataSnapshotMetadataSchema>;
+
+export interface FeatureSnapshot {
+  readonly instrumentId: string;
+  readonly asOfMs: number;
+  readonly barsByTimeframe: Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>>;
+  readonly recentFundingRates: readonly SettledFundingRate[];
+}
+
+export const ProposalSchema = z.object({
+  proposalId: z.string().min(1),
+  strategyId: z.string().min(1),
+  strategyVersion: z.string().min(1),
+  instrumentId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  entryPrice: z.string(),
+  protectiveStopPrice: z.string(),
+  takeProfitPrice: z.string().nullable(),
+  convictionScore: z.number().min(0).max(1),
+  rationale: z.string(),
+  tags: z.array(z.string())
+});
+export type Proposal = z.infer<typeof ProposalSchema>;
+
+export const ProposalMenuSchema = z.object({
+  asOfMs: z.number().int().nonnegative(),
+  strategyId: z.string().min(1),
+  strategyVersion: z.string().min(1),
+  instrumentId: z.string().min(1),
+  proposals: z.array(ProposalSchema),
+  standDownReason: z.string().optional()
+});
+export type ProposalMenu = z.infer<typeof ProposalMenuSchema>;
+
+export interface MarketDataRepository {
+  ingestOkxCandles(input: {
+    instrumentId: string;
+    timeframe: BarTimeframe;
+    candles: readonly RawOkxCandlePayload[];
+  }): { insertedCount: number; skippedUnconfirmedCount: number };
+
+  ingestSettledFunding(rates: readonly SettledFundingRate[]): number;
+
+  getConfirmedBarsAsOf(input: {
+    instrumentId: string;
+    timeframe: BarTimeframe;
+    asOfMs: number;
+    limit?: number | undefined;
+  }): readonly ConfirmedBar[];
+
+  getConfirmedBarsInRange(input: {
+    instrumentId: string;
+    timeframe: BarTimeframe;
+    fromOpenTs: number;
+    toCloseTs: number;
+  }): readonly ConfirmedBar[];
+
+  getSettledFundingAsOf(input: {
+    instrumentId: string;
+    asOfMs: number;
+    limit?: number | undefined;
+  }): readonly SettledFundingRate[];
+
+  getSettledFundingInRange(input: {
+    instrumentId: string;
+    fromTs: number;
+    toTs: number;
+  }): readonly SettledFundingRate[];
+
+  detectGaps(input: {
+    instrumentId: string;
+    timeframe: BarTimeframe;
+    fromOpenTs: number;
+    toOpenTs: number;
+  }): readonly MarketGapRange[];
+
+  assertLookbackSatisfied(input: {
+    instrumentId: string;
+    asOfMs: number;
+    requirements: LookbackRequirement;
+  }): LookbackValidationResult;
+
+  buildFeatureSnapshot(input: {
+    instrumentId: string;
+    asOfMs: number;
+    requirements: LookbackRequirement;
+  }): FeatureSnapshot;
+
+  computeDataSnapshot(input: {
+    instrumentIds: readonly string[];
+    fromTs: number;
+    toTs: number;
+  }): DataSnapshotMetadata;
+
+  listInstrumentsWithCoverage(): readonly {
+    instrumentId: string;
+    barCounts: Record<BarTimeframe, number>;
+    fundingCount: number;
+    earliestOpenTs: number | null;
+    latestCloseTs: number | null;
+  }[];
+}
+
+export const ExperimentRecordSchema = z.object({
+  experimentId: z.string().min(1),
+  strategyId: z.string().min(1),
+  strategyVersion: z.string().min(1),
+  instrumentId: z.string().min(1),
+  timeframe: BarTimeframeSchema,
+  dataSnapshotId: z.string().regex(/^[a-f0-9]{64}$/),
+  configHash: z.string().regex(/^[a-f0-9]{64}$/),
+  fromTs: z.number().int().nonnegative(),
+  toTs: z.number().int().nonnegative(),
+  totalTrades: z.number().int().nonnegative(),
+  winRate: z.number().min(0).max(1),
+  avgR: z.number(),
+  netPnlUsdt: z.string(),
+  totalFeesUsdt: z.string(),
+  totalFundingUsdt: z.string(),
+  maxDrawdownPct: z.number().nonnegative(),
+  sharpeRatio: z.number(),
+  deflatedSharpeRatio: z.number().min(0).max(1),
+  stressNetExpectancyR: z.number(),
+  walkForwardOutOfSampleAvgR: z.number(),
+  replayGatePassed: z.boolean(),
+  createdAtMs: z.number().int().nonnegative()
+});
+export type ExperimentRecord = z.infer<typeof ExperimentRecordSchema>;
+
+export interface ExperimentRepository {
+  saveExperiment(record: ExperimentRecord): ExperimentRecord;
+  listExperiments(limit?: number): readonly ExperimentRecord[];
+  getExperiment(experimentId: string): ExperimentRecord | null;
+}

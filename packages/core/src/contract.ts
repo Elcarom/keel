@@ -4,7 +4,11 @@ import { ConfigRiskClassSchema, ExecutionModeSchema, KeelConfigSchema } from "./
 import {
   AuditEventRecordSchema,
   BackupRecordSchema,
+  BarTimeframeSchema,
   ConfigSnapshotRecordSchema,
+  DataSnapshotMetadataSchema,
+  ExperimentRecordSchema,
+  LookbackValidationResultSchema,
   NotificationDeliveryResultSchema,
   SecretKeyNameSchema,
   SecretMetadataRecordSchema
@@ -73,6 +77,31 @@ export const ConfigFieldMetadataSchema = z.object({
   defaultValue: z.unknown(),
   riskClass: ConfigRiskClassSchema
 });
+
+export const InstrumentCoverageSummarySchema = z.object({
+  instrumentId: z.string(),
+  barCounts: z.record(BarTimeframeSchema, z.number().int().nonnegative()),
+  fundingCount: z.number().int().nonnegative(),
+  earliestOpenTs: z.number().int().nullable(),
+  latestCloseTs: z.number().int().nullable()
+});
+export type InstrumentCoverageSummary = z.infer<typeof InstrumentCoverageSummarySchema>;
+
+export const StrategyDescriptorSchema = z.object({
+  id: z.string(),
+  version: z.string(),
+  name: z.string(),
+  description: z.string(),
+  lookbackRequirements: z.record(z.string(), z.number().int().positive()),
+  lookbackStatusByInstrument: z.record(z.string(), LookbackValidationResultSchema)
+});
+export type StrategyDescriptor = z.infer<typeof StrategyDescriptorSchema>;
+
+export const MarketSummaryResponseSchema = z.object({
+  instruments: z.array(InstrumentCoverageSummarySchema),
+  strategies: z.array(StrategyDescriptorSchema)
+});
+export type MarketSummaryResponse = z.infer<typeof MarketSummaryResponseSchema>;
 
 export const keelApiContract = c.router({
   system: {
@@ -319,6 +348,63 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Send a test notification through the configured Discord Webhook channel"
+    }
+  },
+  market: {
+    getSummary: {
+      method: "GET",
+      path: "/api/v1/market/summary",
+      responses: {
+        200: MarketSummaryResponseSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Get confirmed market bar coverage and strategy lookback readiness"
+    },
+    seedSynthetic: {
+      method: "POST",
+      path: "/api/v1/market/seed-synthetic",
+      body: z.object({
+        instrumentId: z.string().default("BTC-USDT-SWAP"),
+        barCount1H: z.number().int().min(100).max(5000).default(720)
+      }),
+      responses: {
+        200: z.object({
+          snapshot: DataSnapshotMetadataSchema
+        }),
+        401: ApiErrorSchema
+      },
+      summary:
+        "Seed deterministic confirmed bars and 8h settled funding rates for research & replay"
+    }
+  },
+  replay: {
+    runBacktest: {
+      method: "POST",
+      path: "/api/v1/replay/run",
+      body: z.object({
+        strategyId: z.string().min(1),
+        instrumentId: z.string().default("BTC-USDT-SWAP"),
+        timeframe: BarTimeframeSchema.default("1H")
+      }),
+      responses: {
+        200: z.object({
+          experiment: ExperimentRecordSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Run an event-driven Replay backtest with 2x cost-stress and Purged Walk-Forward"
+    },
+    listExperiments: {
+      method: "GET",
+      path: "/api/v1/replay/experiments",
+      responses: {
+        200: z.object({
+          experiments: z.array(ExperimentRecordSchema)
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "List recorded replay experiments from the append-only ExperimentRegistry"
     }
   }
 });

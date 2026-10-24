@@ -8,6 +8,8 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json tsconfig.json ./
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/data/package.json ./packages/data/package.json
+COPY packages/strategy/package.json ./packages/strategy/package.json
+COPY packages/replay/package.json ./packages/replay/package.json
 COPY packages/api/package.json ./packages/api/package.json
 COPY packages/web/package.json ./packages/web/package.json
 
@@ -15,6 +17,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/core ./packages/core
 COPY packages/data ./packages/data
+COPY packages/strategy ./packages/strategy
+COPY packages/replay ./packages/replay
 COPY packages/api ./packages/api
 COPY packages/web ./packages/web
 
@@ -38,12 +42,16 @@ ENV NODE_ENV=production \
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/core/package.json ./packages/core/package.json
 COPY packages/data/package.json ./packages/data/package.json
+COPY packages/strategy/package.json ./packages/strategy/package.json
+COPY packages/replay/package.json ./packages/replay/package.json
 COPY packages/api/package.json ./packages/api/package.json
 
 RUN pnpm install --prod --frozen-lockfile --filter @keel/api... && pnpm store prune
 
 COPY --from=builder /app/packages/core/dist ./packages/core/dist
 COPY --from=builder /app/packages/data/dist ./packages/data/dist
+COPY --from=builder /app/packages/strategy/dist ./packages/strategy/dist
+COPY --from=builder /app/packages/replay/dist ./packages/replay/dist
 COPY --from=builder /app/packages/api/dist ./packages/api/dist
 COPY --from=builder /app/packages/web/dist ./packages/web/dist
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

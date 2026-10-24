@@ -311,6 +311,52 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         "config.update_step_up_failed",
         "auth.bootstrap"
       ]);
+
+      // 12. M2 Market & Replay Research Lab routes
+      const summaryBeforeRes = await app.inject({
+        method: "GET",
+        url: "/api/v1/market/summary",
+        headers: { cookie: cookieHeader }
+      });
+      expect(summaryBeforeRes.statusCode).toBe(200);
+      expect(summaryBeforeRes.json().strategies.length).toBe(3);
+
+      const seedRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/market/seed-synthetic",
+        headers: { cookie: cookieHeader },
+        payload: {
+          instrumentId: "BTC-USDT-SWAP",
+          barCount1H: 240
+        }
+      });
+      expect(seedRes.statusCode).toBe(200);
+      expect(seedRes.json().snapshot.snapshotId).toMatch(/^[0-9a-f]{64}$/);
+      expect(seedRes.json().snapshot.barCount).toBeGreaterThan(240);
+
+      const runReplayRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: {
+          strategyId: "donchian-trend-v1",
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H"
+        }
+      });
+      expect(runReplayRes.statusCode).toBe(200);
+      expect(runReplayRes.json().experiment.strategyId).toBe("donchian-trend-v1");
+      expect(runReplayRes.json().experiment.dataSnapshotId).toBe(
+        seedRes.json().snapshot.snapshotId
+      );
+
+      const listExpRes = await app.inject({
+        method: "GET",
+        url: "/api/v1/replay/experiments",
+        headers: { cookie: cookieHeader }
+      });
+      expect(listExpRes.statusCode).toBe(200);
+      expect(listExpRes.json().experiments.length).toBe(1);
     } finally {
       await app.close();
     }

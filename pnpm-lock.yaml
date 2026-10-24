@@ -50,6 +50,12 @@ importers:
       '@keel/data':
         specifier: workspace:*
         version: link:../data
+      '@keel/replay':
+        specifier: workspace:*
+        version: link:../replay
+      '@keel/strategy':
+        specifier: workspace:*
+        version: link:../strategy
       '@noble/hashes':
         specifier: ^1.7.1
         version: 1.8.0
@@ -79,6 +85,31 @@ importers:
         version: 3.25.76
 
   packages/data:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
+  packages/replay:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
+      '@keel/strategy':
+        specifier: workspace:*
+        version: link:../strategy
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@keel/data':
+        specifier: workspace:*
+        version: link:../data
+
+  packages/strategy:
     dependencies:
       '@keel/core':
         specifier: workspace:*
