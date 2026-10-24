@@ -7,12 +7,14 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json tsconfig.json ./
 COPY packages/core/package.json ./packages/core/package.json
+COPY packages/data/package.json ./packages/data/package.json
 COPY packages/api/package.json ./packages/api/package.json
 COPY packages/web/package.json ./packages/web/package.json
 
 RUN pnpm install --frozen-lockfile
 
 COPY packages/core ./packages/core
+COPY packages/data ./packages/data
 COPY packages/api ./packages/api
 COPY packages/web ./packages/web
 
@@ -35,11 +37,13 @@ ENV NODE_ENV=production \
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/core/package.json ./packages/core/package.json
+COPY packages/data/package.json ./packages/data/package.json
 COPY packages/api/package.json ./packages/api/package.json
 
 RUN pnpm install --prod --frozen-lockfile --filter @keel/api... && pnpm store prune
 
 COPY --from=builder /app/packages/core/dist ./packages/core/dist
+COPY --from=builder /app/packages/data/dist ./packages/data/dist
 COPY --from=builder /app/packages/api/dist ./packages/api/dist
 COPY --from=builder /app/packages/web/dist ./packages/web/dist
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -55,4 +59,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "packages/api/dist/cli.js"]
-
