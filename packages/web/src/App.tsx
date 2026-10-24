@@ -772,6 +772,53 @@ export function App() {
               </section>
             </div>
 
+            {/* Complete CONFIG_FIELD_REGISTRY Specification Table */}
+            <section className={cardClass}>
+              <h3 className="text-sm font-bold">
+                Config Schema Registry Reference ({registry.length} Registered Fields)
+              </h3>
+              <div className="mt-3 max-h-64 overflow-y-auto">
+                <table data-testid="config-registry-table" className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-700/60 opacity-70">
+                      <th className="py-1.5">Path</th>
+                      <th className="py-1.5">Label &amp; Help</th>
+                      <th className="py-1.5">Bounds / Unit</th>
+                      <th className="py-1.5">Default</th>
+                      <th className="py-1.5">Risk Class</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {registry.map((field) => (
+                      <tr key={field.path} className="border-b border-slate-800/60">
+                        <td className="font-mono-tabular py-1.5 pr-2">{field.path}</td>
+                        <td className="py-1.5 pr-2">
+                          <div className="font-semibold">{field.label}</div>
+                          <div className="text-[11px] opacity-70">{field.helpText}</div>
+                        </td>
+                        <td className="font-mono-tabular py-1.5 pr-2">
+                          {field.min !== undefined || field.max !== undefined
+                            ? `${field.min ?? "-"}..${field.max ?? "-"}`
+                            : "-"}{" "}
+                          {field.unit ?? ""}
+                        </td>
+                        <td className="font-mono-tabular py-1.5 pr-2">
+                          {JSON.stringify(field.defaultValue)}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${RISK_BADGE_STYLES[field.riskClass]}`}
+                          >
+                            {field.riskClass}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
             {/* Immutable Audit Trail */}
             <section className={cardClass}>
               <h3 className="text-sm font-bold">Immutable Audit Trail (SQLite WAL)</h3>

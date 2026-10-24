@@ -25,15 +25,10 @@ export {
 } from "./config.js";
 export {
   ApiErrorSchema,
-  AuditEventRecordSchema,
   AuthSessionResponseSchema,
-  BackupRecordSchema,
   ConfigChangeEntrySchema,
   ConfigDiffResultSchema,
   ConfigFieldMetadataSchema,
-  ConfigSnapshotRecordSchema,
-  NotificationDeliveryResultSchema,
-  SecretMetadataRecordSchema,
   SystemStatusResponseSchema,
   keelApiContract,
   type AuthSessionResponse,
@@ -42,8 +37,13 @@ export {
 export { ScaledDecimal, type TickRoundMode } from "./decimal.js";
 export {
   ALL_SECRET_KEY_NAMES,
+  AuditEventRecordSchema,
+  BackupRecordSchema,
+  ConfigSnapshotRecordSchema,
+  NotificationDeliveryResultSchema,
   NotificationSeveritySchema,
   SecretKeyNameSchema,
+  SecretMetadataRecordSchema,
   type AdminSessionRecord,
   type AdminUserRecord,
   type AuditEventRecord,
@@ -57,6 +57,7 @@ export {
   type NotificationChannel,
   type NotificationDeliveryResult,
   type NotificationMessage,
+  type NotificationPayload,
   type NotificationSeverity,
   type RollbackConfigInput,
   type SaveConfigSnapshotInput,

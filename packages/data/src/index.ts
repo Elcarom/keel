@@ -45,15 +45,19 @@ export interface SqlitePragmaStatus {
   readonly foreignKeys: number;
 }
 
-export interface SqliteDataStore {
+export interface BackupService {
+  createBackup(): BackupRecord;
+  listBackups(): readonly BackupRecord[];
+}
+
+export interface SqliteDataStore extends BackupService {
   readonly configRepo: ConfigRepository;
   readonly auditRepo: AuditRepository;
   readonly secretVaultRepo: SecretVaultRepository;
   readonly authRepo: AuthRepository;
+  readonly backupService: BackupService;
   getPragmaStatus(): SqlitePragmaStatus;
-  createBackup(): BackupRecord;
-  listBackups(): readonly BackupRecord[];
-  checkpointWal(): void;
+  checkpointWal(): { busy: number; log: number; checkpointed: number };
   close(): void;
 }
 
@@ -436,23 +440,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
 
   let backupSequence = 0;
 
-  return {
-    configRepo,
-    auditRepo,
-    secretVaultRepo,
-    authRepo,
-
-    getPragmaStatus(): SqlitePragmaStatus {
-      const jm = db.prepare("PRAGMA journal_mode").get();
-      const sync = db.prepare("PRAGMA synchronous").get();
-      const fk = db.prepare("PRAGMA foreign_keys").get();
-      return {
-        journalMode: String(jm?.["journal_mode"] ?? ""),
-        synchronous: Number(sync?.["synchronous"] ?? 0),
-        foreignKeys: Number(fk?.["foreign_keys"] ?? 0)
-      };
-    },
-
+  const backupService: BackupService = {
     createBackup(): BackupRecord {
       mkdirSync(backupsDir, { recursive: true });
       const nowMs = options.clock.nowMs();
@@ -514,12 +502,45 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
           integrityOk: true
         };
       });
+    }
+  };
+
+  return {
+    configRepo,
+    auditRepo,
+    secretVaultRepo,
+    authRepo,
+    backupService,
+
+    getPragmaStatus(): SqlitePragmaStatus {
+      const jm = db.prepare("PRAGMA journal_mode").get();
+      const sync = db.prepare("PRAGMA synchronous").get();
+      const fk = db.prepare("PRAGMA foreign_keys").get();
+      return {
+        journalMode: String(jm?.["journal_mode"] ?? ""),
+        synchronous: Number(sync?.["synchronous"] ?? 0),
+        foreignKeys: Number(fk?.["foreign_keys"] ?? 0)
+      };
     },
 
-    checkpointWal(): void {
-      if (options.dbPath !== ":memory:") {
-        db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    createBackup(): BackupRecord {
+      return backupService.createBackup();
+    },
+
+    listBackups(): readonly BackupRecord[] {
+      return backupService.listBackups();
+    },
+
+    checkpointWal(): { busy: number; log: number; checkpointed: number } {
+      if (options.dbPath === ":memory:") {
+        return { busy: 0, log: 0, checkpointed: 0 };
       }
+      const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+      return {
+        busy: Number(row?.["busy"] ?? 0),
+        log: Number(row?.["log"] ?? 0),
+        checkpointed: Number(row?.["checkpointed"] ?? 0)
+      };
     },
 
     close(): void {

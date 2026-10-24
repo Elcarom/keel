@@ -1,7 +1,14 @@
 import { initContract } from "@ts-rest/core";
 import { z } from "zod";
 import { ConfigRiskClassSchema, ExecutionModeSchema, KeelConfigSchema } from "./config.js";
-import { SecretKeyNameSchema } from "./ports.js";
+import {
+  AuditEventRecordSchema,
+  BackupRecordSchema,
+  ConfigSnapshotRecordSchema,
+  NotificationDeliveryResultSchema,
+  SecretKeyNameSchema,
+  SecretMetadataRecordSchema
+} from "./ports.js";
 
 const c = initContract();
 
@@ -55,16 +62,6 @@ export const ConfigDiffResultSchema = z.object({
   afterHash: z.string()
 });
 
-export const ConfigSnapshotRecordSchema = z.object({
-  version: z.number().int().positive(),
-  configHash: z.string().regex(/^[a-f0-9]{64}$/),
-  config: KeelConfigSchema,
-  actor: z.string(),
-  reason: z.string(),
-  highestRiskClass: ConfigRiskClassSchema,
-  createdAtMs: z.number().int()
-});
-
 export const ConfigFieldMetadataSchema = z.object({
   key: z.string(),
   path: z.string(),
@@ -75,41 +72,6 @@ export const ConfigFieldMetadataSchema = z.object({
   max: z.number().optional(),
   defaultValue: z.unknown(),
   riskClass: ConfigRiskClassSchema
-});
-
-export const SecretMetadataRecordSchema = z.object({
-  keyName: SecretKeyNameSchema,
-  isConfigured: z.boolean(),
-  maskedPreview: z.string(),
-  updatedAtMs: z.number().int().nullable(),
-  updatedBy: z.string().nullable()
-});
-
-export const AuditEventRecordSchema = z.object({
-  id: z.number().int().positive(),
-  ts: z.number().int(),
-  actor: z.string(),
-  clientIp: z.string(),
-  action: z.string(),
-  riskClass: ConfigRiskClassSchema,
-  configHash: z.string(),
-  details: z.record(z.string(), z.unknown())
-});
-
-export const BackupRecordSchema = z.object({
-  fileName: z.string(),
-  filePath: z.string(),
-  sizeBytes: z.number().int().nonnegative(),
-  createdAtMs: z.number().int(),
-  integrityOk: z.boolean()
-});
-
-export const NotificationDeliveryResultSchema = z.object({
-  delivered: z.boolean(),
-  suppressedReason: z
-    .enum(["disabled", "severity_filtered", "cooldown_active", "missing_webhook"])
-    .optional(),
-  error: z.string().optional()
 });
 
 export const keelApiContract = c.router({

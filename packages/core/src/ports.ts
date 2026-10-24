@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { ConfigRiskClass, KeelConfig } from "./config.js";
+import {
+  ConfigRiskClassSchema,
+  KeelConfigSchema,
+  type ConfigRiskClass,
+  type KeelConfig
+} from "./config.js";
 
 export const SecretKeyNameSchema = z.enum([
   "okxApiKey",
@@ -12,15 +17,16 @@ export type SecretKeyName = z.infer<typeof SecretKeyNameSchema>;
 
 export const ALL_SECRET_KEY_NAMES: readonly SecretKeyName[] = SecretKeyNameSchema.options;
 
-export interface ConfigSnapshotRecord {
-  readonly version: number;
-  readonly configHash: string;
-  readonly config: KeelConfig;
-  readonly actor: string;
-  readonly reason: string;
-  readonly highestRiskClass: ConfigRiskClass;
-  readonly createdAtMs: number;
-}
+export const ConfigSnapshotRecordSchema = z.object({
+  version: z.number().int().positive(),
+  configHash: z.string().regex(/^[a-f0-9]{64}$/),
+  config: KeelConfigSchema,
+  actor: z.string(),
+  reason: z.string(),
+  highestRiskClass: ConfigRiskClassSchema,
+  createdAtMs: z.number().int()
+});
+export type ConfigSnapshotRecord = z.infer<typeof ConfigSnapshotRecordSchema>;
 
 export interface SaveConfigSnapshotInput {
   readonly config: KeelConfig;
@@ -45,16 +51,17 @@ export interface ConfigRepository {
   rollbackToVersion(input: RollbackConfigInput): ConfigSnapshotRecord;
 }
 
-export interface AuditEventRecord {
-  readonly id: number;
-  readonly ts: number;
-  readonly actor: string;
-  readonly clientIp: string;
-  readonly action: string;
-  readonly riskClass: ConfigRiskClass;
-  readonly configHash: string;
-  readonly details: Record<string, unknown>;
-}
+export const AuditEventRecordSchema = z.object({
+  id: z.number().int().positive(),
+  ts: z.number().int(),
+  actor: z.string(),
+  clientIp: z.string(),
+  action: z.string(),
+  riskClass: ConfigRiskClassSchema,
+  configHash: z.string(),
+  details: z.record(z.string(), z.unknown())
+});
+export type AuditEventRecord = z.infer<typeof AuditEventRecordSchema>;
 
 export type NewAuditEventInput = Omit<AuditEventRecord, "id">;
 
@@ -73,13 +80,14 @@ export interface EncryptedSecretRecord {
   readonly updatedBy: string;
 }
 
-export interface SecretMetadataRecord {
-  readonly keyName: SecretKeyName;
-  readonly isConfigured: boolean;
-  readonly maskedPreview: string;
-  readonly updatedAtMs: number | null;
-  readonly updatedBy: string | null;
-}
+export const SecretMetadataRecordSchema = z.object({
+  keyName: SecretKeyNameSchema,
+  isConfigured: z.boolean(),
+  maskedPreview: z.string(),
+  updatedAtMs: z.number().int().nullable(),
+  updatedBy: z.string().nullable()
+});
+export type SecretMetadataRecord = z.infer<typeof SecretMetadataRecordSchema>;
 
 export interface SecretVaultRepository {
   upsertSecret(record: EncryptedSecretRecord): void;
@@ -126,22 +134,26 @@ export interface NotificationMessage {
   readonly dedupKey?: string | undefined;
   readonly metadata?: Record<string, unknown> | undefined;
 }
+export type NotificationPayload = NotificationMessage;
 
-export interface NotificationDeliveryResult {
-  readonly delivered: boolean;
-  readonly suppressedReason?:
-    "disabled" | "severity_filtered" | "cooldown_active" | "missing_webhook" | undefined;
-  readonly error?: string | undefined;
-}
+export const NotificationDeliveryResultSchema = z.object({
+  delivered: z.boolean(),
+  suppressedReason: z
+    .enum(["disabled", "severity_filtered", "cooldown_active", "missing_webhook"])
+    .optional(),
+  error: z.string().optional()
+});
+export type NotificationDeliveryResult = z.infer<typeof NotificationDeliveryResultSchema>;
 
 export interface NotificationChannel {
   send(message: NotificationMessage): Promise<NotificationDeliveryResult>;
 }
 
-export interface BackupRecord {
-  readonly fileName: string;
-  readonly filePath: string;
-  readonly sizeBytes: number;
-  readonly createdAtMs: number;
-  readonly integrityOk: boolean;
-}
+export const BackupRecordSchema = z.object({
+  fileName: z.string(),
+  filePath: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  createdAtMs: z.number().int(),
+  integrityOk: z.boolean()
+});
+export type BackupRecord = z.infer<typeof BackupRecordSchema>;

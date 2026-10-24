@@ -109,8 +109,22 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       headers: req.headers,
       fallbackIp: req.ip,
       config: active.config,
-      authManager
+      authManager,
+      nowMs: clock.nowMs()
     });
+  };
+
+  const requireAuthenticatedIngress = (
+    req: FastifyRequest
+  ): (IngressContext & { readonly username: string }) | null => {
+    const ingress = getIngress(req);
+    if (!ingress.session.authenticated || !ingress.session.username) {
+      return null;
+    }
+    return {
+      ...ingress,
+      username: ingress.session.username
+    };
   };
 
   app.get("/healthz", async () => {
@@ -204,16 +218,16 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       },
 
       createBackup: async ({ request }) => {
-        const ingress = getIngress(request);
-        if (!ingress.session.authenticated || !ingress.session.username) {
+        const authIngress = requireAuthenticatedIngress(request);
+        if (!authIngress) {
           return { status: 401, body: { error: "Authentication required" } };
         }
         const active = getActiveSnapshot();
         const backup = dataStore.createBackup();
         dataStore.auditRepo.append({
           ts: clock.nowMs(),
-          actor: ingress.session.username,
-          clientIp: ingress.clientIp,
+          actor: authIngress.username,
+          clientIp: authIngress.clientIp,
           action: "system.backup",
           riskClass: "safe",
           configHash: active.configHash,

@@ -6,7 +6,7 @@ import type {
   NotificationMessage,
   NotificationSeverity
 } from "@keel/core";
-import { redactLogObject } from "./redact.js";
+import { redactSecrets } from "./redact.js";
 
 export interface WebhookFetchInit {
   readonly method: string;
@@ -30,7 +30,7 @@ export interface DiscordWebhookNotifierOptions {
 
 const SEVERITY_COLORS: Record<NotificationSeverity, number> = {
   CRITICAL: 0xdc2626, // Signal Crimson
-  WARNING: 0xf59e0b, //Signal Amber
+  WARNING: 0xf59e0b, // Signal Amber
   INFO: 0x0d9488 // Harbor Teal
 };
 
@@ -91,7 +91,7 @@ export class DiscordWebhookNotifier implements NotificationChannel {
       return { delivered: false, suppressedReason: "missing_webhook" };
     }
 
-    const redactedMetadata = message.metadata ? redactLogObject(message.metadata) : undefined;
+    const redactedMetadata = message.metadata ? redactSecrets(message.metadata) : undefined;
 
     const fields = redactedMetadata
       ? Object.entries(redactedMetadata).map(([name, val]) => ({
@@ -101,7 +101,7 @@ export class DiscordWebhookNotifier implements NotificationChannel {
         }))
       : [];
 
-    const discordPayload = {
+    const discordPayload = redactSecrets({
       username: "Keel Telemetry",
       embeds: [
         {
@@ -112,7 +112,7 @@ export class DiscordWebhookNotifier implements NotificationChannel {
           fields
         }
       ]
-    };
+    });
 
     try {
       const response = await this.fetchFn(webhookUrl, {

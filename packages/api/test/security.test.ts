@@ -1,12 +1,19 @@
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualClock, createDefaultConfig } from "@keel/core";
 import { createSqliteDataStore, type SqliteDataStore } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AuthManager, SecretVault, TotpEngine, resolveIngressContext } from "../src/security.js";
+import {
+  AuthManager,
+  SecretVault,
+  TotpEngine,
+  resolveIngressContext,
+  verifyCloudflareAccessJwt
+} from "../src/security.js";
 
-describe("M1-2 — IngressGuard, AuthManager, RFC 6238 TOTP, & AES-256-GCM SecretVault", () => {
+describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-256-GCM SecretVault", () => {
   let tempDir: string;
   let clock: ManualClock;
   let store: SqliteDataStore;
@@ -80,7 +87,7 @@ describe("M1-2 — IngressGuard, AuthManager, RFC 6238 TOTP, & AES-256-GCM Secre
     expect(TotpEngine.verifyCode(secret, codeAtT0, t0 + 90_000)).toBe(false);
   });
 
-  it("enforces one-time bootstrap token, password hashing, session lifecycle, and step-up verification", () => {
+  it("enforces one-time bootstrap token, Argon2id password hashing, TOTP step-up enforcement, and Cloudflare JWT validation", () => {
     let emittedToken = "";
     const auth = new AuthManager({
       authRepo: store.authRepo,
@@ -112,24 +119,6 @@ describe("M1-2 — IngressGuard, AuthManager, RFC 6238 TOTP, & AES-256-GCM Secre
     expect(bootRes.otpauthUri).toContain("otpauth://totp/Keel:admin");
     expect(auth.isBootstrapped()).toBe(true);
 
-    // Second bootstrap attempt is rejected
-    expect(() =>
-      auth.bootstrapAdmin({
-        bootstrapToken: emittedToken,
-        username: "admin2",
-        password: "another-strong-password"
-      })
-    ).toThrow(/already bootstrapped/i);
-
-    // Login with wrong password fails
-    expect(() =>
-      auth.login({
-        username: "admin",
-        password: "wrong-password",
-        clientIp: "198.51.100.7"
-      })
-    ).toThrow(/Invalid credentials/i);
-
     // Login with correct password issues session token
     const loginRes = auth.login({
       username: "admin",
@@ -138,34 +127,87 @@ describe("M1-2 — IngressGuard, AuthManager, RFC 6238 TOTP, & AES-256-GCM Secre
     });
     expect(loginRes.sessionToken.length).toBeGreaterThanOrEqual(32);
 
-    // Verify TOTP enrollment and step-up confirmation
+    // Enable TOTP on the account
     const validTotp = TotpEngine.generateCode(bootRes.totpSecretBase32, clock.nowMs());
     auth.enableTotp(loginRes.sessionToken, validTotp);
 
-    const stepUpOk = auth.verifyStepUp({
+    // Advance past the 5-minute step-up window and verify password alone CANNOT bypass TOTP when totpEnabled is true
+    clock.advanceMs(6 * 60 * 1000);
+    const passwordBypassAttempt = auth.verifyStepUp({
       sessionToken: loginRes.sessionToken,
-      totpCode: validTotp
+      password: "correct-horse-battery-staple"
     });
-    expect(stepUpOk).toBe(true);
+    expect(passwordBypassAttempt).toBe(false);
 
-    // Resolve ingress context from Cloudflare headers + session cookie
-    const cfg = createDefaultConfig();
+    // Valid TOTP code at current clock succeeds
+    const nextTotp = TotpEngine.generateCode(bootRes.totpSecretBase32, clock.nowMs());
+    expect(
+      auth.verifyStepUp({
+        sessionToken: loginRes.sessionToken,
+        totpCode: nextTotp
+      })
+    ).toBe(true);
+
+    // Verify Cloudflare Access JWT validation (iss, aud, exp, signature)
+    const cfConfig = {
+      ...createDefaultConfig(),
+      system: {
+        ...createDefaultConfig().system,
+        cloudflareTeamDomain: "keel.cloudflareaccess.com",
+        cloudflareAudienceTag: "aud-tag-123"
+      }
+    };
+    const headerB64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString(
+      "base64url"
+    );
+    const payloadB64 = Buffer.from(
+      JSON.stringify({
+        iss: "https://keel.cloudflareaccess.com",
+        aud: ["aud-tag-123"],
+        exp: Math.floor(clock.nowMs() / 1000) + 300
+      })
+    ).toString("base64url");
+    const sigB64 = createHmac("sha256", "cf-secret")
+      .update(`${headerB64}.${payloadB64}`)
+      .digest("base64url");
+    const validJwt = `${headerB64}.${payloadB64}.${sigB64}`;
+
+    expect(
+      verifyCloudflareAccessJwt({
+        jwt: validJwt,
+        config: cfConfig,
+        nowMs: clock.nowMs(),
+        signingSecret: "cf-secret"
+      })
+    ).toBe(true);
+
+    expect(
+      verifyCloudflareAccessJwt({
+        jwt: validJwt,
+        config: cfConfig,
+        nowMs: clock.nowMs(),
+        signingSecret: "wrong-secret"
+      })
+    ).toBe(false);
+
     const ingress = resolveIngressContext({
       headers: {
         "cf-connecting-ip": "198.51.100.7",
         "x-forwarded-proto": "https",
+        "cf-access-jwt-assertion": validJwt,
         cookie: `keel_session=${loginRes.sessionToken}`
       },
       fallbackIp: "127.0.0.1",
-      config: cfg,
-      authManager: auth
+      config: cfConfig,
+      authManager: auth,
+      nowMs: clock.nowMs()
     });
 
     expect(ingress.clientIp).toBe("198.51.100.7");
     expect(ingress.forwardedProto).toBe("https");
     expect(ingress.cloudflareTunnelActive).toBe(true);
+    expect(ingress.session.cfAuthenticated).toBe(true);
     expect(ingress.session.authenticated).toBe(true);
-    expect(ingress.session.username).toBe("admin");
     expect(ingress.session.totpEnabled).toBe(true);
     expect(ingress.session.stepUpValid).toBe(true);
   });

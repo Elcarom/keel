@@ -250,7 +250,50 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(backupRes.statusCode).toBe(200);
       expect(backupRes.json().backup.integrityOk).toBe(true);
 
-      // 10. Verify audit trail recorded all governance mutations
+      // 10. Verify locked-in-live config mutation is rejected with 403 when in Live-Ramp mode
+      const liveRampCfg = {
+        ...createDefaultConfig(),
+        system: {
+          ...createDefaultConfig().system,
+          executionMode: "Live-Ramp" as const
+        }
+      };
+      const modeUpdateRes = await app.inject({
+        method: "PUT",
+        url: "/api/v1/config",
+        headers: { cookie: cookieHeader },
+        payload: {
+          config: liveRampCfg,
+          reason: "Enter Live-Ramp mode",
+          stepUpPassword: "correct-horse-battery-staple"
+        }
+      });
+      expect(modeUpdateRes.statusCode).toBe(200);
+
+      const lockedEditCfg = {
+        ...liveRampCfg,
+        risk: {
+          ...liveRampCfg.risk,
+          strategy: {
+            ...liveRampCfg.risk.strategy,
+            maxGrossLeverage: 2.5
+          }
+        }
+      };
+      const blockedRes = await app.inject({
+        method: "PUT",
+        url: "/api/v1/config",
+        headers: { cookie: cookieHeader },
+        payload: {
+          config: lockedEditCfg,
+          reason: "Attempt to alter locked-in-live maxGrossLeverage in Live-Ramp",
+          stepUpPassword: "correct-horse-battery-staple"
+        }
+      });
+      expect(blockedRes.statusCode).toBe(403);
+      expect(blockedRes.json().blockedPaths).toContain("risk.strategy.maxGrossLeverage");
+
+      // 11. Verify audit trail recorded all governance mutations
       const auditRes = await app.inject({
         method: "GET",
         url: "/api/v1/audit",
@@ -259,6 +302,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(auditRes.statusCode).toBe(200);
       const actions = auditRes.json().events.map((e: { action: string }) => e.action);
       expect(actions).toEqual([
+        "config.update_blocked",
+        "config.update",
         "system.backup",
         "config.rollback",
         "secrets.upsert",

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualClock, createDefaultConfig } from "@keel/core";
@@ -174,11 +174,21 @@ describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => 
       const b3 = store.createBackup();
       expect(b3.integrityOk).toBe(true);
 
-      const kept = store.listBackups();
+      const kept = store.backupService.listBackups();
       expect(kept).toHaveLength(2);
       expect(kept.map((b) => b.fileName)).toEqual([b3.fileName, b2.fileName]);
+
+      // Verify wal_checkpoint(TRUNCATE) resets WAL log frames to 0
+      const walStats = store.checkpointWal();
+      expect(walStats.busy).toBe(0);
+      expect(walStats.log).toBe(0);
     } finally {
       store.close();
+    }
+
+    const walPath = `${dbPath}-wal`;
+    if (existsSync(walPath)) {
+      expect(statSync(walPath).size).toBe(0);
     }
   });
 });

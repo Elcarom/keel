@@ -4,9 +4,9 @@ import {
   createHash,
   createHmac,
   randomBytes,
-  scryptSync,
   timingSafeEqual
 } from "node:crypto";
+import { argon2id } from "@noble/hashes/argon2";
 import {
   ALL_SECRET_KEY_NAMES,
   type AuthRepository,
@@ -224,9 +224,13 @@ function hashSessionToken(token: string): string {
   return createHash("sha256").update(`keel-session-v1:${token}`).digest("hex");
 }
 
-function hashPassword(password: string, saltHex: string): string {
+/**
+ * RFC 9106 Argon2id memory-hard password derivation (ADR-0003).
+ */
+function hashPasswordArgon2id(password: string, saltHex: string): string {
   const salt = Buffer.from(saltHex, "hex");
-  return scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString("hex");
+  const digest = argon2id(password, salt, { t: 2, m: 4096, p: 1, dkLen: 32 });
+  return Buffer.from(digest).toString("hex");
 }
 
 function verifyPasswordConstantTime(
@@ -234,7 +238,7 @@ function verifyPasswordConstantTime(
   saltHex: string,
   expectedHashHex: string
 ): boolean {
-  const candidateHex = hashPassword(password, saltHex);
+  const candidateHex = hashPasswordArgon2id(password, saltHex);
   const a = Buffer.from(candidateHex, "hex");
   const b = Buffer.from(expectedHashHex, "hex");
   return a.length === b.length && timingSafeEqual(a, b);
@@ -275,10 +279,6 @@ export class AuthManager {
     return this.authRepo.getAdminUser() !== null;
   }
 
-  public getBootstrapTokenForLocalTests(): string | null {
-    return this.activeBootstrapToken;
-  }
-
   public bootstrapAdmin(input: { bootstrapToken: string; username: string; password: string }): {
     username: string;
     totpSecretBase32: string;
@@ -297,7 +297,7 @@ export class AuthManager {
     }
 
     const saltHex = randomBytes(16).toString("hex");
-    const passwordHashHex = hashPassword(input.password, saltHex);
+    const passwordHashHex = hashPasswordArgon2id(input.password, saltHex);
     const totpSecretBase32 = TotpEngine.generateSecretBase32();
     const nowMs = this.clock.nowMs();
 
@@ -430,13 +430,18 @@ export class AuthManager {
     }
     const nowMs = this.clock.nowMs();
 
-    // Check explicit TOTP or password credential if provided
-    if (user.totpEnabled && user.totpSecretBase32 && input.totpCode) {
-      if (TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
-        this.authRepo.updateSessionStepUp(session.sessionIdHash, nowMs);
-        return true;
+    // When TOTP is enabled on the account, password alone cannot bypass TOTP step-up
+    if (user.totpEnabled && user.totpSecretBase32) {
+      if (input.totpCode) {
+        if (TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
+          this.authRepo.updateSessionStepUp(session.sessionIdHash, nowMs);
+          return true;
+        }
+        return false;
       }
-      return false;
+      return (
+        session.lastStepUpAtMs !== null && nowMs - session.lastStepUpAtMs <= this.stepUpWindowMs
+      );
     }
 
     if (input.password) {
@@ -447,7 +452,6 @@ export class AuthManager {
       return false;
     }
 
-    // Otherwise check if recent step-up window is still valid
     if (session.lastStepUpAtMs !== null && nowMs - session.lastStepUpAtMs <= this.stepUpWindowMs) {
       return true;
     }
@@ -539,10 +543,6 @@ export interface IngressContext {
 function parseSessionTokenFromHeaders(
   headers: Record<string, string | string[] | undefined>
 ): string | null {
-  const authHeader = headers["authorization"];
-  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
-    return authHeader.slice(7).trim();
-  }
   const cookieHeader = headers["cookie"];
   if (typeof cookieHeader === "string") {
     for (const part of cookieHeader.split(";")) {
@@ -556,14 +556,90 @@ function parseSessionTokenFromHeaders(
 }
 
 /**
+ * Validates a Cloudflare Zero Trust Access JWT (`Cf-Access-Jwt-Assertion`)
+ * against the configured `cloudflareTeamDomain`, `cloudflareAudienceTag`,
+ * expiration (`exp`), not-before (`nbf`), and optional signing secret.
+ */
+export function verifyCloudflareAccessJwt(input: {
+  jwt: string;
+  config: KeelConfig;
+  nowMs: number;
+  signingSecret?: string | undefined;
+}): boolean {
+  const parts = input.jwt.trim().split(".");
+  if (parts.length !== 3) {
+    return false;
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  if (!headerB64 || !payloadB64 || !signatureB64) {
+    return false;
+  }
+
+  try {
+    const payloadJson = Buffer.from(payloadB64, "base64url").toString("utf8");
+    const claims = JSON.parse(payloadJson) as {
+      iss?: unknown;
+      aud?: unknown;
+      exp?: unknown;
+      nbf?: unknown;
+    };
+
+    const nowSec = Math.floor(input.nowMs / 1000);
+    if (typeof claims.exp !== "number" || claims.exp <= nowSec) {
+      return false;
+    }
+    if (typeof claims.nbf === "number" && claims.nbf > nowSec) {
+      return false;
+    }
+
+    const teamDomain = input.config.system.cloudflareTeamDomain.trim();
+    if (teamDomain.length > 0) {
+      const expectedIssuer = teamDomain.startsWith("https://")
+        ? teamDomain
+        : `https://${teamDomain}`;
+      if (claims.iss !== expectedIssuer) {
+        return false;
+      }
+    }
+
+    const expectedAud = input.config.system.cloudflareAudienceTag.trim();
+    if (expectedAud.length > 0) {
+      const audMatch =
+        claims.aud === expectedAud ||
+        (Array.isArray(claims.aud) && claims.aud.includes(expectedAud));
+      if (!audMatch) {
+        return false;
+      }
+    }
+
+    const secret = input.signingSecret ?? process.env["KEEL_CF_ACCESS_SECRET"];
+    if (secret && secret.length > 0) {
+      const expectedSig = createHmac("sha256", secret)
+        .update(`${headerB64}.${payloadB64}`)
+        .digest("base64url");
+      const a = Buffer.from(signatureB64, "utf8");
+      const b = Buffer.from(expectedSig, "utf8");
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Deep IngressGuard seam resolving Cloudflare Tunnel headers (`CF-Connecting-IP`,
- * `X-Forwarded-Proto`, `Cf-Access-Jwt-Assertion`) and local Argon2id/Scrypt session state.
+ * `X-Forwarded-Proto`, `Cf-Access-Jwt-Assertion`) and local Argon2id session state.
  */
 export function resolveIngressContext(input: {
   headers: Record<string, string | string[] | undefined>;
   fallbackIp: string;
   config: KeelConfig;
   authManager: AuthManager;
+  nowMs?: number | undefined;
 }): IngressContext {
   const trustCf = input.config.system.trustCloudflareHeaders;
   const cfIp = input.headers["cf-connecting-ip"];
@@ -594,7 +670,14 @@ export function resolveIngressContext(input: {
   const cloudflareTunnelActive =
     typeof cfIp === "string" || typeof input.headers["cf-ray"] === "string";
 
-  const cfAuthenticated = typeof cfJwt === "string" && cfJwt.trim().split(".").length === 3;
+  const cfAuthenticated =
+    trustCf &&
+    typeof cfJwt === "string" &&
+    verifyCloudflareAccessJwt({
+      jwt: cfJwt,
+      config: input.config,
+      nowMs: input.nowMs ?? Date.now()
+    });
 
   const sessionToken = parseSessionTokenFromHeaders(input.headers);
   const session = input.authManager.resolveSessionStatus(sessionToken, cfAuthenticated);
