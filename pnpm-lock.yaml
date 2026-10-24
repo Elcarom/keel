@@ -56,6 +56,9 @@ importers:
       '@keel/ai':
         specifier: workspace:*
         version: link:../ai
+      '@keel/broker':
+        specifier: workspace:*
+        version: link:../broker
       '@keel/core':
         specifier: workspace:*
         version: link:../core
@@ -83,6 +86,15 @@ importers:
       pino:
         specifier: ^9.6.0
         version: 9.14.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
+  packages/broker:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: ^3.24.1
         version: 3.25.76

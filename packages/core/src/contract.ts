@@ -9,12 +9,16 @@ import {
   ConfigSnapshotRecordSchema,
   ContextFeatureRecordSchema,
   DataSnapshotMetadataSchema,
+  DmsStatusSchema,
+  ExchangeOrderInputSchema,
+  ExchangeOrderResultSchema,
   ExperimentRecordSchema,
   LedgerTrialBalanceSchema,
   LookbackValidationResultSchema,
   NotificationDeliveryResultSchema,
   PaperOrderRecordSchema,
   PaperPositionRecordSchema,
+  ReconciliationResultSchema,
   SecretKeyNameSchema,
   SecretMetadataRecordSchema,
   StrategyPromotionRecordSchema
@@ -563,6 +567,78 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Evaluate active ProposalMenu through ShadowAdvisor alongside BaselineChooser"
+    }
+  },
+  broker: {
+    getStatus: {
+      method: "GET",
+      path: "/api/v1/broker/status",
+      responses: {
+        200: z.object({
+          connected: z.boolean(),
+          venue: z.string(),
+          dms: DmsStatusSchema,
+          openPositionsCount: z.number(),
+          openOrdersCount: z.number()
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Get exchange broker connection, active DMS countdown, and position count"
+    },
+    submitOrder: {
+      method: "POST",
+      path: "/api/v1/broker/orders",
+      body: ExchangeOrderInputSchema,
+      responses: {
+        200: z.object({
+          order: ExchangeOrderResultSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Submit order with mandatory attached protective stop (ADR-0006)"
+    },
+    reconcile: {
+      method: "POST",
+      path: "/api/v1/broker/reconcile",
+      body: z.object({}),
+      responses: {
+        200: z.object({
+          reconciliation: ReconciliationResultSchema
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Run position and order reconciliation between local ledger and exchange"
+    },
+    dmsHeartbeat: {
+      method: "POST",
+      path: "/api/v1/broker/dms-heartbeat",
+      body: z.object({}),
+      responses: {
+        200: z.object({
+          ok: z.boolean(),
+          countdownSeconds: z.number(),
+          dms: DmsStatusSchema
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Send 60-second cancel-all-after Dead-Man's Switch heartbeat (ADR-0006)"
+    },
+    flatten: {
+      method: "POST",
+      path: "/api/v1/broker/flatten",
+      body: z.object({
+        reason: z.string().default("Operator manual emergency flatten")
+      }),
+      responses: {
+        200: z.object({
+          flattenedCount: z.number().int().nonnegative(),
+          positions: z.array(PaperPositionRecordSchema)
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Emergency flatten all exchange positions via market orders (ADR-0006)"
     }
   }
 });
