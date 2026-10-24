@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enable Corepack & pnpm
         run: |
@@ -59,7 +59,7 @@ jobs:
     needs: [quality-gates]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build Keel Docker image
         run: docker build -t ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }} .
