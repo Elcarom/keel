@@ -9,12 +9,15 @@ import {
   type ConfigRiskClass,
   type ConfigSnapshotRecord,
   type ContextFeatureRecord,
+  type DmsStatus,
+  type ExchangeOrderResult,
   type ExperimentRecord,
   type KeelConfig,
   type LedgerTrialBalance,
   type MarketSummaryResponse,
   type PaperOrderRecord,
   type PaperPositionRecord,
+  type ReconciliationResult,
   type SecretKeyName,
   type SecretMetadataRecord,
   type StrategyPromotionRecord,
@@ -116,6 +119,27 @@ export function App() {
   const [extractingContext, setExtractingContext] = useState(false);
   const [evaluatingShadow, setEvaluatingShadow] = useState(false);
 
+  // M5 Exchange Broker & Attached Stops state
+  const [brokerStatus, setBrokerStatus] = useState<{
+    connected: boolean;
+    venue: string;
+    dms: DmsStatus;
+    openPositionsCount: number;
+    openOrdersCount: number;
+  } | null>(null);
+  const [submittedExchangeOrders, setSubmittedExchangeOrders] = useState<
+    readonly ExchangeOrderResult[]
+  >([]);
+  const [reconciliation, setReconciliation] = useState<ReconciliationResult | null>(null);
+  const [orderSide, setOrderSide] = useState<"long" | "short">("long");
+  const [orderSizeLots, setOrderSizeLots] = useState(1);
+  const [orderEntryPrice, setOrderEntryPrice] = useState("50000.00");
+  const [orderStopPrice, setOrderStopPrice] = useState("48500.00");
+  const [orderTakeProfitPrice, _setOrderTakeProfitPrice] = useState("53000.00");
+  const [submittingOrder, setSubmittingOrder] = useState(false);
+  const [sendingDms, setSendingDms] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
+
   const refreshSystemAndSession = useCallback(async () => {
     const [statusRes, sessRes] = await Promise.all([
       apiClient.system.getStatus(),
@@ -132,16 +156,18 @@ export function App() {
   }, []);
 
   const refreshGovernanceData = useCallback(async () => {
-    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes, aiRes] = await Promise.all([
-      apiClient.config.getActive(),
-      apiClient.config.getHistory(),
-      apiClient.secrets.listMetadata(),
-      apiClient.audit.listRecent(),
-      apiClient.market.getSummary(),
-      apiClient.replay.listExperiments(),
-      apiClient.paper.getStatus(),
-      apiClient.ai.getStatus()
-    ]);
+    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes, aiRes, brkRes] =
+      await Promise.all([
+        apiClient.config.getActive(),
+        apiClient.config.getHistory(),
+        apiClient.secrets.listMetadata(),
+        apiClient.audit.listRecent(),
+        apiClient.market.getSummary(),
+        apiClient.replay.listExperiments(),
+        apiClient.paper.getStatus(),
+        apiClient.ai.getStatus(),
+        apiClient.broker.getStatus()
+      ]);
     if (cfgRes.status === 200) {
       setActiveSnapshot(cfgRes.body.active);
       setDraftConfig(cfgRes.body.active.config);
@@ -171,6 +197,9 @@ export function App() {
     }
     if (aiRes.status === 200) {
       setAiStatus(aiRes.body);
+    }
+    if (brkRes.status === 200) {
+      setBrokerStatus(brkRes.body);
     }
   }, []);
 
@@ -1664,6 +1693,322 @@ export function App() {
                     </div>
                   </div>
                 )}
+              </div>
+            </section>
+
+            {/* M5 Exchange Broker & Attached Protective Stops Cockpit (ADR-0006) */}
+            <section data-testid="exchange-broker-panel" className={cardClass}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold">
+                    Exchange Broker Execution &amp; Attached Protective Stops
+                  </h3>
+                  <p className="text-xs opacity-70">
+                    ADR-0006 OKX V5 Linear Perpetuals &bull; Atomic attachAlgoOrds &bull; 60s
+                    Dead-Man&apos;s Switch (cancel-all-after)
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    data-testid="broker-venue-badge"
+                    className="rounded border border-teal-500/40 bg-teal-500/15 px-2 py-0.5 text-xs font-semibold text-teal-400"
+                  >
+                    VENUE: {brokerStatus?.venue ?? "OKX-EEA"} (
+                    {executionMode === "Live" ? "LIVE" : "DEMO"})
+                  </span>
+                  <span
+                    data-testid="broker-dms-badge"
+                    className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                      brokerStatus?.dms?.healthy
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                        : "border-amber-500/40 bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    DMS: {brokerStatus?.dms?.healthy ? "ACTIVE (60s)" : "IDLE"}
+                  </span>
+                  <span
+                    data-testid="reconciliation-status-badge"
+                    className={`rounded border px-2 py-0.5 text-xs font-semibold ${
+                      reconciliation?.matched
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                        : "border-slate-500/40 bg-slate-500/15 text-slate-300"
+                    }`}
+                  >
+                    RECON:{" "}
+                    {reconciliation?.matched
+                      ? "MATCHED"
+                      : reconciliation
+                        ? "DRIFT DETECTED"
+                        : "NOT RUN"}
+                  </span>
+                </div>
+              </div>
+
+              {/* DMS & Reconciliation Actions */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/60 pb-4">
+                <div className="text-xs opacity-80">
+                  Dead-Man&apos;s Switch automatically cancels all resting unexecuted limit orders
+                  after 60s if the container crashes, while protective stops remain exchange-active.
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="send-dms-btn"
+                    disabled={sendingDms}
+                    onClick={async () => {
+                      setSendingDms(true);
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.broker.dmsHeartbeat({ body: {} });
+                        if (res.status === 200) {
+                          setGovMessage(
+                            `DMS Heartbeat refreshed: 60s window active (healthy=${res.body.dms.healthy})`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "DMS heartbeat failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      } finally {
+                        setSendingDms(false);
+                      }
+                    }}
+                    className="rounded bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-50"
+                  >
+                    {sendingDms ? "Sending DMS..." : "Send DMS Heartbeat"}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="reconcile-positions-btn"
+                    disabled={reconciling}
+                    onClick={async () => {
+                      setReconciling(true);
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.broker.reconcile({ body: {} });
+                        if (res.status === 200) {
+                          setReconciliation(res.body.reconciliation);
+                          setGovMessage(
+                            `Reconciliation complete: matched=${res.body.reconciliation.matched} (${res.body.reconciliation.localPositionsCount} positions)`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Reconciliation failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      } finally {
+                        setReconciling(false);
+                      }
+                    }}
+                    className="rounded border border-slate-600 px-3 py-1.5 text-xs font-semibold hover:border-teal-500 disabled:opacity-50"
+                  >
+                    {reconciling ? "Reconciling..." : "Reconcile Positions"}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="emergency-flatten-btn"
+                    onClick={async () => {
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.broker.flatten({
+                          body: { reason: "Operator manual emergency flatten" }
+                        });
+                        if (res.status === 200) {
+                          setGovMessage(
+                            `Emergency flatten executed: ${res.body.flattenedCount} positions closed.`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Emergency flatten failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      }
+                    }}
+                    className="rounded border border-rose-600/70 bg-rose-600/10 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-600 hover:text-white"
+                  >
+                    Emergency Flatten All
+                  </button>
+                </div>
+              </div>
+
+              {/* Order Submission Form with Mandatory Attached Protective Stop */}
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                  Order Dispatch with Mandatory Attached Protective Stop (ADR-0006)
+                </h4>
+                <div className="mt-2 grid gap-3 md:grid-cols-5 text-xs">
+                  <div>
+                    <label className="mb-1 block opacity-70">Instrument</label>
+                    <input
+                      data-testid="order-instrument-input"
+                      type="text"
+                      value={selectedInstrumentId}
+                      onChange={(e) => setSelectedInstrumentId(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block opacity-70">Side</label>
+                    <select
+                      data-testid="order-side-select"
+                      value={orderSide}
+                      onChange={(e) => setOrderSide(e.target.value as "long" | "short")}
+                      className={inputClass}
+                    >
+                      <option value="long">LONG (Buy)</option>
+                      <option value="short">SHORT (Sell)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block opacity-70">Size (Lots)</label>
+                    <input
+                      data-testid="order-size-input"
+                      type="number"
+                      value={orderSizeLots}
+                      onChange={(e) => setOrderSizeLots(Number(e.target.value))}
+                      className={inputClass}
+                      min={1}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block opacity-70">Entry Price (USDT)</label>
+                    <input
+                      data-testid="order-entry-price-input"
+                      type="text"
+                      value={orderEntryPrice}
+                      onChange={(e) => setOrderEntryPrice(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block font-semibold text-rose-400">
+                      Protective Stop Price (REQUIRED)
+                    </label>
+                    <input
+                      data-testid="order-stop-price-input"
+                      type="text"
+                      value={orderStopPrice}
+                      onChange={(e) => setOrderStopPrice(e.target.value)}
+                      className={`${inputClass} border-rose-500/50`}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    data-testid="submit-exchange-order-btn"
+                    disabled={submittingOrder}
+                    onClick={async () => {
+                      setSubmittingOrder(true);
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.broker.submitOrder({
+                          body: {
+                            instrumentId: selectedInstrumentId,
+                            side: orderSide,
+                            sizeLots: orderSizeLots,
+                            entryPrice: orderEntryPrice,
+                            protectiveStopPrice: orderStopPrice,
+                            takeProfitPrice: orderTakeProfitPrice,
+                            reduceOnly: false
+                          }
+                        });
+                        if (res.status === 200) {
+                          setSubmittedExchangeOrders((prev) => [res.body.order, ...prev]);
+                          setGovMessage(
+                            `Exchange order ${res.body.order.orderId} filled with atomic attached stop ${res.body.order.algoOrderId} @ ${res.body.order.protectiveStopPrice}`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Order submission failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      } finally {
+                        setSubmittingOrder(false);
+                      }
+                    }}
+                    className="rounded bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {submittingOrder
+                      ? "Submitting Protected Order..."
+                      : "Submit Protected Exchange Order"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Submitted Orders with Attached Algo Stops Table */}
+              <div className="mt-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80 mb-2">
+                  Exchange Orders &amp; Attached Protective Stops
+                </h4>
+                <div className="overflow-x-auto">
+                  <table
+                    data-testid="exchange-orders-table"
+                    className="w-full text-left text-xs font-mono"
+                  >
+                    <thead>
+                      <tr className="border-b border-slate-700/60 opacity-70">
+                        <th className="py-1.5">Order ID</th>
+                        <th className="py-1.5">Client Ord ID</th>
+                        <th className="py-1.5">Algo Stop ID</th>
+                        <th className="py-1.5">Instrument</th>
+                        <th className="py-1.5">Side</th>
+                        <th className="py-1.5">Lots</th>
+                        <th className="py-1.5">Fill Price</th>
+                        <th className="py-1.5">Protective Stop</th>
+                        <th className="py-1.5">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {submittedExchangeOrders.map((ord) => (
+                        <tr key={ord.orderId} className="border-b border-slate-800/60">
+                          <td className="py-1.5">{ord.orderId.slice(0, 14)}</td>
+                          <td className="py-1.5">{ord.clOrdId.slice(0, 14)}</td>
+                          <td className="py-1.5 text-amber-400 font-semibold">
+                            {ord.algoOrderId.slice(0, 14)}
+                          </td>
+                          <td className="py-1.5">{ord.instrumentId}</td>
+                          <td
+                            className={`py-1.5 font-bold uppercase ${
+                              ord.side === "long" ? "text-emerald-400" : "text-rose-400"
+                            }`}
+                          >
+                            {ord.side}
+                          </td>
+                          <td className="py-1.5">{ord.sizeLots}</td>
+                          <td className="py-1.5">{ord.fillPrice}</td>
+                          <td className="py-1.5 text-rose-400 font-bold">
+                            {ord.protectiveStopPrice}
+                          </td>
+                          <td className="py-1.5">
+                            <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400 font-semibold">
+                              {ord.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {submittedExchangeOrders.length === 0 && (
+                        <tr>
+                          <td colSpan={9} className="py-2.5 text-center opacity-60">
+                            No exchange orders placed yet. Submit protected order above.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </section>
 

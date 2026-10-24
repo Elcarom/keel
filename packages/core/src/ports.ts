@@ -555,6 +555,62 @@ export interface Broker {
   }): PaperTickResult;
 }
 
+export const ExchangeOrderInputSchema = z.object({
+  instrumentId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  sizeLots: z.number().int().positive(),
+  entryPrice: z.string().min(1),
+  protectiveStopPrice: z.string().min(1), // MANDATORY attached stop per ADR-0006
+  takeProfitPrice: z.string().optional(),
+  clOrdId: z.string().optional(),
+  reduceOnly: z.boolean().default(false)
+});
+export type ExchangeOrderInput = z.infer<typeof ExchangeOrderInputSchema>;
+
+export const ExchangeOrderResultSchema = z.object({
+  orderId: z.string(),
+  clOrdId: z.string(),
+  algoOrderId: z.string(),
+  instrumentId: z.string(),
+  side: z.enum(["long", "short"]),
+  fillPrice: z.string(),
+  sizeLots: z.number(),
+  protectiveStopPrice: z.string(),
+  status: z.enum(["SUBMITTED", "FILLED", "REJECTED"]),
+  submittedAtMs: z.number().int()
+});
+export type ExchangeOrderResult = z.infer<typeof ExchangeOrderResultSchema>;
+
+export const DmsStatusSchema = z.object({
+  enabled: z.boolean(),
+  timeoutSeconds: z.number().int(),
+  lastHeartbeatAtMs: z.number().int().nullable(),
+  nextHeartbeatDueMs: z.number().int().nullable(),
+  healthy: z.boolean()
+});
+export type DmsStatus = z.infer<typeof DmsStatusSchema>;
+
+export const ReconciliationResultSchema = z.object({
+  asOfMs: z.number().int(),
+  matched: z.boolean(),
+  localPositionsCount: z.number().int(),
+  exchangePositionsCount: z.number().int(),
+  driftDetails: z.array(z.string())
+});
+export type ReconciliationResult = z.infer<typeof ReconciliationResultSchema>;
+
+export interface ExchangeBroker extends Broker {
+  submitOrder(input: ExchangeOrderInput): Promise<ExchangeOrderResult>;
+  sendDmsHeartbeat(): Promise<{ ok: boolean; countdownSeconds: number }>;
+  reconcilePositions(): Promise<ReconciliationResult>;
+  getDmsStatus(): DmsStatus;
+  amendAlgoOrder(params: {
+    readonly algoOrderId: string;
+    readonly instrumentId: string;
+    readonly newStopPrice: string;
+  }): Promise<{ ok: boolean; algoOrderId: string; newStopPrice: string }>;
+}
+
 export const ContextDirectionalBiasSchema = z.enum(["bullish", "bearish", "neutral"]);
 export type ContextDirectionalBias = z.infer<typeof ContextDirectionalBiasSchema>;
 

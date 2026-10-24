@@ -5,6 +5,8 @@
     { "path": "./packages/data" },
     { "path": "./packages/strategy" },
     { "path": "./packages/replay" },
+    { "path": "./packages/ai" },
+    { "path": "./packages/broker" },
     { "path": "./packages/api" },
     { "path": "./packages/web" }
   ]

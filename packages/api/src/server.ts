@@ -10,12 +10,14 @@ import {
   diffConfigs,
   keelApiContract,
   type Clock,
+  type ExchangeBroker,
   type KeelConfig,
   type LookbackValidationResult,
   type LlmGateway
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { ContextAnalyst, GeminiLlmGateway, ShadowAdvisor } from "@keel/ai";
+import { OkxBroker } from "@keel/broker";
 import { ReplayEngine } from "@keel/replay";
 import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
@@ -42,6 +44,7 @@ export interface KeelServerOptions {
   readonly onBootstrapToken?: ((token: string) => void) | undefined;
   readonly webhookFetchFn?: WebhookFetchFn | undefined;
   readonly llmGateway?: LlmGateway | undefined;
+  readonly exchangeBroker?: ExchangeBroker | undefined;
   readonly webDistPath?: string | undefined;
   readonly logger?: boolean | undefined;
 }
@@ -115,6 +118,31 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   const contextAnalyst = new ContextAnalyst(llmGateway);
   const shadowAdvisor = new ShadowAdvisor(llmGateway);
+
+  const okxBroker =
+    options.exchangeBroker ??
+    new OkxBroker({
+      clock,
+      getRiskConfig: () => getActiveSnapshot().config.risk,
+      getCredentials: () => {
+        const apiKey =
+          secretVault.getDecryptedSecret("okxApiKey") ?? process.env["OKX_API_KEY"] ?? null;
+        const secretKey =
+          secretVault.getDecryptedSecret("okxSecretKey") ?? process.env["OKX_API_SECRET"] ?? null;
+        const passphrase =
+          secretVault.getDecryptedSecret("okxPassphrase") ??
+          process.env["OKX_API_PASSPHRASE"] ??
+          null;
+
+        if (!apiKey || !secretKey || !passphrase) {
+          return null;
+        }
+
+        return { apiKey, secretKey, passphrase };
+      },
+      isDemo: getActiveSnapshot().config.system.executionMode !== "Live",
+      notificationChannel: notifier
+    });
 
   const getUptimeSeconds = (): number =>
     Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
@@ -1323,6 +1351,162 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             body: { error: `Shadow evaluation failed: ${String(err)}` }
           };
         }
+      }
+    },
+
+    broker: {
+      getStatus: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const openPositions = okxBroker.getOpenPositions();
+        const openOrders = okxBroker.getOrders();
+
+        return {
+          status: 200,
+          body: {
+            connected: true,
+            venue: "OKX-EEA",
+            dms: okxBroker.getDmsStatus(),
+            openPositionsCount: openPositions.length,
+            openOrdersCount: openOrders.length
+          }
+        };
+      },
+
+      submitOrder: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const order = await okxBroker.submitOrder(body);
+
+          dataStore.auditRepo.append({
+            ts: clock.nowMs(),
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "broker.submit_order",
+            riskClass: "confirm",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              orderId: order.orderId,
+              clOrdId: order.clOrdId,
+              algoOrderId: order.algoOrderId,
+              instrumentId: order.instrumentId,
+              side: order.side,
+              protectiveStopPrice: order.protectiveStopPrice
+            }
+          });
+
+          return {
+            status: 200,
+            body: { order }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: err instanceof Error ? err.message : String(err) }
+          };
+        }
+      },
+
+      reconcile: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const reconciliation = await okxBroker.reconcilePositions();
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "broker.reconcile",
+          riskClass: "safe",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            matched: reconciliation.matched,
+            localPositionsCount: reconciliation.localPositionsCount,
+            exchangePositionsCount: reconciliation.exchangePositionsCount
+          }
+        });
+
+        return {
+          status: 200,
+          body: { reconciliation }
+        };
+      },
+
+      dmsHeartbeat: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        try {
+          const beat = await okxBroker.sendDmsHeartbeat();
+
+          dataStore.auditRepo.append({
+            ts: clock.nowMs(),
+            actor: ingress.session.username ?? "system",
+            clientIp: ingress.clientIp,
+            action: "broker.dms_heartbeat",
+            riskClass: "safe",
+            configHash: getActiveSnapshot().configHash,
+            details: {
+              countdownSeconds: beat.countdownSeconds
+            }
+          });
+
+          return {
+            status: 200,
+            body: {
+              ok: beat.ok,
+              countdownSeconds: beat.countdownSeconds,
+              dms: okxBroker.getDmsStatus()
+            }
+          };
+        } catch (err) {
+          return {
+            status: 400,
+            body: { error: err instanceof Error ? err.message : String(err) }
+          };
+        }
+      },
+
+      flatten: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const flattened = okxBroker.flattenAllPositions(body.reason);
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "broker.emergency_flatten",
+          riskClass: "confirm",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            reason: body.reason,
+            flattenedCount: flattened.length
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            flattenedCount: flattened.length,
+            positions: flattened.map((p) => ({ ...p }))
+          }
+        };
       }
     }
   });
