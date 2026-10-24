@@ -24,11 +24,47 @@ export {
   type KeelConfig
 } from "./config.js";
 export {
+  ApiErrorSchema,
+  AuthSessionResponseSchema,
+  ConfigChangeEntrySchema,
+  ConfigDiffResultSchema,
+  ConfigFieldMetadataSchema,
   SystemStatusResponseSchema,
   keelApiContract,
+  type AuthSessionResponse,
   type SystemStatusResponse
 } from "./contract.js";
 export { ScaledDecimal, type TickRoundMode } from "./decimal.js";
+export {
+  ALL_SECRET_KEY_NAMES,
+  AuditEventRecordSchema,
+  BackupRecordSchema,
+  ConfigSnapshotRecordSchema,
+  NotificationDeliveryResultSchema,
+  NotificationSeveritySchema,
+  SecretKeyNameSchema,
+  SecretMetadataRecordSchema,
+  type AdminSessionRecord,
+  type AdminUserRecord,
+  type AuditEventRecord,
+  type AuditRepository,
+  type AuthRepository,
+  type BackupRecord,
+  type ConfigRepository,
+  type ConfigSnapshotRecord,
+  type EncryptedSecretRecord,
+  type NewAuditEventInput,
+  type NotificationChannel,
+  type NotificationDeliveryResult,
+  type NotificationMessage,
+  type NotificationPayload,
+  type NotificationSeverity,
+  type RollbackConfigInput,
+  type SaveConfigSnapshotInput,
+  type SecretKeyName,
+  type SecretMetadataRecord,
+  type SecretVaultRepository
+} from "./ports.js";
 export {
   sizeByStopRisk,
   type InstrumentSpec,

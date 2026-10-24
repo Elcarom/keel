@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: !!process.env["CI"],
   retries: process.env["CI"] ? 1 : 0,
   workers: 1,
@@ -20,7 +20,10 @@ export default defineConfig({
   webServer: {
     command: "node packages/api/dist/cli.js",
     url: "http://127.0.0.1:8080/healthz",
-    reuseExistingServer: !process.env["CI"],
-    timeout: 30_000
+    reuseExistingServer: false,
+    timeout: 30_000,
+    env: {
+      KEEL_BOOTSTRAP_TOKEN: "keel-e2e-bootstrap-token-2026"
+    }
   }
 });

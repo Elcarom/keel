@@ -119,10 +119,10 @@ export interface ConfigFieldMetadata {
   readonly path: string;
   readonly label: string;
   readonly helpText: string;
-  readonly unit?: string;
-  readonly min?: number;
-  readonly max?: number;
-  readonly defaultValue: unknown;
+  readonly unit?: string | undefined;
+  readonly min?: number | undefined;
+  readonly max?: number | undefined;
+  readonly defaultValue?: unknown;
   readonly riskClass: ConfigRiskClass;
 }
 
@@ -130,10 +130,10 @@ interface RawFieldSpec {
   readonly path: string;
   readonly label: string;
   readonly helpText: string;
-  readonly unit?: string;
-  readonly min?: number;
-  readonly max?: number;
-  readonly defaultValue: unknown;
+  readonly unit?: string | undefined;
+  readonly min?: number | undefined;
+  readonly max?: number | undefined;
+  readonly defaultValue?: unknown;
   readonly riskClass: ConfigRiskClass;
 }
 
@@ -780,8 +780,8 @@ export function computeConfigHash(config: KeelConfig): string {
 
 export interface ConfigChangeEntry {
   readonly path: string;
-  readonly before: unknown;
-  readonly after: unknown;
+  readonly before?: unknown;
+  readonly after?: unknown;
   readonly riskClass: ConfigRiskClass;
 }
 
@@ -790,6 +790,10 @@ export interface ConfigDiffResult {
   readonly highestRiskClass: ConfigRiskClass;
   readonly allowed: boolean;
   readonly blockedPaths: readonly string[];
+  readonly requiresStepUp: boolean;
+  readonly requiresRestart: boolean;
+  readonly beforeHash: string;
+  readonly afterHash: string;
 }
 
 export function flattenConfigPaths(
@@ -854,6 +858,10 @@ export function diffConfigs(
     changes,
     highestRiskClass,
     allowed: blockedPaths.length === 0,
-    blockedPaths
+    blockedPaths,
+    requiresStepUp: changes.length > 0 && highestRiskClass !== "safe",
+    requiresRestart: changes.some((c) => c.riskClass === "restart-required"),
+    beforeHash: computeConfigHash(before),
+    afterHash: computeConfigHash(after)
   };
 }

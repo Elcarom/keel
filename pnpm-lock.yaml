@@ -47,6 +47,12 @@ importers:
       '@keel/core':
         specifier: workspace:*
         version: link:../core
+      '@keel/data':
+        specifier: workspace:*
+        version: link:../data
+      '@noble/hashes':
+        specifier: ^1.7.1
+        version: 1.8.0
       '@ts-rest/core':
         specifier: ^3.52.1
         version: 3.52.1(@types/node@22.20.5)(zod@3.25.76)
@@ -68,6 +74,15 @@ importers:
       '@ts-rest/core':
         specifier: ^3.52.1
         version: 3.52.1(@types/node@22.20.5)(zod@3.25.76)
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+
+  packages/data:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -676,6 +691,10 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+
+  '@noble/hashes@1.8.0':
+    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
+    engines: {node: ^14.21.3 || >=16}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -2787,6 +2806,8 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@noble/hashes@1.8.0': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:

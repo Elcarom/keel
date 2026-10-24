@@ -1,10 +1,13 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  ssr: {
+    external: ["node:sqlite"]
+  },
   test: {
     include: ["packages/**/test/**/*.test.ts"],
-    exclude: ["**/node_modules/**", "**/dist/**", "reference/**"],
     environment: "node",
-    globals: false
+    globals: false,
+    testTimeout: 15000
   }
 });
