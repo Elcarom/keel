@@ -10,6 +10,8 @@ COPY packages/core/package.json ./packages/core/package.json
 COPY packages/data/package.json ./packages/data/package.json
 COPY packages/strategy/package.json ./packages/strategy/package.json
 COPY packages/replay/package.json ./packages/replay/package.json
+COPY packages/broker/package.json ./packages/broker/package.json
+COPY packages/ai/package.json ./packages/ai/package.json
 COPY packages/api/package.json ./packages/api/package.json
 COPY packages/web/package.json ./packages/web/package.json
 
@@ -19,6 +21,8 @@ COPY packages/core ./packages/core
 COPY packages/data ./packages/data
 COPY packages/strategy ./packages/strategy
 COPY packages/replay ./packages/replay
+COPY packages/broker ./packages/broker
+COPY packages/ai ./packages/ai
 COPY packages/api ./packages/api
 COPY packages/web ./packages/web
 
@@ -44,6 +48,8 @@ COPY packages/core/package.json ./packages/core/package.json
 COPY packages/data/package.json ./packages/data/package.json
 COPY packages/strategy/package.json ./packages/strategy/package.json
 COPY packages/replay/package.json ./packages/replay/package.json
+COPY packages/broker/package.json ./packages/broker/package.json
+COPY packages/ai/package.json ./packages/ai/package.json
 COPY packages/api/package.json ./packages/api/package.json
 
 RUN pnpm install --prod --frozen-lockfile --filter @keel/api... && pnpm store prune
@@ -52,6 +58,8 @@ COPY --from=builder /app/packages/core/dist ./packages/core/dist
 COPY --from=builder /app/packages/data/dist ./packages/data/dist
 COPY --from=builder /app/packages/strategy/dist ./packages/strategy/dist
 COPY --from=builder /app/packages/replay/dist ./packages/replay/dist
+COPY --from=builder /app/packages/broker/dist ./packages/broker/dist
+COPY --from=builder /app/packages/ai/dist ./packages/ai/dist
 COPY --from=builder /app/packages/api/dist ./packages/api/dist
 COPY --from=builder /app/packages/web/dist ./packages/web/dist
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

@@ -13,7 +13,8 @@ import {
   type ExchangeBroker,
   type KeelConfig,
   type LookbackValidationResult,
-  type LlmGateway
+  type LlmGateway,
+  type PromotionStage
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries, type SqliteDataStore } from "@keel/data";
 import {
