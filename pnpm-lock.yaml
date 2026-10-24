@@ -45,8 +45,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/api:
     dependencies:
@@ -76,10 +76,10 @@ importers:
         version: 1.8.0
       '@ts-rest/core':
         specifier: ^3.52.1
-        version: 3.52.1(@types/node@22.20.5)(zod@3.25.76)
+        version: 3.52.1(@types/node@22.20.5)(zod@4.6.7)
       '@ts-rest/fastify':
         specifier: ^3.52.1
-        version: 3.52.1(@ts-rest/core@3.52.1(@types/node@22.20.5)(zod@3.25.76))(fastify@5.12.7)(zod@3.25.76)
+        version: 3.52.1(@ts-rest/core@3.52.1(@types/node@22.20.5)(zod@4.6.7))(fastify@5.12.7)(zod@4.6.7)
       fastify:
         specifier: ^5.2.0
         version: 5.12.7
@@ -87,8 +87,8 @@ importers:
         specifier: ^9.6.0
         version: 9.14.0
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/broker:
     dependencies:
@@ -96,17 +96,17 @@ importers:
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/core:
     dependencies:
       '@ts-rest/core':
         specifier: ^3.52.1
-        version: 3.52.1(@types/node@22.20.5)(zod@3.25.76)
+        version: 3.52.1(@types/node@22.20.5)(zod@4.6.7)
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/data:
     dependencies:
@@ -114,8 +114,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/replay:
     dependencies:
@@ -126,8 +126,8 @@ importers:
         specifier: workspace:*
         version: link:../strategy
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@keel/data':
         specifier: workspace:*
@@ -139,8 +139,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/web:
     dependencies:
@@ -2301,6 +2301,9 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
 snapshots:
 
   '@babel/code-frame@7.29.7':
@@ -3032,12 +3035,17 @@ snapshots:
       '@types/node': 22.20.5
       zod: 3.25.76
 
-  '@ts-rest/fastify@3.52.1(@ts-rest/core@3.52.1(@types/node@22.20.5)(zod@3.25.76))(fastify@5.12.7)(zod@3.25.76)':
+  '@ts-rest/core@3.52.1(@types/node@22.20.5)(zod@4.6.7)':
+    optionalDependencies:
+      '@types/node': 22.20.5
+      zod: 4.6.7
+
+  '@ts-rest/fastify@3.52.1(@ts-rest/core@3.52.1(@types/node@22.20.5)(zod@4.6.7))(fastify@5.12.7)(zod@4.6.7)':
     dependencies:
-      '@ts-rest/core': 3.52.1(@types/node@22.20.5)(zod@3.25.76)
+      '@ts-rest/core': 3.52.1(@types/node@22.20.5)(zod@4.6.7)
       fastify: 5.12.7
     optionalDependencies:
-      zod: 3.25.76
+      zod: 4.6.7
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -4288,4 +4296,7 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod@3.25.76: {}
+  zod@3.25.76:
+    optional: true
+
+  zod@4.6.7: {}
