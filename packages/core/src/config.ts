@@ -52,6 +52,7 @@ export const RiskConfigSchema = z.object({
   strategy: StrategyRiskConfigSchema.default({}),
   portfolio: PortfolioRiskConfigSchema.default({})
 });
+export type RiskConfig = z.infer<typeof RiskConfigSchema>;
 
 export const PromotionLadderConfigSchema = z.object({
   replayMinTrades: z.number().int().min(30).max(5000).default(150),
@@ -70,6 +71,7 @@ export const PromotionLadderConfigSchema = z.object({
   aiDemotionEdgeDecayR: z.number().min(-1.0).max(-0.01).default(-0.15),
   slippageDriftMultiplierCap: z.number().min(1.5).max(5.0).default(2.5)
 });
+export type PromotionLadderConfig = z.infer<typeof PromotionLadderConfigSchema>;
 
 export const AiFeatureSubBudgetsConfigSchema = z.object({
   contextAnalystPct: z.number().min(0).max(100).default(40),

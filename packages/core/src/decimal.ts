@@ -176,6 +176,22 @@ export class ScaledDecimal {
     return `${isNegative ? "-" : ""}${whole.toString()}.${fracStr}`;
   }
 
+  public toFixed(decimals: number = SCALE_DECIMALS): string {
+    if (decimals < 0 || decimals > SCALE_DECIMALS) {
+      throw new Error(`toFixed decimals must be between 0 and ${SCALE_DECIMALS}`);
+    }
+    const isNegative = this.raw < 0n;
+    const absRaw = isNegative ? -this.raw : this.raw;
+    const whole = absRaw / SCALE_FACTOR;
+    const frac = absRaw % SCALE_FACTOR;
+    if (decimals === 0) {
+      return `${isNegative ? "-" : ""}${whole.toString()}`;
+    }
+    const fullFracStr = frac.toString().padStart(SCALE_DECIMALS, "0");
+    const sliced = fullFracStr.slice(0, decimals);
+    return `${isNegative ? "-" : ""}${whole.toString()}.${sliced}`;
+  }
+
   public toJSON(): string {
     return this.toString();
   }

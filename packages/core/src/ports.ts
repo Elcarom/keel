@@ -377,3 +377,154 @@ export interface ExperimentRepository {
   listExperiments(limit?: number): readonly ExperimentRecord[];
   getExperiment(experimentId: string): ExperimentRecord | null;
 }
+
+export const CircuitBreakerStatusSchema = z.enum([
+  "NORMAL",
+  "DAILY_LOSS_HALT",
+  "WEEKLY_LOSS_HALT",
+  "DRAWDOWN_KILL_SWITCH",
+  "MANUAL_KILL_SWITCH"
+]);
+export type CircuitBreakerStatus = z.infer<typeof CircuitBreakerStatusSchema>;
+
+export const CircuitBreakerRecordSchema = z.object({
+  status: CircuitBreakerStatusSchema,
+  reason: z.string(),
+  triggeredAtMs: z.number().int().nonnegative(),
+  cooldownUntilMs: z.number().int().nonnegative().nullable(),
+  updatedBy: z.string().min(1)
+});
+export type CircuitBreakerRecord = z.infer<typeof CircuitBreakerRecordSchema>;
+
+export const LedgerAccountSchema = z.enum([
+  "cash:usdt",
+  "equity_capital:usdt",
+  "realized_pnl:usdt",
+  "fees_expense:usdt",
+  "funding_pnl:usdt"
+]);
+export type LedgerAccount = z.infer<typeof LedgerAccountSchema>;
+
+export const LedgerEntryRecordSchema = z.object({
+  entryId: z.string().min(1),
+  txGroupId: z.string().min(1),
+  ts: z.number().int().nonnegative(),
+  strategyId: z.string().nullable(),
+  instrumentId: z.string().nullable(),
+  debitAccount: LedgerAccountSchema,
+  creditAccount: LedgerAccountSchema,
+  amountUsdt: z.string(),
+  description: z.string().min(1)
+});
+export type LedgerEntryRecord = z.infer<typeof LedgerEntryRecordSchema>;
+
+export const LedgerTrialBalanceSchema = z.object({
+  totalDebitsUsdt: z.string(),
+  totalCreditsUsdt: z.string(),
+  isBalanced: z.boolean(),
+  cashBalanceUsdt: z.string(),
+  realizedPnlUsdt: z.string(),
+  feesExpenseUsdt: z.string(),
+  fundingPnlUsdt: z.string(),
+  netEquityUsdt: z.string(),
+  entryCount: z.number().int().nonnegative()
+});
+export type LedgerTrialBalance = z.infer<typeof LedgerTrialBalanceSchema>;
+
+export interface NewLedgerJournalInput {
+  readonly txGroupId: string;
+  readonly ts: number;
+  readonly strategyId: string | null;
+  readonly instrumentId: string | null;
+  readonly debitAccount: LedgerAccount;
+  readonly creditAccount: LedgerAccount;
+  readonly amountUsdt: string;
+  readonly description: string;
+}
+
+export interface LedgerRepository {
+  recordJournal(input: NewLedgerJournalInput): LedgerEntryRecord;
+  listEntries(limit?: number): readonly LedgerEntryRecord[];
+  getTrialBalance(): LedgerTrialBalance;
+}
+
+export const PaperPositionRecordSchema = z.object({
+  positionId: z.string().min(1),
+  strategyId: z.string().min(1),
+  instrumentId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  contracts: z.string(),
+  entryPrice: z.string(),
+  protectiveStopPrice: z.string(),
+  takeProfitPrice: z.string().nullable(),
+  initialRiskUsdt: z.string(),
+  unrealizedPnlUsdt: z.string(),
+  realizedPnlUsdt: z.string(),
+  feesPaidUsdt: z.string(),
+  fundingPaidUsdt: z.string(),
+  openedAtMs: z.number().int().nonnegative(),
+  lastFundingSettledTs: z.number().int().nonnegative(),
+  status: z.enum(["OPEN", "CLOSED"]),
+  closedAtMs: z.number().int().nonnegative().nullable(),
+  exitPrice: z.string().nullable(),
+  exitReason: z.string().nullable()
+});
+export type PaperPositionRecord = z.infer<typeof PaperPositionRecordSchema>;
+
+export const PaperOrderRecordSchema = z.object({
+  orderId: z.string().min(1),
+  positionId: z.string().min(1),
+  proposalId: z.string().min(1),
+  strategyId: z.string().min(1),
+  instrumentId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  orderRole: z.enum(["ENTRY", "PROTECTIVE_STOP", "TAKE_PROFIT", "FLATTEN"]),
+  contracts: z.string(),
+  fillPrice: z.string(),
+  protectiveStopPrice: z.string(),
+  feeUsdt: z.string(),
+  status: z.enum(["FILLED", "REJECTED"]),
+  createdAtMs: z.number().int().nonnegative()
+});
+export type PaperOrderRecord = z.infer<typeof PaperOrderRecordSchema>;
+
+export interface PaperAccountRepository {
+  savePosition(position: PaperPositionRecord): PaperPositionRecord;
+  getPosition(positionId: string): PaperPositionRecord | null;
+  listOpenPositions(): readonly PaperPositionRecord[];
+  listAllPositions(limit?: number): readonly PaperPositionRecord[];
+  saveOrder(order: PaperOrderRecord): PaperOrderRecord;
+  listOrders(limit?: number): readonly PaperOrderRecord[];
+  getCircuitBreaker(): CircuitBreakerRecord;
+  setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
+}
+
+export const PromotionStageSchema = z.enum([
+  "Research",
+  "Replay",
+  "Shadow",
+  "Paper",
+  "Demo",
+  "Live-Ramp",
+  "Live"
+]);
+export type PromotionStage = z.infer<typeof PromotionStageSchema>;
+
+export const StrategyPromotionRecordSchema = z.object({
+  strategyId: z.string().min(1),
+  currentStage: PromotionStageSchema,
+  latestExperimentId: z.string().nullable(),
+  replayGatePassed: z.boolean(),
+  paperTradesCount: z.number().int().nonnegative(),
+  paperDrawdownPct: z.number().nonnegative(),
+  eligibleNextStage: PromotionStageSchema.nullable(),
+  demotionReason: z.string().nullable(),
+  updatedAtMs: z.number().int().nonnegative()
+});
+export type StrategyPromotionRecord = z.infer<typeof StrategyPromotionRecordSchema>;
+
+export interface PromotionRepository {
+  upsertPromotion(record: StrategyPromotionRecord): StrategyPromotionRecord;
+  getPromotion(strategyId: string): StrategyPromotionRecord | null;
+  listPromotions(): readonly StrategyPromotionRecord[];
+}

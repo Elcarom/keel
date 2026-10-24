@@ -191,8 +191,7 @@ export class ReplayEngine {
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
-    const initialEquityUsdt =
-      input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
+    const initialEquityUsdt = input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
     const riskFraction = input.riskFractionPerTrade ?? 0.0075;
     const maxLeverage = input.maxGrossLeverage ?? 2.0;
     const takerFeeBps = input.takerFeeBps ?? 5;
