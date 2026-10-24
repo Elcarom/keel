@@ -852,7 +852,11 @@ export function App() {
                     data-testid="instrument-select"
                     value={selectedInstrumentId}
                     onChange={(e) => setSelectedInstrumentId(e.target.value)}
-                    className="rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                    className={
+                      isDark
+                        ? "rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                        : "rounded-md border border-stone-400 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                    }
                   >
                     <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
                     <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
@@ -869,7 +873,11 @@ export function App() {
                     data-testid="strategy-select"
                     value={selectedStrategyId}
                     onChange={(e) => setSelectedStrategyId(e.target.value)}
-                    className="rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                    className={
+                      isDark
+                        ? "rounded-md border border-slate-700 bg-[#0F1419] px-2.5 py-1.5 text-xs text-slate-100"
+                        : "rounded-md border border-stone-400 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                    }
                   >
                     {(marketSummary?.strategies ?? []).map((strat) => (
                       <option key={strat.id} value={strat.id}>
@@ -906,11 +914,50 @@ export function App() {
                       data-testid={`coverage-${inst.instrumentId}`}
                       className="font-mono-tabular rounded border border-slate-700/60 px-3 py-1.5"
                     >
-                      <span className="font-bold text-teal-400">{inst.instrumentId}</span> · 1H:{" "}
-                      {inst.barCounts["1H"]} · 4H: {inst.barCounts["4H"]} · 1D:{" "}
-                      {inst.barCounts["1D"]} · Funding: {inst.fundingCount}
+                      <span className="font-bold text-teal-400">{inst.instrumentId}</span> · 15m:{" "}
+                      {inst.barCounts["15m"]} · 1H: {inst.barCounts["1H"]} · 4H:{" "}
+                      {inst.barCounts["4H"]} · 1D: {inst.barCounts["1D"]} · Funding:{" "}
+                      {inst.fundingCount}
                     </div>
                   ))}
+                </div>
+              )}
+
+              {marketSummary && marketSummary.strategies.length > 0 && (
+                <div
+                  data-testid="strategy-readiness-list"
+                  className="mt-3 grid gap-2 md:grid-cols-3"
+                >
+                  {marketSummary.strategies.map((strat) => {
+                    const statusForInst = strat.lookbackStatusByInstrument[selectedInstrumentId];
+                    const isReady = statusForInst?.satisfied === true;
+                    const reqText = Object.entries(strat.lookbackRequirements)
+                      .map(([tf, cnt]) => `${tf}>=${cnt}`)
+                      .join(", ");
+                    return (
+                      <div
+                        key={strat.id}
+                        data-testid={`strategy-readiness-${strat.id}`}
+                        className="flex items-center justify-between rounded border border-slate-700/50 px-3 py-1.5 text-xs"
+                      >
+                        <div>
+                          <div className="font-semibold">{strat.name}</div>
+                          <div className="font-mono-tabular text-[11px] opacity-70">
+                            Lookback: {reqText}
+                          </div>
+                        </div>
+                        <span
+                          className={
+                            isReady
+                              ? "rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-400"
+                              : "rounded border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-400"
+                          }
+                        >
+                          {isReady ? "SATISFIED" : "DEFICIT"}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -927,6 +974,7 @@ export function App() {
                       <th className="py-1.5">OOS Walk-Fwd R</th>
                       <th className="py-1.5">DSR</th>
                       <th className="py-1.5">Net PnL (USDT)</th>
+                      <th className="py-1.5">ADR-0007 Gate</th>
                     </tr>
                   </thead>
                   <tbody className="font-mono-tabular">
@@ -941,11 +989,23 @@ export function App() {
                         <td className="py-1.5">{exp.walkForwardOutOfSampleAvgR.toFixed(3)}R</td>
                         <td className="py-1.5">{exp.deflatedSharpeRatio.toFixed(3)}</td>
                         <td className="py-1.5">{exp.netPnlUsdt}</td>
+                        <td className="py-1.5">
+                          <span
+                            data-testid={`gate-badge-${exp.experimentId}`}
+                            className={
+                              exp.replayGatePassed
+                                ? "rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400"
+                                : "rounded border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-400"
+                            }
+                          >
+                            {exp.replayGatePassed ? "PASS" : "HOLD"}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                     {experiments.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="py-3 text-center opacity-60">
+                        <td colSpan={10} className="py-3 text-center opacity-60">
                           No experiments recorded yet. Seed confirmed bars and run a replay.
                         </td>
                       </tr>

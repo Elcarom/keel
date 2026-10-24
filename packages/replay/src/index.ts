@@ -5,6 +5,7 @@ import {
   sha256Hex,
   sizeByStopRisk,
   type BarTimeframe,
+  type Clock,
   type ConfirmedBar,
   type ExperimentRecord,
   type ExperimentRepository,
@@ -40,6 +41,7 @@ export interface ReplayRunInput {
   readonly strategy: Strategy;
   readonly fromTs: number;
   readonly toTs: number;
+  readonly instrumentSpec?: InstrumentSpec | undefined;
   readonly configHash?: string | undefined;
   readonly initialEquityUsdt?: ScaledDecimal | undefined;
   readonly riskFractionPerTrade?: number | undefined;
@@ -47,6 +49,12 @@ export interface ReplayRunInput {
   readonly takerFeeBps?: number | undefined;
   readonly halfSpreadBps?: number | undefined;
   readonly slippageBps?: number | undefined;
+  readonly costStressMultiplier?: number | undefined;
+  readonly embargoBars?: number | undefined;
+  readonly walkForwardFolds?: number | undefined;
+  readonly replayMinTrades?: number | undefined;
+  readonly replayMinSharpe?: number | undefined;
+  readonly replayMinDeflatedSharpeConfidence?: number | undefined;
   readonly numTrialsForDsr?: number | undefined;
 }
 
@@ -56,12 +64,13 @@ export interface ReplayRunResult extends ExperimentRecord {
 
 function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
   const baseCurrency = instrumentId.split("-")[0] ?? "BTC";
+  const contractValStr = baseCurrency === "ETH" ? "0.1" : "0.01";
   return {
     instrumentId,
     venue: "OKX_EEA",
     baseCurrency,
     settlementCurrency: "USDT",
-    contractValue: ScaledDecimal.fromString("0.01"),
+    contractValue: ScaledDecimal.fromString(contractValStr),
     lotSize: ScaledDecimal.fromString("0.01"),
     minOrderSize: ScaledDecimal.fromString("0.01"),
     tickSize: ScaledDecimal.fromString("0.01"),
@@ -165,26 +174,33 @@ interface ActivePosition {
 export interface ReplayEngineOptions {
   readonly marketDataRepo: MarketDataRepository;
   readonly experimentRepo?: ExperimentRepository | undefined;
+  readonly clock?: Clock | undefined;
 }
 
 export class ReplayEngine {
   private readonly marketDataRepo: MarketDataRepository;
   private readonly experimentRepo: ExperimentRepository | undefined;
+  private readonly clock: Clock;
   private readonly chooser = new BaselineChooser();
+  private runSequence = 0;
 
   public constructor(options: ReplayEngineOptions) {
     this.marketDataRepo = options.marketDataRepo;
     this.experimentRepo = options.experimentRepo;
+    this.clock = options.clock ?? new ManualClock(1_700_000_000_000);
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
-    const initialEquityUsdt = input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
+    const initialEquityUsdt =
+      input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
     const riskFraction = input.riskFractionPerTrade ?? 0.0075;
     const maxLeverage = input.maxGrossLeverage ?? 2.0;
     const takerFeeBps = input.takerFeeBps ?? 5;
     const halfSpreadBps = input.halfSpreadBps ?? 2;
     const slippageBps = input.slippageBps ?? 3;
     const totalOneWayCostBps = takerFeeBps + halfSpreadBps + slippageBps;
+    const costStressMultiplier = input.costStressMultiplier ?? 2.0;
+    const spec = input.instrumentSpec ?? defaultInstrumentSpec(input.instrumentId);
 
     const snapshotMeta = this.marketDataRepo.computeDataSnapshot({
       instrumentIds: [input.instrumentId],
@@ -201,43 +217,60 @@ export class ReplayEngine {
 
     const lookbackCounts = ALL_BAR_TIMEFRAMES.map((tf) => input.strategy.lookbacks[tf] ?? 0);
     const maxLookbackBars = Math.max(22, ...lookbackCounts);
+    const embargoBars = input.embargoBars ?? maxLookbackBars;
+    const walkForwardFolds = input.walkForwardFolds ?? 2;
 
     const simulation = this.simulateWindow({
       instrumentId: input.instrumentId,
+      instrumentSpec: spec,
       timeframe: input.timeframe,
       strategy: input.strategy,
       bars: allBars,
       initialEquityUsdt,
       riskFraction,
       maxLeverage,
-      totalOneWayCostBps
+      totalOneWayCostBps,
+      costStressMultiplier
     });
 
     const oosExpectancyR = this.computePurgedWalkForwardOosExpectancy({
       instrumentId: input.instrumentId,
+      instrumentSpec: spec,
       timeframe: input.timeframe,
       strategy: input.strategy,
       bars: allBars,
-      purgeBars: maxLookbackBars,
+      embargoBars,
+      walkForwardFolds,
       initialEquityUsdt,
       riskFraction,
       maxLeverage,
-      totalOneWayCostBps
+      totalOneWayCostBps,
+      costStressMultiplier
     });
+
+    const cumulativeTrials =
+      input.numTrialsForDsr ??
+      Math.max(1, (this.experimentRepo?.listExperiments(10_000).length ?? 0) + 1);
 
     const dsrMetrics = computeDeflatedSharpeRatio({
       returnsR: simulation.trades.map((t) => t.netR),
-      numTrials: input.numTrialsForDsr ?? 3
+      numTrials: cumulativeTrials
     });
 
     const winCount = simulation.trades.filter((t) => t.netR > 0).length;
     const winRate =
       simulation.trades.length > 0 ? Number((winCount / simulation.trades.length).toFixed(4)) : 0;
 
+    const minTrades = input.replayMinTrades ?? 5;
+    const minSharpe = input.replayMinSharpe ?? 0.2;
+    const minDsr = input.replayMinDeflatedSharpeConfidence ?? 0.5;
+
     const replayGatePassed =
-      simulation.trades.length > 0 &&
+      simulation.trades.length >= minTrades &&
       simulation.stressNetExpectancyR > 0 &&
-      oosExpectancyR >= -0.25 &&
+      oosExpectancyR >= 0 &&
+      dsrMetrics.sharpeRatio >= minSharpe &&
+      dsrMetrics.deflatedSharpeRatio >= minDsr &&
       simulation.maxDrawdownPct <= 25;
 
     const configHash =
@@ -248,13 +281,16 @@ export class ReplayEngine {
           parameterHash: input.strategy.parameterHash,
           riskFraction,
           maxLeverage,
-          totalOneWayCostBps
+          totalOneWayCostBps,
+          costStressMultiplier
         })
       );
 
+    this.runSequence += 1;
+    const createdAtMs = this.clock.nowMs();
     const experimentId = `${sha256Hex(
-      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}`
-    ).slice(0, 16)}-${Date.now().toString(36)}`;
+      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}:${this.runSequence}:${cumulativeTrials}`
+    ).slice(0, 16)}-${this.runSequence.toString(36)}`;
 
     const record: ExperimentRecord = {
       experimentId,
@@ -278,7 +314,7 @@ export class ReplayEngine {
       stressNetExpectancyR: simulation.stressNetExpectancyR,
       walkForwardOutOfSampleAvgR: oosExpectancyR,
       replayGatePassed,
-      createdAtMs: Date.now()
+      createdAtMs
     };
 
     if (this.experimentRepo) {
@@ -293,6 +329,7 @@ export class ReplayEngine {
 
   private simulateWindow(params: {
     readonly instrumentId: string;
+    readonly instrumentSpec: InstrumentSpec;
     readonly timeframe: BarTimeframe;
     readonly strategy: Strategy;
     readonly bars: readonly ConfirmedBar[];
@@ -300,6 +337,7 @@ export class ReplayEngine {
     readonly riskFraction: number;
     readonly maxLeverage: number;
     readonly totalOneWayCostBps: number;
+    readonly costStressMultiplier: number;
   }): {
     readonly trades: readonly ReplayTradeRecord[];
     readonly finalEquityUsdt: ScaledDecimal;
@@ -326,7 +364,7 @@ export class ReplayEngine {
       };
     }
 
-    const spec = defaultInstrumentSpec(params.instrumentId);
+    const spec = params.instrumentSpec;
     const clock = new ManualClock(firstBar.openTs);
     let equityUsdt = params.initialEquityUsdt;
     let peakEquityNum = Number(equityUsdt.toString());
@@ -338,6 +376,9 @@ export class ReplayEngine {
     let active: ActivePosition | null = null;
 
     const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
+    const extraStressMultiplierDec = ScaledDecimal.fromString(
+      Math.max(0, params.costStressMultiplier - 1).toFixed(8)
+    );
     const riskFractionDec = ScaledDecimal.fromString(params.riskFraction.toFixed(8));
     const maxLeverageDec = ScaledDecimal.fromString(params.maxLeverage.toFixed(8));
 
@@ -358,8 +399,8 @@ export class ReplayEngine {
       const tradeFeesUsdt = pos.entryFeeUsdt.add(exitFeeUsdt);
       const netPnlUsdt = grossPnlUsdt.sub(tradeFeesUsdt).add(pos.fundingAccruedUsdt);
 
-      // 2x cost stress deducts an additional 1x tradeFeesUsdt
-      const stressNetPnlUsdt = netPnlUsdt.sub(tradeFeesUsdt);
+      // Cost stress deducts (costStressMultiplier - 1) * tradeFeesUsdt
+      const stressNetPnlUsdt = netPnlUsdt.sub(tradeFeesUsdt.mul(extraStressMultiplierDec));
 
       const riskNum = Math.max(0.01, Number(pos.initialRiskUsdt.toString()));
       const netR = Number((Number(netPnlUsdt.toString()) / riskNum).toFixed(6));
@@ -404,16 +445,17 @@ export class ReplayEngine {
       const bar = bars[idx];
       if (!bar) continue;
       clock.setMs(bar.closeTs);
+      const nowMs = clock.nowMs();
       const barHigh = ScaledDecimal.fromString(bar.high);
       const barLow = ScaledDecimal.fromString(bar.low);
       const barClose = ScaledDecimal.fromString(bar.close);
 
       if (active) {
-        // 1. Apply any settled 8h funding events in (active.lastFundingTs, bar.closeTs]
+        // 1. Apply any settled 8h funding events in (active.lastFundingTs, nowMs]
         const settledFunding = this.marketDataRepo.getSettledFundingInRange({
           instrumentId: params.instrumentId,
           fromTs: active.lastFundingTs + 1,
-          toTs: bar.closeTs
+          toTs: nowMs
         });
 
         for (const f of settledFunding) {
@@ -432,20 +474,20 @@ export class ReplayEngine {
           const stopHit = barLow.lte(active.protectiveStopPrice);
           const tpHit = active.takeProfitPrice !== null && barHigh.gte(active.takeProfitPrice);
           if (stopHit) {
-            closePosition(active, bar.closeTs, active.protectiveStopPrice, "stop");
+            closePosition(active, nowMs, active.protectiveStopPrice, "stop");
             active = null;
           } else if (tpHit && active.takeProfitPrice) {
-            closePosition(active, bar.closeTs, active.takeProfitPrice, "take-profit");
+            closePosition(active, nowMs, active.takeProfitPrice, "take-profit");
             active = null;
           }
         } else {
           const stopHit = barHigh.gte(active.protectiveStopPrice);
           const tpHit = active.takeProfitPrice !== null && barLow.lte(active.takeProfitPrice);
           if (stopHit) {
-            closePosition(active, bar.closeTs, active.protectiveStopPrice, "stop");
+            closePosition(active, nowMs, active.protectiveStopPrice, "stop");
             active = null;
           } else if (tpHit && active.takeProfitPrice) {
-            closePosition(active, bar.closeTs, active.takeProfitPrice, "take-profit");
+            closePosition(active, nowMs, active.takeProfitPrice, "take-profit");
             active = null;
           }
         }
@@ -455,7 +497,7 @@ export class ReplayEngine {
       if (!active && idx < bars.length - 1) {
         const snapshot = this.marketDataRepo.buildFeatureSnapshot({
           instrumentId: params.instrumentId,
-          asOfMs: bar.closeTs,
+          asOfMs: nowMs,
           requirements: params.strategy.lookbacks
         });
         const menu = params.strategy.evaluate(snapshot);
@@ -476,7 +518,7 @@ export class ReplayEngine {
             const entryFeeUsdt = sizing.notionalQuote.mul(costFraction);
             active = {
               proposal: chosen,
-              entryTs: bar.closeTs,
+              entryTs: nowMs,
               entryPrice,
               protectiveStopPrice: sizing.effectiveStopPrice,
               takeProfitPrice: chosen.takeProfitPrice
@@ -486,7 +528,7 @@ export class ReplayEngine {
               initialRiskUsdt: sizing.sizedRiskQuote,
               entryFeeUsdt,
               fundingAccruedUsdt: ScaledDecimal.zero(),
-              lastFundingTs: bar.closeTs
+              lastFundingTs: nowMs
             };
           }
         }
@@ -528,35 +570,43 @@ export class ReplayEngine {
 
   private computePurgedWalkForwardOosExpectancy(params: {
     readonly instrumentId: string;
+    readonly instrumentSpec: InstrumentSpec;
     readonly timeframe: BarTimeframe;
     readonly strategy: Strategy;
     readonly bars: readonly ConfirmedBar[];
-    readonly purgeBars: number;
+    readonly embargoBars: number;
+    readonly walkForwardFolds: number;
     readonly initialEquityUsdt: ScaledDecimal;
     readonly riskFraction: number;
     readonly maxLeverage: number;
     readonly totalOneWayCostBps: number;
+    readonly costStressMultiplier: number;
   }): number {
     const total = params.bars.length;
-    if (total < params.purgeBars * 2 + 20) {
+    const folds = Math.max(2, params.walkForwardFolds);
+    const embargo = Math.max(1, params.embargoBars);
+    if (total < embargo * folds + 20) {
       return 0;
     }
-    const mid = Math.floor(total / 2);
-    const fold1Bars = params.bars.slice(params.purgeBars, Math.max(params.purgeBars + 1, mid));
-    const fold2Bars = params.bars.slice(Math.min(total, mid + params.purgeBars));
-
+    const foldLength = Math.floor(total / folds);
     const oosReturns: number[] = [];
-    for (const foldBars of [fold1Bars, fold2Bars]) {
-      if (foldBars.length > params.purgeBars) {
+
+    for (let f = 0; f < folds; f += 1) {
+      const startIdx = Math.min(total, f * foldLength + embargo);
+      const endIdx = f === folds - 1 ? total : Math.min(total, (f + 1) * foldLength);
+      const foldBars = params.bars.slice(startIdx, endIdx);
+      if (foldBars.length > embargo) {
         const foldSim = this.simulateWindow({
           instrumentId: params.instrumentId,
+          instrumentSpec: params.instrumentSpec,
           timeframe: params.timeframe,
           strategy: params.strategy,
           bars: foldBars,
           initialEquityUsdt: params.initialEquityUsdt,
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
-          totalOneWayCostBps: params.totalOneWayCostBps
+          totalOneWayCostBps: params.totalOneWayCostBps,
+          costStressMultiplier: params.costStressMultiplier
         });
         for (const t of foldSim.trades) {
           oosReturns.push(t.netR);

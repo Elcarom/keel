@@ -10,10 +10,14 @@ import {
 } from "@keel/core";
 
 export interface Strategy {
+  readonly id: string;
   readonly strategyId: string;
   readonly version: string;
+  readonly name: string;
+  readonly description: string;
   readonly parameterHash: string;
   readonly lookbacks: LookbackRequirement;
+  readonly lookbackRequirements: LookbackRequirement;
   evaluate(snapshot: FeatureSnapshot): ProposalMenu;
 }
 
@@ -85,10 +89,14 @@ export interface DonchianTrendOptions {
 }
 
 export class DonchianTrendStrategy implements Strategy {
+  public readonly id = "donchian-trend-v1";
   public readonly strategyId = "donchian-trend-v1";
   public readonly version = "1.0.0";
+  public readonly name = "Donchian Trend Breakout v1";
+  public readonly description = "20-bar Donchian channel breakout with 2x ATR protective stops.";
   public readonly parameterHash: string;
   public readonly lookbacks: LookbackRequirement;
+  public readonly lookbackRequirements: LookbackRequirement;
   private readonly timeframe: BarTimeframe;
   private readonly channelLength: number;
   private readonly atrStopMultiplier: number;
@@ -112,6 +120,7 @@ export class DonchianTrendStrategy implements Strategy {
     this.lookbacks = {
       [this.timeframe]: this.channelLength + 2
     };
+    this.lookbackRequirements = this.lookbacks;
   }
 
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {
@@ -227,10 +236,14 @@ export interface VolNormalizedMeanReversionOptions {
 }
 
 export class VolNormalizedMeanReversionStrategy implements Strategy {
+  public readonly id = "vol-mean-reversion-v1";
   public readonly strategyId = "vol-mean-reversion-v1";
   public readonly version = "1.0.0";
+  public readonly name = "Vol-Normalized Mean Reversion v1";
+  public readonly description = "Z-score mean-reversion fade with volatility-normalized stops.";
   public readonly parameterHash: string;
   public readonly lookbacks: LookbackRequirement;
+  public readonly lookbackRequirements: LookbackRequirement;
   private readonly timeframe: BarTimeframe;
   private readonly lookbackBars: number;
   private readonly entryZScore: number;
@@ -257,6 +270,7 @@ export class VolNormalizedMeanReversionStrategy implements Strategy {
     this.lookbacks = {
       [this.timeframe]: this.lookbackBars + 2
     };
+    this.lookbackRequirements = this.lookbacks;
   }
 
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {
@@ -368,10 +382,14 @@ export interface VolNormalizedMomentumOptions {
 }
 
 export class VolNormalizedMomentumStrategy implements Strategy {
+  public readonly id = "vol-momentum-v1";
   public readonly strategyId = "vol-momentum-v1";
   public readonly version = "1.0.0";
+  public readonly name = "Vol-Normalized Momentum Impulse v1";
+  public readonly description = "ATR-scaled directional impulse continuation strategy.";
   public readonly parameterHash: string;
   public readonly lookbacks: LookbackRequirement;
+  public readonly lookbackRequirements: LookbackRequirement;
   private readonly timeframe: BarTimeframe;
   private readonly lookbackBars: number;
   private readonly momentumThresholdAtr: number;
@@ -398,6 +416,7 @@ export class VolNormalizedMomentumStrategy implements Strategy {
     this.lookbacks = {
       [this.timeframe]: this.lookbackBars + 2
     };
+    this.lookbackRequirements = this.lookbacks;
   }
 
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {

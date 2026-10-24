@@ -3,6 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
+  ScaledDecimal,
   SystemClock,
   createDefaultConfig,
   diffConfigs,
@@ -87,7 +88,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   const replayEngine = new ReplayEngine({
     marketDataRepo: dataStore.marketDataRepo,
-    experimentRepo: dataStore.experimentRepo
+    experimentRepo: dataStore.experimentRepo,
+    clock
   });
 
   const getUptimeSeconds = (): number =>
@@ -786,29 +788,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
               requirements: strategy.lookbacks
             });
           }
-          const labels: Record<string, { name: string; description: string }> = {
-            "donchian-trend-v1": {
-              name: "Donchian Trend Breakout v1",
-              description: "20-bar Donchian channel breakout with 2x ATR protective stops."
-            },
-            "vol-mean-reversion-v1": {
-              name: "Vol-Normalized Mean Reversion v1",
-              description: "Z-score mean-reversion fade with volatility-normalized stops."
-            },
-            "vol-momentum-v1": {
-              name: "Vol-Normalized Momentum Impulse v1",
-              description: "ATR-scaled directional impulse continuation strategy."
-            }
-          };
-          const meta = labels[strategy.strategyId] ?? {
-            name: strategy.strategyId,
-            description: "Deterministic baseline strategy"
-          };
           return {
             id: strategy.strategyId,
             version: strategy.version,
-            name: meta.name,
-            description: meta.description,
+            name: strategy.name,
+            description: strategy.description,
             lookbackRequirements,
             lookbackStatusByInstrument
           };
@@ -902,8 +886,17 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           fromTs: coverage.earliestOpenTs,
           toTs: coverage.latestCloseTs,
           configHash: active.configHash,
+          initialEquityUsdt: ScaledDecimal.fromString(
+            active.config.risk.paperPortfolioEquityUsdt.toFixed(2)
+          ),
           riskFractionPerTrade: active.config.risk.strategy.riskPerTradePct / 100,
-          maxGrossLeverage: active.config.risk.strategy.maxGrossLeverage
+          maxGrossLeverage: active.config.risk.strategy.maxGrossLeverage,
+          costStressMultiplier: active.config.promotionLadder.replayCostStressMultiplier,
+          walkForwardFolds: active.config.promotionLadder.replayMinWalkForwardFolds,
+          replayMinTrades: active.config.promotionLadder.replayMinTrades,
+          replayMinSharpe: active.config.promotionLadder.replayMinSharpe,
+          replayMinDeflatedSharpeConfidence:
+            active.config.promotionLadder.replayMinDeflatedSharpeConfidence
         });
 
         dataStore.auditRepo.append({

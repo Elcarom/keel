@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS confirmed_bars (
   volume_contracts TEXT NOT NULL,
   volume_quote TEXT NOT NULL,
   PRIMARY KEY (instrument_id, timeframe, open_ts)
-);
+) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_confirmed_bars_as_of
   ON confirmed_bars(instrument_id, timeframe, close_ts ASC);
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS settled_funding_rates (
   funding_rate TEXT NOT NULL,
   realized_rate TEXT NOT NULL,
   PRIMARY KEY (instrument_id, funding_ts)
-);
+) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_settled_funding_ts
   ON settled_funding_rates(instrument_id, funding_ts ASC);
@@ -362,6 +362,10 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
             break;
           }
         }
+        const latestBar = bars[bars.length - 1];
+        if (latestBar && input.asOfMs - latestBar.closeTs >= dt) {
+          hasGaps = true;
+        }
 
         if (bars.length < requiredBars || hasGaps) {
           deficits.push({
@@ -425,7 +429,7 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
           totalBarCount += bars.length;
           for (const b of bars) {
             digestParts.push(
-              `B:${b.instrumentId}:${b.timeframe}:${b.openTs}:${b.closeTs}:${b.open}:${b.high}:${b.low}:${b.close}:${b.volumeContracts}`
+              `B:${b.instrumentId}:${b.timeframe}:${b.openTs}:${b.closeTs}:${b.open}:${b.high}:${b.low}:${b.close}:${b.volumeContracts}:${b.volumeQuote}`
             );
           }
         }
@@ -512,13 +516,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
           avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
           sharpe_ratio, deflated_sharpe_ratio, stress_net_expectancy_r,
           walk_forward_oos_avg_r, replay_gate_passed, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(experiment_id) DO UPDATE SET
-          total_trades = excluded.total_trades,
-          win_rate = excluded.win_rate,
-          avg_r = excluded.avg_r,
-          net_pnl_usdt = excluded.net_pnl_usdt,
-          replay_gate_passed = excluded.replay_gate_passed`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         validated.experimentId,
         validated.strategyId,
@@ -583,26 +581,41 @@ export class OkxPublicIngestor {
     this.marketDataRepo = options.marketDataRepo;
     this.fetchHistoryCandles =
       options.fetchHistoryCandles ??
-      (async ({ instrumentId, timeframe, toOpenTs }) => {
+      (async ({ instrumentId, timeframe, fromOpenTs, toOpenTs }) => {
         const dt = TIMEFRAME_DURATION_MS[timeframe];
-        const afterMs = toOpenTs + dt;
-        const url = `https://www.okx.com/api/v5/market/history-candles?instId=${encodeURIComponent(instrumentId)}&bar=${encodeURIComponent(timeframe)}&after=${afterMs}&limit=100`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          throw new Error(`OKX history-candles HTTP ${res.status}`);
+        const collected: RawOkxCandlePayload[] = [];
+        let cursorAfterMs = toOpenTs + dt;
+        const maxPages = 20;
+        for (let page = 0; page < maxPages && cursorAfterMs > fromOpenTs; page += 1) {
+          const url = `https://www.okx.com/api/v5/market/history-candles?instId=${encodeURIComponent(instrumentId)}&bar=${encodeURIComponent(timeframe)}&after=${cursorAfterMs}&limit=100`;
+          const res = await fetch(url);
+          if (!res.ok) {
+            throw new Error(`OKX history-candles HTTP ${res.status}`);
+          }
+          const body = (await res.json()) as { data?: string[][] };
+          const rows = body.data ?? [];
+          if (rows.length === 0) break;
+          let minTsInPage = cursorAfterMs;
+          for (const arr of rows) {
+            const openTs = Number(arr[0] ?? 0);
+            if (openTs < minTsInPage) minTsInPage = openTs;
+            if (openTs >= fromOpenTs && openTs <= toOpenTs) {
+              collected.push({
+                openTs,
+                open: arr[1] ?? "0",
+                high: arr[2] ?? "0",
+                low: arr[3] ?? "0",
+                close: arr[4] ?? "0",
+                volumeContracts: arr[5] ?? "0",
+                volumeQuote: arr[7] ?? "0",
+                confirm: arr[8] ?? "0"
+              });
+            }
+          }
+          if (minTsInPage >= cursorAfterMs) break;
+          cursorAfterMs = minTsInPage;
         }
-        const body = (await res.json()) as { data?: string[][] };
-        const rows = body.data ?? [];
-        return rows.map((arr) => ({
-          openTs: Number(arr[0] ?? 0),
-          open: arr[1] ?? "0",
-          high: arr[2] ?? "0",
-          low: arr[3] ?? "0",
-          close: arr[4] ?? "0",
-          volumeContracts: arr[5] ?? "0",
-          volumeQuote: arr[7] ?? "0",
-          confirm: arr[8] ?? "0"
-        }));
+        return collected;
       });
   }
 
@@ -650,6 +663,8 @@ export function seedSyntheticMarketSeries(input: {
   const startOpenTs = alignedEndMs - count1H * dt1H;
 
   const basePrice = input.instrumentId.startsWith("ETH") ? 2500 : 60000;
+  const dt15m = TIMEFRAME_DURATION_MS["15m"];
+  const candles15m: RawOkxCandlePayload[] = [];
   const candles1H: RawOkxCandlePayload[] = [];
   const candles4H: RawOkxCandlePayload[] = [];
   const candles1D: RawOkxCandlePayload[] = [];
@@ -670,6 +685,23 @@ export function seedSyntheticMarketSeries(input: {
     const high = Math.max(open, close) + rangePad;
     const low = Math.max(basePrice * 0.2, Math.min(open, close) - rangePad);
     price = close;
+
+    for (let q = 0; q < 4; q++) {
+      const qOpen = open + ((close - open) * q) / 4;
+      const qClose = open + ((close - open) * (q + 1)) / 4;
+      const qHigh = Math.max(qOpen, qClose) + rangePad * 0.35;
+      const qLow = Math.max(basePrice * 0.2, Math.min(qOpen, qClose) - rangePad * 0.35);
+      candles15m.push({
+        openTs: openTs + q * dt15m,
+        open: qOpen.toFixed(2),
+        high: qHigh.toFixed(2),
+        low: qLow.toFixed(2),
+        close: qClose.toFixed(2),
+        volumeContracts: "250.00",
+        volumeQuote: (250 * qClose).toFixed(2),
+        confirm: "1"
+      });
+    }
 
     candles1H.push({
       openTs,
@@ -733,6 +765,11 @@ export function seedSyntheticMarketSeries(input: {
     }
   }
 
+  input.marketDataRepo.ingestOkxCandles({
+    instrumentId: input.instrumentId,
+    timeframe: "15m",
+    candles: candles15m
+  });
   input.marketDataRepo.ingestOkxCandles({
     instrumentId: input.instrumentId,
     timeframe: "1H",
