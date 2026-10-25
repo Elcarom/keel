@@ -214,6 +214,11 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   `);
   db.exec(SCHEMA_SQL);
   db.exec(MARKET_SCHEMA_SQL);
+  try {
+    db.exec("ALTER TABLE experiments ADD COLUMN num_trials INTEGER NOT NULL DEFAULT 1");
+  } catch {
+    // Column already exists
+  }
   db.exec(PAPER_SCHEMA_SQL);
 
   const marketDataRepo = createMarketDataRepository(db);
