@@ -347,6 +347,13 @@ export interface MarketDataRepository {
   }[];
 }
 
+export const BenchmarkBaselineSchema = z.object({
+  returnPct: z.number(),
+  sharpeRatio: z.number(),
+  maxDrawdownPct: z.number().nonnegative()
+});
+export type BenchmarkBaseline = z.infer<typeof BenchmarkBaselineSchema>;
+
 export const ExperimentRecordSchema = z.object({
   experimentId: z.string().min(1),
   strategyId: z.string().min(1),
@@ -369,7 +376,11 @@ export const ExperimentRecordSchema = z.object({
   stressNetExpectancyR: z.number(),
   walkForwardOutOfSampleAvgR: z.number(),
   replayGatePassed: z.boolean(),
-  createdAtMs: z.number().int().nonnegative()
+  createdAtMs: z.number().int().nonnegative(),
+  buyAndHoldReturnPct: z.number().default(0),
+  buyAndHoldSharpeRatio: z.number().default(0),
+  randomEntryReturnPct: z.number().default(0),
+  randomEntrySharpeRatio: z.number().default(0)
 });
 export type ExperimentRecord = z.infer<typeof ExperimentRecordSchema>;
 

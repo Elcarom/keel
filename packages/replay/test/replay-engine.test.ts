@@ -153,4 +153,124 @@ describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Fo
     expect(inverseNormalCdf(0.99)).toBeCloseTo(2.32635, 4);
     expect(inverseNormalCdf(0.025)).toBeCloseTo(-1.95996, 4);
   });
+
+  it("tracks mark-to-market unrealized drawdown intrabar and interbar (M3)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const baseTs = 1_710_000_000_000;
+    const oneHour = 3_600_000;
+
+    // Seed 25 bars:
+    // Bar 0: price 100 (strategy generates proposal)
+    // Bar 1: enters long at 100
+    // Bar 2-5: price plummets to 90 (unrealized loss of ~10%)
+    // Bar 6-10: price recovers to 115 (profitable exit at TP or end)
+    const candles = [];
+    // 21 lookback warmup bars at 100 with ATR ~5 (high 105, low 95)
+    for (let i = 0; i < 21; i += 1) {
+      candles.push({
+        openTs: String(baseTs + i * oneHour),
+        open: "100.00",
+        high: "105.00",
+        low: "95.00",
+        close: "100.00",
+        volumeContracts: "1000",
+        volumeQuote: "100000",
+        confirm: "1" as const
+      });
+    }
+    // Bar 21: Breakout upwards to trigger Donchian entry (channelLength 20, highestHigh was 105)
+    candles.push({
+      openTs: String(baseTs + 21 * oneHour),
+      open: "100.00",
+      high: "112.00",
+      low: "99.50",
+      close: "110.00",
+      volumeContracts: "1000",
+      volumeQuote: "110000",
+      confirm: "1" as const
+    });
+    // Bar 22: Intrabar dip to 102.00 (below entry 110.00, but well above stop ~90.00), closes at 106.00
+    candles.push({
+      openTs: String(baseTs + 22 * oneHour),
+      open: "110.00",
+      high: "110.00",
+      low: "102.00",
+      close: "106.00",
+      volumeContracts: "1000",
+      volumeQuote: "106000",
+      confirm: "1" as const
+    });
+    // Bar 23: Rebound to 130.00 (profitable exit)
+    candles.push({
+      openTs: String(baseTs + 23 * oneHour),
+      open: "106.00",
+      high: "135.00",
+      low: "105.00",
+      close: "130.00",
+      volumeContracts: "1000",
+      volumeQuote: "130000",
+      confirm: "1" as const
+    });
+
+    marketRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: baseTs,
+      toTs: baseTs + 24 * oneHour
+    });
+
+    // Strategy closed in profit
+    expect(Number(result.netPnlUsdt)).toBeGreaterThan(0);
+    // Realized-only drawdown would have reported 0% because the only trade was a winning trade.
+    // Mark-to-market drawdown MUST capture the intrabar/interbar dip on Bar 22!
+    expect(result.maxDrawdownPct).toBeGreaterThan(0.5);
+  });
+
+  it("computes annualized time-based Sharpe and benchmark baselines (M3, M4)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const seeded = seedSyntheticMarketSeries({
+      marketDataRepo: marketRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_710_000_000_000,
+      barCount1H: 240
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs
+    });
+
+    // Replay result must include benchmark baselines
+    expect(result.buyAndHoldReturnPct).toBeDefined();
+    expect(result.buyAndHoldSharpeRatio).toBeDefined();
+    expect(result.randomEntryReturnPct).toBeDefined();
+    expect(result.randomEntrySharpeRatio).toBeDefined();
+    expect(Number.isFinite(result.buyAndHoldReturnPct)).toBe(true);
+    expect(Number.isFinite(result.buyAndHoldSharpeRatio)).toBe(true);
+    expect(Number.isFinite(result.randomEntryReturnPct)).toBe(true);
+    expect(Number.isFinite(result.randomEntrySharpeRatio)).toBe(true);
+
+    // Periodic time-based Sharpe ratio is finite and annualized
+    expect(Number.isFinite(result.sharpeRatio)).toBe(true);
+    // Equity curve should be exported on ReplayRunResult
+    expect(result.equityCurve).toBeDefined();
+    expect(result.equityCurve.length).toBeGreaterThan(0);
+  });
 });

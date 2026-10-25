@@ -5,6 +5,7 @@ import {
   sha256Hex,
   sizeByStopRisk,
   type BarTimeframe,
+  type BenchmarkBaseline,
   type Clock,
   type ConfirmedBar,
   type ExperimentRecord,
@@ -58,8 +59,19 @@ export interface ReplayRunInput {
   readonly numTrialsForDsr?: number | undefined;
 }
 
+export interface ReplayEquityPoint {
+  readonly ts: number;
+  readonly equityUsdt: string;
+  readonly drawdownPct: number;
+}
+
 export interface ReplayRunResult extends ExperimentRecord {
   readonly trades: readonly ReplayTradeRecord[];
+  readonly equityCurve: readonly ReplayEquityPoint[];
+  readonly baselines: {
+    readonly buyAndHold: BenchmarkBaseline;
+    readonly randomEntry: BenchmarkBaseline;
+  };
 }
 
 function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
@@ -152,22 +164,48 @@ export function inverseNormalCdf(p: number): number {
   }
 }
 
+export function getTimeframeAnnualizationPeriods(timeframe: BarTimeframe): number {
+  switch (timeframe) {
+    case "15m":
+      return 35_040;
+    case "1H":
+      return 8_760;
+    case "4H":
+      return 2_190;
+    case "1D":
+      return 365;
+    default:
+      return 8_760;
+  }
+}
+
 export function computeDeflatedSharpeRatio(params: {
-  readonly returnsR: readonly number[];
+  readonly periodicReturns?: readonly number[] | undefined;
+  readonly returnsR?: readonly number[] | undefined;
+  readonly annualizationFactor?: number | undefined;
   readonly numTrials?: number | undefined;
 }): {
   readonly sharpeRatio: number;
+  readonly periodicSharpeRatio: number;
   readonly deflatedSharpeRatio: number;
 } {
-  const returns = params.returnsR;
+  const returns = params.periodicReturns ?? params.returnsR ?? [];
   const n = returns.length;
   if (n < 2) {
-    return { sharpeRatio: 0, deflatedSharpeRatio: 0 };
+    return { sharpeRatio: 0, periodicSharpeRatio: 0, deflatedSharpeRatio: 0 };
   }
   const mean = returns.reduce((acc, r) => acc + r, 0) / n;
   const variance = returns.reduce((acc, r) => acc + (r - mean) ** 2, 0) / (n - 1);
   const std = Math.sqrt(Math.max(1e-12, variance));
   const sr = mean / std;
+
+  const annualFactor =
+    params.annualizationFactor !== undefined
+      ? params.annualizationFactor
+      : params.periodicReturns !== undefined
+        ? Math.sqrt(8760)
+        : 1.0;
+  const annualizedSr = sr * annualFactor;
 
   const m3 = returns.reduce((acc, r) => acc + ((r - mean) / std) ** 3, 0) / n;
   const m4 = returns.reduce((acc, r) => acc + ((r - mean) / std) ** 4, 0) / n;
@@ -186,8 +224,370 @@ export function computeDeflatedSharpeRatio(params: {
   const dsr = Math.min(1, Math.max(0, normalCdf(z)));
 
   return {
-    sharpeRatio: Number(sr.toFixed(6)),
+    sharpeRatio: Number(annualizedSr.toFixed(6)),
+    periodicSharpeRatio: Number(sr.toFixed(6)),
     deflatedSharpeRatio: Number(dsr.toFixed(6))
+  };
+}
+
+function updateTrackedDrawdown(params: {
+  readonly peakEquityNum: number;
+  readonly closeEquityNum: number;
+  readonly worstIntraEquityNum: number;
+  readonly currentMaxDrawdownPct: number;
+}): {
+  readonly newPeakEquityNum: number;
+  readonly newMaxDrawdownPct: number;
+} {
+  let peak = params.peakEquityNum;
+  if (params.closeEquityNum > peak) {
+    peak = params.closeEquityNum;
+  }
+  let maxDd = params.currentMaxDrawdownPct;
+  if (peak > 0) {
+    const ddWorst = ((peak - params.worstIntraEquityNum) / peak) * 100;
+    const ddClose = ((peak - params.closeEquityNum) / peak) * 100;
+    if (ddWorst > maxDd) maxDd = ddWorst;
+    if (ddClose > maxDd) maxDd = ddClose;
+  }
+  return { newPeakEquityNum: peak, newMaxDrawdownPct: maxDd };
+}
+
+export function computeBuyAndHoldBaseline(params: {
+  readonly bars: readonly ConfirmedBar[];
+  readonly instrumentSpec: InstrumentSpec;
+  readonly initialEquityUsdt: ScaledDecimal;
+  readonly totalOneWayCostBps: number;
+  readonly timeframe: BarTimeframe;
+  readonly marketDataRepo: MarketDataRepository;
+}): BenchmarkBaseline {
+  const bars = params.bars;
+  if (bars.length < 2) {
+    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+  }
+  const firstBar = bars[0];
+  if (!firstBar) {
+    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+  }
+  const spec = params.instrumentSpec;
+  const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
+
+  const entryPrice = ScaledDecimal.fromString(firstBar.open);
+  const notionalPerContract = entryPrice.mul(spec.contractValue);
+  if (!notionalPerContract.isPositive()) {
+    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+  }
+
+  const contracts = params.initialEquityUsdt
+    .divFloor(notionalPerContract)
+    .roundDownToLot(spec.lotSize);
+  if (!contracts.isPositive()) {
+    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+  }
+
+  const baseQty = contracts.mul(spec.contractValue);
+  const entryNotional = entryPrice.mul(baseQty);
+  const entryFee = entryNotional.mul(costFraction);
+
+  const initialEquityNum = Number(params.initialEquityUsdt.toString());
+  const cashEquity = params.initialEquityUsdt.sub(entryFee);
+  let fundingAccrued = ScaledDecimal.zero();
+  let lastFundingTs = firstBar.openTs;
+  let peakEquityNum = initialEquityNum;
+  let maxDrawdownPct = 0;
+  let prevEquityNum = initialEquityNum;
+  const periodicReturns: number[] = [];
+
+  for (let i = 0; i < bars.length; i += 1) {
+    const bar = bars[i];
+    if (!bar) continue;
+    const settled = params.marketDataRepo.getSettledFundingInRange({
+      instrumentId: spec.instrumentId,
+      fromTs: lastFundingTs + 1,
+      toTs: bar.closeTs
+    });
+    for (const f of settled) {
+      const markClose = ScaledDecimal.fromString(bar.close);
+      const markNotional = markClose.mul(baseQty);
+      const rate = ScaledDecimal.fromString(f.fundingRate);
+      const rawPayment = markNotional.mul(rate);
+      fundingAccrued = fundingAccrued.sub(rawPayment);
+      lastFundingTs = f.fundingTs;
+    }
+
+    const closePrice = ScaledDecimal.fromString(bar.close);
+    const grossPnl = closePrice.sub(entryPrice).mul(baseQty);
+    const exitFee = closePrice.mul(baseQty).mul(costFraction);
+    const mtmEquity = cashEquity.add(grossPnl).sub(exitFee).add(fundingAccrued);
+    const eqNum = Number(mtmEquity.toString());
+
+    const lowPrice = ScaledDecimal.fromString(bar.low);
+    const lowGrossPnl = lowPrice.sub(entryPrice).mul(baseQty);
+    const lowExitFee = lowPrice.mul(baseQty).mul(costFraction);
+    const worstEq = cashEquity.add(lowGrossPnl).sub(lowExitFee).add(fundingAccrued);
+    const worstEqNum = Number(worstEq.toString());
+
+    const dd = updateTrackedDrawdown({
+      peakEquityNum,
+      closeEquityNum: eqNum,
+      worstIntraEquityNum: worstEqNum,
+      currentMaxDrawdownPct: maxDrawdownPct
+    });
+    peakEquityNum = dd.newPeakEquityNum;
+    maxDrawdownPct = dd.newMaxDrawdownPct;
+
+    const r = prevEquityNum > 0 ? (eqNum - prevEquityNum) / prevEquityNum : 0;
+    periodicReturns.push(r);
+    prevEquityNum = eqNum;
+  }
+
+  const finalBar = bars[bars.length - 1];
+  const finalClose = finalBar ? ScaledDecimal.fromString(finalBar.close) : entryPrice;
+  const finalGross = finalClose.sub(entryPrice).mul(baseQty);
+  const finalExitFee = finalClose.mul(baseQty).mul(costFraction);
+  const finalEquity = cashEquity.add(finalGross).sub(finalExitFee).add(fundingAccrued);
+  const finalEquityNum = Number(finalEquity.toString());
+  const returnPct = ((finalEquityNum - initialEquityNum) / initialEquityNum) * 100;
+
+  const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(params.timeframe));
+  const sharpe = computeDeflatedSharpeRatio({
+    periodicReturns,
+    annualizationFactor: annualFactor
+  }).sharpeRatio;
+
+  return {
+    returnPct: Number(returnPct.toFixed(4)),
+    sharpeRatio: Number(sharpe.toFixed(4)),
+    maxDrawdownPct: Number(maxDrawdownPct.toFixed(4))
+  };
+}
+
+export function computeRandomEntryBaseline(params: {
+  readonly bars: readonly ConfirmedBar[];
+  readonly instrumentSpec: InstrumentSpec;
+  readonly initialEquityUsdt: ScaledDecimal;
+  readonly totalOneWayCostBps: number;
+  readonly timeframe: BarTimeframe;
+  readonly marketDataRepo: MarketDataRepository;
+  readonly riskFraction?: number | undefined;
+  readonly maxLeverage?: number | undefined;
+  readonly seed?: number | undefined;
+}): BenchmarkBaseline {
+  const bars = params.bars;
+  if (bars.length < 2) {
+    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+  }
+  const spec = params.instrumentSpec;
+  const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
+  const riskFraction = params.riskFraction ?? 0.0075;
+  const maxLeverage = params.maxLeverage ?? 2.0;
+  const riskFractionDec = ScaledDecimal.fromString(riskFraction.toFixed(8));
+  const maxLeverageDec = ScaledDecimal.fromString(maxLeverage.toFixed(8));
+
+  let prngState = (params.seed ?? 1337) >>> 0;
+  const prng = (): number => {
+    prngState = (1664525 * prngState + 1013904223) >>> 0;
+    return prngState / 4294967296;
+  };
+
+  let cashEquity = params.initialEquityUsdt;
+  const initialEquityNum = Number(cashEquity.toString());
+  let peakEquityNum = initialEquityNum;
+  let maxDrawdownPct = 0;
+  let prevEquityNum = initialEquityNum;
+  const periodicReturns: number[] = [];
+
+  interface RandomPosition {
+    side: "long" | "short";
+    entryPrice: ScaledDecimal;
+    stopPrice: ScaledDecimal;
+    takeProfitPrice: ScaledDecimal;
+    contracts: ScaledDecimal;
+    entryFee: ScaledDecimal;
+    fundingAccrued: ScaledDecimal;
+    lastFundingTs: number;
+    barsHeld: number;
+  }
+
+  let active: RandomPosition | null = null;
+
+  for (let i = 0; i < bars.length; i += 1) {
+    const bar = bars[i];
+    if (!bar) continue;
+    const barLow = ScaledDecimal.fromString(bar.low);
+    const barHigh = ScaledDecimal.fromString(bar.high);
+    const barClose = ScaledDecimal.fromString(bar.close);
+
+    if (active) {
+      active.barsHeld += 1;
+      const settled = params.marketDataRepo.getSettledFundingInRange({
+        instrumentId: spec.instrumentId,
+        fromTs: active.lastFundingTs + 1,
+        toTs: bar.closeTs
+      });
+      for (const f of settled) {
+        const baseQty = active.contracts.mul(spec.contractValue);
+        const markNotional = barClose.mul(baseQty);
+        const rate = ScaledDecimal.fromString(f.fundingRate);
+        const rawPayment = markNotional.mul(rate);
+        const signed = active.side === "long" ? ScaledDecimal.zero().sub(rawPayment) : rawPayment;
+        active.fundingAccrued = active.fundingAccrued.add(signed);
+        active.lastFundingTs = f.fundingTs;
+      }
+
+      let exitPrice: ScaledDecimal | null = null;
+      if (active.side === "long") {
+        if (barLow.lte(active.stopPrice)) {
+          exitPrice = active.stopPrice;
+        } else if (barHigh.gte(active.takeProfitPrice)) {
+          exitPrice = active.takeProfitPrice;
+        } else if (active.barsHeld >= 24) {
+          exitPrice = barClose;
+        }
+      } else {
+        if (barHigh.gte(active.stopPrice)) {
+          exitPrice = active.stopPrice;
+        } else if (barLow.lte(active.takeProfitPrice)) {
+          exitPrice = active.takeProfitPrice;
+        } else if (active.barsHeld >= 24) {
+          exitPrice = barClose;
+        }
+      }
+
+      if (exitPrice !== null) {
+        const baseQty = active.contracts.mul(spec.contractValue);
+        const priceDiff =
+          active.side === "long"
+            ? exitPrice.sub(active.entryPrice)
+            : active.entryPrice.sub(exitPrice);
+        const grossPnl = priceDiff.mul(baseQty);
+        const exitFee = exitPrice.mul(baseQty).mul(costFraction);
+        const netPnl = grossPnl.sub(active.entryFee).sub(exitFee).add(active.fundingAccrued);
+        cashEquity = cashEquity.add(netPnl);
+        active = null;
+      }
+    }
+
+    let barCloseEquity = cashEquity;
+    let worstIntraEquity = cashEquity;
+
+    if (active) {
+      const baseQty = active.contracts.mul(spec.contractValue);
+      const closeDiff =
+        active.side === "long" ? barClose.sub(active.entryPrice) : active.entryPrice.sub(barClose);
+      const closeGross = closeDiff.mul(baseQty);
+      const closeExitFee = barClose.mul(baseQty).mul(costFraction);
+      barCloseEquity = cashEquity
+        .add(closeGross)
+        .sub(active.entryFee)
+        .sub(closeExitFee)
+        .add(active.fundingAccrued);
+
+      const worstPrice = active.side === "long" ? barLow : barHigh;
+      const worstDiff =
+        active.side === "long"
+          ? worstPrice.sub(active.entryPrice)
+          : active.entryPrice.sub(worstPrice);
+      const worstGross = worstDiff.mul(baseQty);
+      const worstExitFee = worstPrice.mul(baseQty).mul(costFraction);
+      worstIntraEquity = cashEquity
+        .add(worstGross)
+        .sub(active.entryFee)
+        .sub(worstExitFee)
+        .add(active.fundingAccrued);
+    }
+
+    const eqNum = Number(barCloseEquity.toString());
+    const worstEqNum = Number(worstIntraEquity.toString());
+
+    const dd = updateTrackedDrawdown({
+      peakEquityNum,
+      closeEquityNum: eqNum,
+      worstIntraEquityNum: worstEqNum,
+      currentMaxDrawdownPct: maxDrawdownPct
+    });
+    peakEquityNum = dd.newPeakEquityNum;
+    maxDrawdownPct = dd.newMaxDrawdownPct;
+
+    const r = prevEquityNum > 0 ? (eqNum - prevEquityNum) / prevEquityNum : 0;
+    periodicReturns.push(r);
+    prevEquityNum = eqNum;
+
+    if (!active && i < bars.length - 1) {
+      if (prng() < 0.15) {
+        const side: "long" | "short" = prng() < 0.5 ? "long" : "short";
+        const entryPrice = barClose;
+        const onePoint = ScaledDecimal.fromString("1.00000000");
+        const twoPercent = ScaledDecimal.fromString("0.02000000");
+        const twoPointFive = ScaledDecimal.fromString("2.50000000");
+        const stopDistance = ScaledDecimal.max(onePoint, entryPrice.mul(twoPercent));
+        const stopPrice =
+          side === "long"
+            ? ScaledDecimal.max(onePoint, entryPrice.sub(stopDistance))
+            : entryPrice.add(stopDistance);
+        const tpDistance = stopDistance.mul(twoPointFive);
+        const tpPrice =
+          side === "long"
+            ? entryPrice.add(tpDistance)
+            : ScaledDecimal.max(onePoint, entryPrice.sub(tpDistance));
+
+        const sizing = sizeByStopRisk({
+          instrument: spec,
+          side,
+          strategyEquityQuote: cashEquity,
+          riskFraction: riskFractionDec,
+          entryPrice,
+          stopPrice,
+          maxGrossLeverage: maxLeverageDec
+        });
+
+        if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
+          const entryFee = sizing.notionalQuote.mul(costFraction);
+          active = {
+            side,
+            entryPrice,
+            stopPrice: sizing.effectiveStopPrice,
+            takeProfitPrice: tpPrice,
+            contracts: sizing.contracts,
+            entryFee,
+            fundingAccrued: ScaledDecimal.zero(),
+            lastFundingTs: bar.closeTs,
+            barsHeld: 0
+          };
+        }
+      }
+    }
+  }
+
+  if (active && bars.length > 0) {
+    const lastBar = bars[bars.length - 1];
+    if (lastBar) {
+      const exitPrice = ScaledDecimal.fromString(lastBar.close);
+      const baseQty = active.contracts.mul(spec.contractValue);
+      const priceDiff =
+        active.side === "long"
+          ? exitPrice.sub(active.entryPrice)
+          : active.entryPrice.sub(exitPrice);
+      const grossPnl = priceDiff.mul(baseQty);
+      const exitFee = exitPrice.mul(baseQty).mul(costFraction);
+      const netPnl = grossPnl.sub(active.entryFee).sub(exitFee).add(active.fundingAccrued);
+      cashEquity = cashEquity.add(netPnl);
+      active = null;
+    }
+  }
+
+  const finalEquityNum = Number(cashEquity.toString());
+  const returnPct = ((finalEquityNum - initialEquityNum) / initialEquityNum) * 100;
+  const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(params.timeframe));
+  const sharpe = computeDeflatedSharpeRatio({
+    periodicReturns,
+    annualizationFactor: annualFactor
+  }).sharpeRatio;
+
+  return {
+    returnPct: Number(returnPct.toFixed(4)),
+    sharpeRatio: Number(sharpe.toFixed(4)),
+    maxDrawdownPct: Number(maxDrawdownPct.toFixed(4))
   };
 }
 
@@ -284,9 +684,32 @@ export class ReplayEngine {
       input.numTrialsForDsr ??
       Math.max(1, (this.experimentRepo?.listExperiments(10_000).length ?? 0) + 1);
 
+    const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(input.timeframe));
+
     const dsrMetrics = computeDeflatedSharpeRatio({
-      returnsR: simulation.trades.map((t) => t.netR),
+      periodicReturns: simulation.periodicReturns,
+      annualizationFactor: annualFactor,
       numTrials: cumulativeTrials
+    });
+
+    const buyAndHold = computeBuyAndHoldBaseline({
+      bars: allBars,
+      instrumentSpec: spec,
+      initialEquityUsdt,
+      totalOneWayCostBps,
+      timeframe: input.timeframe,
+      marketDataRepo: this.marketDataRepo
+    });
+
+    const randomEntry = computeRandomEntryBaseline({
+      bars: allBars,
+      instrumentSpec: spec,
+      initialEquityUsdt,
+      totalOneWayCostBps,
+      timeframe: input.timeframe,
+      marketDataRepo: this.marketDataRepo,
+      riskFraction,
+      maxLeverage
     });
 
     const winCount = simulation.trades.filter((t) => t.netR > 0).length;
@@ -294,7 +717,7 @@ export class ReplayEngine {
       simulation.trades.length > 0 ? Number((winCount / simulation.trades.length).toFixed(4)) : 0;
 
     const minTrades = input.replayMinTrades ?? 5;
-    const minSharpe = input.replayMinSharpe ?? 0.2;
+    const minSharpe = input.replayMinSharpe ?? 1.0;
     const minDsr = input.replayMinDeflatedSharpeConfidence ?? 0.5;
 
     const replayGatePassed =
@@ -346,7 +769,11 @@ export class ReplayEngine {
       stressNetExpectancyR: simulation.stressNetExpectancyR,
       walkForwardOutOfSampleAvgR: oosExpectancyR,
       replayGatePassed,
-      createdAtMs
+      createdAtMs,
+      buyAndHoldReturnPct: buyAndHold.returnPct,
+      buyAndHoldSharpeRatio: buyAndHold.sharpeRatio,
+      randomEntryReturnPct: randomEntry.returnPct,
+      randomEntrySharpeRatio: randomEntry.sharpeRatio
     };
 
     if (this.experimentRepo) {
@@ -355,7 +782,12 @@ export class ReplayEngine {
 
     return {
       ...record,
-      trades: simulation.trades
+      trades: simulation.trades,
+      equityCurve: simulation.equityCurve,
+      baselines: {
+        buyAndHold,
+        randomEntry
+      }
     };
   }
 
@@ -372,6 +804,8 @@ export class ReplayEngine {
     readonly costStressMultiplier: number;
   }): {
     readonly trades: readonly ReplayTradeRecord[];
+    readonly equityCurve: readonly ReplayEquityPoint[];
+    readonly periodicReturns: readonly number[];
     readonly finalEquityUsdt: ScaledDecimal;
     readonly netPnlUsdt: ScaledDecimal;
     readonly totalFeesUsdt: ScaledDecimal;
@@ -386,6 +820,8 @@ export class ReplayEngine {
       const zero = ScaledDecimal.zero();
       return {
         trades: [],
+        equityCurve: [],
+        periodicReturns: [],
         finalEquityUsdt: params.initialEquityUsdt,
         netPnlUsdt: zero,
         totalFeesUsdt: zero,
@@ -400,11 +836,14 @@ export class ReplayEngine {
     const clock = new ManualClock(firstBar.openTs);
     let equityUsdt = params.initialEquityUsdt;
     let peakEquityNum = Number(equityUsdt.toString());
+    let prevEquityNum = peakEquityNum;
     let maxDrawdownPct = 0;
     let totalFeesUsdt = ScaledDecimal.zero();
     let totalFundingUsdt = ScaledDecimal.zero();
 
     const trades: ReplayTradeRecord[] = [];
+    const equityCurve: ReplayEquityPoint[] = [];
+    const periodicReturns: number[] = [];
     let active: ActivePosition | null = null;
 
     const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
@@ -441,16 +880,6 @@ export class ReplayEngine {
       equityUsdt = equityUsdt.add(netPnlUsdt);
       totalFeesUsdt = totalFeesUsdt.add(tradeFeesUsdt);
       totalFundingUsdt = totalFundingUsdt.add(pos.fundingAccruedUsdt);
-
-      const eqNum = Number(equityUsdt.toString());
-      if (eqNum > peakEquityNum) {
-        peakEquityNum = eqNum;
-      } else if (peakEquityNum > 0) {
-        const dd = ((peakEquityNum - eqNum) / peakEquityNum) * 100;
-        if (dd > maxDrawdownPct) {
-          maxDrawdownPct = dd;
-        }
-      }
 
       trades.push({
         proposalId: pos.proposal.proposalId,
@@ -525,7 +954,62 @@ export class ReplayEngine {
         }
       }
 
-      // 3. When flat, build strictly causal FeatureSnapshot and evaluate Strategy
+      // 3. Mark-to-market equity evaluation for this bar
+      let barCloseEquity = equityUsdt;
+      let worstIntraEquity = equityUsdt;
+
+      if (active) {
+        const baseQty = active.contracts.mul(spec.contractValue);
+        const closeDiff =
+          active.proposal.side === "long"
+            ? barClose.sub(active.entryPrice)
+            : active.entryPrice.sub(barClose);
+        const closeGross = closeDiff.mul(baseQty);
+        const closeExitFee = barClose.mul(baseQty).mul(costFraction);
+        barCloseEquity = equityUsdt
+          .add(closeGross)
+          .sub(active.entryFeeUsdt)
+          .sub(closeExitFee)
+          .add(active.fundingAccruedUsdt);
+
+        const worstPrice = active.proposal.side === "long" ? barLow : barHigh;
+        const worstDiff =
+          active.proposal.side === "long"
+            ? worstPrice.sub(active.entryPrice)
+            : active.entryPrice.sub(worstPrice);
+        const worstGross = worstDiff.mul(baseQty);
+        const worstExitFee = worstPrice.mul(baseQty).mul(costFraction);
+        worstIntraEquity = equityUsdt
+          .add(worstGross)
+          .sub(active.entryFeeUsdt)
+          .sub(worstExitFee)
+          .add(active.fundingAccruedUsdt);
+      }
+
+      const eqNum = Number(barCloseEquity.toString());
+      const worstEqNum = Number(worstIntraEquity.toString());
+
+      const dd = updateTrackedDrawdown({
+        peakEquityNum,
+        closeEquityNum: eqNum,
+        worstIntraEquityNum: worstEqNum,
+        currentMaxDrawdownPct: maxDrawdownPct
+      });
+      peakEquityNum = dd.newPeakEquityNum;
+      maxDrawdownPct = dd.newMaxDrawdownPct;
+
+      const barDd = peakEquityNum > 0 ? ((peakEquityNum - eqNum) / peakEquityNum) * 100 : 0;
+      equityCurve.push({
+        ts: bar.closeTs,
+        equityUsdt: barCloseEquity.toString(),
+        drawdownPct: Number(barDd.toFixed(4))
+      });
+
+      const r = prevEquityNum > 0 ? (eqNum - prevEquityNum) / prevEquityNum : 0;
+      periodicReturns.push(r);
+      prevEquityNum = eqNum;
+
+      // 4. When flat, build strictly causal FeatureSnapshot and evaluate Strategy
       if (!active && idx < bars.length - 1) {
         const snapshot = this.marketDataRepo.buildFeatureSnapshot({
           instrumentId: params.instrumentId,
@@ -590,6 +1074,8 @@ export class ReplayEngine {
 
     return {
       trades,
+      equityCurve,
+      periodicReturns,
       finalEquityUsdt: equityUsdt,
       netPnlUsdt,
       totalFeesUsdt,
