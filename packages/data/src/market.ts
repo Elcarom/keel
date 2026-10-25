@@ -345,6 +345,56 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
       return gaps;
     },
 
+    detectFundingGaps(input: {
+      readonly instrumentId: string;
+      readonly fromFundingTs: number;
+      readonly toFundingTs: number;
+    }): readonly { readonly missingFromTs: number; readonly missingToTs: number }[] {
+      const dt = 8 * 3600_000;
+      const startAlignedTs = Math.ceil(input.fromFundingTs / dt) * dt;
+      const endAlignedTs = Math.floor(input.toFundingTs / dt) * dt;
+      if (startAlignedTs > endAlignedTs) return [];
+
+      const rows = db
+        .prepare(
+          `SELECT funding_ts
+           FROM settled_funding_rates
+           WHERE instrument_id = ? AND funding_ts >= ? AND funding_ts <= ?
+           ORDER BY funding_ts ASC`
+        )
+        .all(input.instrumentId, startAlignedTs, endAlignedTs);
+
+      const presentSet = new Set(rows.map((r) => Number(r["funding_ts"])));
+      const gaps: { missingFromTs: number; missingToTs: number }[] = [];
+      let currentMissingStart: number | null = null;
+      let currentMissingEnd: number | null = null;
+
+      for (let t = startAlignedTs; t <= endAlignedTs; t += dt) {
+        if (!presentSet.has(t)) {
+          if (currentMissingStart === null) {
+            currentMissingStart = t;
+          }
+          currentMissingEnd = t;
+        } else if (currentMissingStart !== null && currentMissingEnd !== null) {
+          gaps.push({
+            missingFromTs: currentMissingStart,
+            missingToTs: currentMissingEnd
+          });
+          currentMissingStart = null;
+          currentMissingEnd = null;
+        }
+      }
+
+      if (currentMissingStart !== null && currentMissingEnd !== null) {
+        gaps.push({
+          missingFromTs: currentMissingStart,
+          missingToTs: currentMissingEnd
+        });
+      }
+
+      return gaps;
+    },
+
     assertLookbackSatisfied(input): LookbackValidationResult {
       const deficits: LookbackDeficit[] = [];
 

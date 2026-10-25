@@ -204,8 +204,9 @@ describe("M2-1 — ConfirmedMarketStore, confirm==='1' Gate, Gap Healer, Lookbac
   });
 
   it("ingests full date ranges and funding rates via OkxPublicIngestor with mock fetch", async () => {
-    const baseOpenTs = 1_700_000_000_000;
     const dt1H = TIMEFRAME_DURATION_MS["1H"];
+    const dt8H = 8 * dt1H;
+    const baseOpenTs = Math.floor(1_700_000_000_000 / dt8H) * dt8H;
     const barCount = 150; // Needs 2 pages of 100 limit
 
     // Mock fetch that responds to OKX history-candles and funding-rate-history
@@ -241,11 +242,13 @@ describe("M2-1 — ConfirmedMarketStore, confirm==='1' Gate, Gap Healer, Lookbac
 
       if (parsedUrl.pathname === "/api/v5/public/funding-rate-history") {
         const afterParam = parsedUrl.searchParams.get("after");
-        const dt8H = 8 * dt1H;
-        const cursorMs = afterParam ? Number(afterParam) : baseOpenTs + barCount * dt1H;
+        const cursorMs = afterParam
+          ? Number(afterParam)
+          : Math.floor((baseOpenTs + barCount * dt1H) / dt8H) * dt8H + dt8H;
+        const latestAlignedFunding = Math.floor((cursorMs - 1) / dt8H) * dt8H;
         const data = [];
         for (let i = 0; i < 20; i++) {
-          const fundingTime = cursorMs - (i + 1) * dt8H;
+          const fundingTime = latestAlignedFunding - i * dt8H;
           if (fundingTime < baseOpenTs) break;
           data.push({
             instId: "BTC-USDT-SWAP",
@@ -298,5 +301,21 @@ describe("M2-1 — ConfirmedMarketStore, confirm==='1' Gate, Gap Healer, Lookbac
       toFundingTs: baseOpenTs + (barCount - 1) * dt1H
     });
     expect(fundingInserted).toBeGreaterThan(0);
+
+    // Verify detectFundingGaps reports 0 gaps when coverage is complete
+    const fundingGaps = store.marketDataRepo.detectFundingGaps({
+      instrumentId: "BTC-USDT-SWAP",
+      fromFundingTs: baseOpenTs + 8 * dt1H,
+      toFundingTs: baseOpenTs + 24 * dt1H
+    });
+    expect(fundingGaps).toHaveLength(0);
+
+    // Verify detectFundingGaps reports missing intervals if unpopulated
+    const missingGaps = store.marketDataRepo.detectFundingGaps({
+      instrumentId: "ETH-USDT-SWAP",
+      fromFundingTs: baseOpenTs,
+      toFundingTs: baseOpenTs + 24 * dt1H
+    });
+    expect(missingGaps.length).toBeGreaterThanOrEqual(1);
   });
 });

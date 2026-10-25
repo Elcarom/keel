@@ -320,6 +320,12 @@ export interface MarketDataRepository {
     toOpenTs: number;
   }): readonly MarketGapRange[];
 
+  detectFundingGaps(input: {
+    readonly instrumentId: string;
+    readonly fromFundingTs: number;
+    readonly toFundingTs: number;
+  }): readonly { readonly missingFromTs: number; readonly missingToTs: number }[];
+
   assertLookbackSatisfied(input: {
     instrumentId: string;
     asOfMs: number;
