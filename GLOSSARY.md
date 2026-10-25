@@ -119,8 +119,12 @@ The verified double-action execution of a Kill Switch event: issuing a cancel-al
 _Avoid_: Soft flatten, local close
 
 **Sealed Holdout Period**:
-An out-of-sample partition of historical market data (specifically 2025-01-01 to 2025-12-31 UTC) that is strictly quarantined and never observed during strategy conception, indicator parameter tuning, or promotion gate calibration, evaluated exactly once in final verification.
+An out-of-sample partition of historical market data (specifically 2025-01-01 to 2025-12-31 UTC) that was strictly quarantined and evaluated once in Phase D verification. Now spent.
 _Avoid_: Test set, validation split
+
+**Unspent Sealed Holdout Partition (2026)**:
+The forward out-of-sample partition of market data (specifically 2026-01-01 00:00:00 UTC to 2026-06-30 23:59:59 UTC) that is strictly quarantined and unspent, reserved for future single-shot out-of-sample evaluation of newly formulated alpha hypotheses.
+_Avoid_: Spent holdout, unquarantined data
 
 **In-Sample Period**:
 The historical market data window (2023-01-01 to 2024-12-31 UTC) allocated for feature computation, model fitting, and purged walk-forward cross-validation under 2x cost stress.
@@ -133,3 +137,15 @@ _Avoid_: Close fill, instantaneous execution
 **Gap-Aware Stop Fill**:
 Simulated protective stop execution that accounts for price jumps between bars: filling long stops at `min(open, stopPrice)` and short stops at `max(open, stopPrice)` rather than assuming execution at the exact stop level.
 _Avoid_: Perfect fill, idealized stop
+
+**Trial Universe**:
+The explicit count of candidate models, parameter variations, and heuristic specifications evaluated within a defined research campaign, used directly as `numTrials` in Deflated Sharpe Ratio calculation to penalize multi-testing and prevent selection bias.
+_Avoid_: Database row count, experiment table size
+
+**Baseline Outperformance Gate**:
+The mandatory Replay promotion condition requiring a candidate strategy's annualized Sharpe ratio to strictly exceed both the Buy & Hold baseline and the Random Entry baseline under identical cost stress.
+_Avoid_: Unbenchmarked Sharpe, absolute Sharpe hurdle
+
+**Per-Bar Idempotency**:
+The property of the execution engine and scheduler ensuring that a confirmed bar `(instrumentId, strategyId, closeTs)` is processed at most once, preventing duplicate position sizing, false exits against pre-entry bars, or corrupted ledger metrics.
+_Avoid_: Free-running tick, repeated bar processing
