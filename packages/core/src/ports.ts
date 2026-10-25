@@ -541,6 +541,15 @@ export interface PaperAccountRepository {
     readonly strategyId: string;
     readonly closeTs: number;
   }): void;
+  getPendingProposal(params: {
+    readonly strategyId: string;
+    readonly instrumentId: string;
+  }): Proposal | null;
+  savePendingProposal(params: {
+    readonly strategyId: string;
+    readonly instrumentId: string;
+    readonly proposal: Proposal | null;
+  }): void;
 }
 
 export const PromotionStageSchema = z.enum([

@@ -47,6 +47,12 @@ export {
 } from "./contract.js";
 export { ScaledDecimal, type TickRoundMode } from "./decimal.js";
 export {
+  computeNextBarOpenEntry,
+  evaluateIntrabarExit,
+  type IntrabarExitResult,
+  type NextBarOpenExecutionResult
+} from "./execution.js";
+export {
   ALL_BAR_TIMEFRAMES,
   ALL_SECRET_KEY_NAMES,
   AuditEventRecordSchema,
