@@ -35,6 +35,158 @@ It pairs a strictly deterministic money path (fixed-point `ScaledDecimal` accoun
 
 ---
 
+## Deployment Guide
+
+Keel is packaged as a single self-contained Docker container hosting both the Fastify API and the compiled React dashboard on port `8080`. It runs under a non-root user (`PUID=99`, `PGID=100`, `UMASK=022`) using `tini` as PID 1 and is designed to sit behind a **Cloudflare Tunnel (`cloudflared`)** on Unraid or any standard Linux host.
+
+### 1. Host Directory & Permission Setup
+
+Prepare persistent host storage for application data and SQLite backups:
+
+```bash
+# On Unraid:
+mkdir -p /mnt/user/appdata/keel/data /mnt/user/appdata/keel/backups
+chown -R 99:100 /mnt/user/appdata/keel
+chmod 755 /mnt/user/appdata/keel/data /mnt/user/appdata/keel/backups
+
+# On Generic Linux / Docker Host:
+mkdir -p ./keel-data ./keel-backups
+sudo chown -R 99:100 ./keel-data ./keel-backups
+```
+
+- `/data`: Holds the SQLite WAL database (`keel.db`), AES-256-GCM master vault key (`secret.key`, mode `0600`), and historical market data snapshots.
+- `/backups`: Holds atomic point-in-time SQLite snapshots generated via `VACUUM INTO`.
+
+---
+
+### 2. Deployment Methods
+
+#### Method A: Docker Compose (Recommended for Unraid / Docker Compose Manager)
+
+Use the repository's [`docker-compose.yml`](./docker-compose.yml):
+
+```yaml
+name: keel
+
+services:
+  keel:
+    image: ghcr.io/elcarom/psychic-octo-funicular:latest
+    container_name: keel
+    restart: unless-stopped
+    environment:
+      - PUID=99
+      - PGID=100
+      - UMASK=022
+      - PORT=8080
+      - DATA_DIR=/data
+      - BACKUPS_DIR=/backups
+      - LOG_LEVEL=info
+    ports:
+      - "8080:8080"
+    volumes:
+      - /mnt/user/appdata/keel/data:/data
+      - /mnt/user/appdata/keel/backups:/backups
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+Run:
+
+```bash
+docker compose up -d
+```
+
+#### Method B: Unraid Community Apps XML Template
+
+1. Copy [`deploy/unraid/keel-template.xml`](./deploy/unraid/keel-template.xml) to `/boot/config/plugins/dockerMan/templates-user/my-keel.xml` on your Unraid flash drive.
+2. In the Unraid WebGUI, navigate to **Docker → Add Container** and select **Keel** from the Template dropdown.
+3. Confirm `/data`, `/backups`, and port `8080` paths, then click **Apply**.
+
+#### Method C: Docker Run CLI
+
+```bash
+docker run -d \
+  --name keel \
+  --restart unless-stopped \
+  -e PUID=99 \
+  -e PGID=100 \
+  -e UMASK=022 \
+  -e PORT=8080 \
+  -e DATA_DIR=/data \
+  -e BACKUPS_DIR=/backups \
+  -p 8080:8080 \
+  -v /mnt/user/appdata/keel/data:/data \
+  -v /mnt/user/appdata/keel/backups:/backups \
+  ghcr.io/elcarom/psychic-octo-funicular:latest
+```
+
+---
+
+### 3. Cloudflare Tunnel Ingress Setup
+
+Keel is architected to sit securely behind **Cloudflare Zero Trust (`cloudflared`)** ([ADR-0003](./docs/adr/0003-cloudflare-tunnel-and-defense-in-depth-auth.md)):
+
+1. In your **Cloudflare Zero Trust Dashboard**, navigate to **Networks → Tunnels** and select your tunnel.
+2. Add a **Public Hostname** (e.g. `keel.yourdomain.com`):
+   - **Service**: `HTTP`
+   - **URL**: `<unraid-lan-ip>:8080` (or `keel:8080` if sharing a Docker network with `cloudflared`).
+3. **Defense-in-Depth**:
+   - Keel honors `CF-Connecting-IP` and `X-Forwarded-Proto` for audit logging and secure cookie enforcement.
+   - Keel emits an automated **15-second Server-Sent Events (SSE) heartbeat** on `/api/v1/stream/heartbeat` to prevent Cloudflare's 100-second edge read timeout from disconnecting live dashboard charts.
+   - Attach a Cloudflare Access policy with identity provider + email OTP for edge filtering.
+
+---
+
+### 4. First-Boot Admin Bootstrap
+
+Keel never exposes an unauthenticated configuration or setup screen. On initial start against an empty `/data` directory:
+
+1. Inspect container logs:
+   ```bash
+   docker logs keel
+   ```
+2. Locate the one-time bootstrap token generated in stdout:
+   ```text
+   ================================================================================
+   [KEEL BOOTSTRAP] Initial Admin Setup Token:
+   keel-bootstrap-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ================================================================================
+   ```
+3. Open `https://keel.yourdomain.com` in your browser.
+4. Enter the one-time token, choose your master admin username and password (`Argon2id`), and enroll your RFC 6238 TOTP authenticator app.
+5. The bootstrap token is immediately invalidated upon first account initialization.
+
+---
+
+### 5. Configuring Secrets in the Vault
+
+Once logged into the Mission Control dashboard:
+
+1. Navigate to the **AES-256-GCM Secret Vault** section.
+2. Store your credentials safely:
+   - `geminiApiKey`: Google Gemini API key for the advisory AI layer.
+   - `okxApiKey`, `okxSecretKey`, `okxPassphrase`: OKX V5 API key (requires **Trade** and **Read** permissions only; **Withdrawal MUST be disabled**).
+   - `discordWebhookUrl`: Discord webhook for `CRITICAL` kill-switch/stop-failure alerts and `WARNING` notifications.
+3. All secrets are encrypted at rest under `/data/secret.key` using AES-256-GCM with PBKDF2 salt and authentication tag. Plaintext is never stored in SQLite or exposed over the API.
+
+---
+
+### 6. Production Health & Graceful Shutdown
+
+- **Health Checks**:
+  - `GET /healthz`: Process status and heartbeat timestamp.
+  - `GET /readyz`: Execution mode readiness (`Paper`, `Demo`, `Live-Ramp`, `Live`).
+  - `GET /metrics`: Prometheus telemetry (uptime, execution mode, circuit breaker status).
+- **Graceful Shutdown**:
+  - `tini` forwards `SIGTERM` signals to Keel.
+  - Upon shutdown, Keel closes market WebSocket streams cleanly. In `Demo` and `Live` modes, open positions remain safeguarded by exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), while the 60-second OKX **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any resting entry orders ([ADR-0006](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
+
+---
+
 ## Development Commands
 
 ```bash
