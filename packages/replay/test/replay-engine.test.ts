@@ -602,4 +602,176 @@ describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Fo
     // With gap-aware take-profit fill, it MUST fill at bar open 140.00, NOT at ~125.00!
     expect(tpTrade.exitPrice.equals(ScaledDecimal.fromString("140"))).toBe(true);
   });
+
+  it("decouples DSR trial count from experiment repository database row count (N2b)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const expRepo = store.experimentRepo;
+    const seeded = seedSyntheticMarketSeries({
+      marketDataRepo: marketRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_710_000_000_000,
+      barCount1H: 300
+    });
+
+    const engine = new ReplayEngine({
+      marketDataRepo: marketRepo,
+      experimentRepo: expRepo
+    });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    // First run with empty database and explicit numTrials: 10
+    const res1 = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs,
+      numTrials: 10
+    });
+
+    // Populate database with 20 dummy experiment records
+    for (let i = 0; i < 20; i++) {
+      expRepo.saveExperiment({
+        ...res1,
+        experimentId: `dummy-exp-${i}`,
+        createdAtMs: 1_710_000_000_000 + i * 1000
+      });
+    }
+
+    // Second run with 20 records in database and explicit numTrials: 10
+    const res2 = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs,
+      numTrials: 10
+    });
+
+    // DSR MUST be bit-for-bit identical, independent of database table size
+    expect(res1.deflatedSharpeRatio).toBe(res2.deflatedSharpeRatio);
+    expect(res1.numTrials).toBe(10);
+    expect(res2.numTrials).toBe(10);
+  });
+
+  it("fails replayGatePassed if strategy fails to outperform Buy & Hold or Random Entry (M-G)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const seeded = seedSyntheticMarketSeries({
+      marketDataRepo: marketRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_710_000_000_000,
+      barCount1H: 300
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    const res = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs,
+      replayMinTrades: 1,
+      replayMinSharpe: -100, // Very low threshold to isolate baseline check
+      replayMinDeflatedSharpeConfidence: 0.01
+    });
+
+    // If strategy Sharpe is <= buyAndHold Sharpe or <= randomEntry Sharpe, replayGatePassed MUST be false
+    if (
+      res.sharpeRatio <= res.buyAndHoldSharpeRatio ||
+      res.sharpeRatio <= res.randomEntrySharpeRatio
+    ) {
+      expect(res.replayGatePassed).toBe(false);
+    }
+  });
+
+  it("does not double-deduct slippage in trading fee cost fraction (Minor)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const baseTs = 1_710_000_000_000;
+    const oneHour = 3_600_000;
+
+    const candles = [];
+    for (let i = 0; i < 21; i += 1) {
+      candles.push({
+        openTs: String(baseTs + i * oneHour),
+        open: "100.00",
+        high: "102.00",
+        low: "98.00",
+        close: "100.00",
+        volumeContracts: "1000",
+        volumeQuote: "100000",
+        confirm: "1" as const
+      });
+    }
+    // Bar 21: breakout
+    candles.push({
+      openTs: String(baseTs + 21 * oneHour),
+      open: "100.00",
+      high: "106.00",
+      low: "99.00",
+      close: "105.00",
+      volumeContracts: "1000",
+      volumeQuote: "105000",
+      confirm: "1" as const
+    });
+    // Bar 22: open at 105.00, closes at 105.00
+    candles.push({
+      openTs: String(baseTs + 22 * oneHour),
+      open: "105.00",
+      high: "105.00",
+      low: "105.00",
+      close: "105.00",
+      volumeContracts: "1000",
+      volumeQuote: "105000",
+      confirm: "1" as const
+    });
+
+    marketRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    // Run with 10 bps takerFee, 0 halfSpread, 50 bps slippage
+    const res = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: baseTs,
+      toTs: baseTs + 23 * oneHour,
+      takerFeeBps: 10,
+      halfSpreadBps: 0,
+      slippageBps: 50
+    });
+
+    expect(res.trades.length).toBeGreaterThan(0);
+    const trade = res.trades[0];
+    if (!trade) throw new Error("Expected trade");
+
+    // Slippage (50 bps = 0.5%) on 105 is applied to entry price: 105 * 1.005 = 105.525
+    expect(trade.entryPrice.gt(ScaledDecimal.fromString("105"))).toBe(true);
+
+    // Fee should only reflect taker fee (10 bps = 0.1%), NOT 10 + 50 = 60 bps (0.6%)
+    // Round-trip fees: entry fee + exit fee at 10 bps each
+    const entryNotional = trade.contracts
+      .mul(ScaledDecimal.fromString("0.01"))
+      .mul(trade.entryPrice);
+    const exitNotional = trade.contracts.mul(ScaledDecimal.fromString("0.01")).mul(trade.exitPrice);
+    const expectedEntryFee = entryNotional.mul(ScaledDecimal.fromString("0.00100000"));
+    const expectedExitFee = exitNotional.mul(ScaledDecimal.fromString("0.00100000"));
+    const expectedRoundTripFee = expectedEntryFee.add(expectedExitFee);
+
+    expect(trade.feesUsdt.equals(expectedRoundTripFee)).toBe(true);
+    // If 50 bps slippage were double-deducted, round-trip fees would exceed 100 bps
+    expect(Number(trade.feesUsdt.toString())).toBeLessThan(
+      Number(entryNotional.mul(ScaledDecimal.fromString("0.00500000")).toString())
+    );
+  });
 });

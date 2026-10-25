@@ -60,6 +60,7 @@ export interface ReplayRunInput {
   readonly replayMinTrades?: number | undefined;
   readonly replayMinSharpe?: number | undefined;
   readonly replayMinDeflatedSharpeConfidence?: number | undefined;
+  readonly numTrials?: number | undefined;
   readonly numTrialsForDsr?: number | undefined;
   readonly allowHoldoutAccess?: boolean | undefined;
   readonly candidateStrategies?: readonly Strategy[] | undefined;
@@ -626,7 +627,8 @@ export class ReplayEngine {
     const takerFeeBps = input.takerFeeBps ?? 5;
     const halfSpreadBps = input.halfSpreadBps ?? 2;
     const slippageBps = input.slippageBps ?? 3;
-    const totalOneWayCostBps = takerFeeBps + halfSpreadBps + slippageBps;
+    const oneWayFeeBps = takerFeeBps + halfSpreadBps;
+    const totalOneWayCostBps = oneWayFeeBps + slippageBps;
     const costStressMultiplier = input.costStressMultiplier ?? 2.0;
     const spec = input.instrumentSpec ?? defaultInstrumentSpec(input.instrumentId);
 
@@ -658,6 +660,7 @@ export class ReplayEngine {
       riskFraction,
       maxLeverage,
       slippageBps,
+      oneWayFeeBps,
       totalOneWayCostBps,
       costStressMultiplier
     });
@@ -675,20 +678,24 @@ export class ReplayEngine {
       riskFraction,
       maxLeverage,
       slippageBps,
+      oneWayFeeBps,
       totalOneWayCostBps,
       costStressMultiplier
     });
 
-    const cumulativeTrials =
+    const numTrials =
+      input.numTrials ??
       input.numTrialsForDsr ??
-      Math.max(1, (this.experimentRepo?.listExperiments(10_000).length ?? 0) + 1);
+      (input.candidateStrategies && input.candidateStrategies.length > 0
+        ? input.candidateStrategies.length
+        : 1);
 
     const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(input.timeframe));
 
     const dsrMetrics = computeDeflatedSharpeRatio({
       periodicReturns: simulation.periodicReturns,
       annualizationFactor: annualFactor,
-      numTrials: cumulativeTrials
+      numTrials
     });
 
     const buyAndHold = computeBuyAndHoldBaseline({
@@ -726,6 +733,8 @@ export class ReplayEngine {
       oosResult.oosExpectancyR >= 0 &&
       dsrMetrics.sharpeRatio >= minSharpe &&
       dsrMetrics.deflatedSharpeRatio >= minDsr &&
+      dsrMetrics.sharpeRatio > buyAndHold.sharpeRatio &&
+      dsrMetrics.sharpeRatio > randomEntry.sharpeRatio &&
       simulation.maxDrawdownPct <= 25;
 
     const configHash =
@@ -744,7 +753,7 @@ export class ReplayEngine {
     this.runSequence += 1;
     const createdAtMs = this.clock.nowMs();
     const experimentId = `${sha256Hex(
-      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}:${this.runSequence}:${cumulativeTrials}`
+      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}:${this.runSequence}:${numTrials}`
     ).slice(0, 16)}-${this.runSequence.toString(36)}`;
 
     const record: ExperimentRecord = {
@@ -770,6 +779,7 @@ export class ReplayEngine {
       walkForwardOutOfSampleAvgR: oosResult.oosExpectancyR,
       replayGatePassed,
       createdAtMs,
+      numTrials,
       buyAndHoldReturnPct: buyAndHold.returnPct,
       buyAndHoldSharpeRatio: buyAndHold.sharpeRatio,
       randomEntryReturnPct: randomEntry.returnPct,
@@ -801,6 +811,7 @@ export class ReplayEngine {
     readonly riskFraction: number;
     readonly maxLeverage: number;
     readonly slippageBps: number;
+    readonly oneWayFeeBps?: number | undefined;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
   }): {
@@ -848,7 +859,11 @@ export class ReplayEngine {
     let active: ActivePosition | null = null;
     let pendingProposal: Proposal | null = null;
 
-    const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
+    const effectiveFeeBps =
+      params.oneWayFeeBps !== undefined
+        ? params.oneWayFeeBps
+        : Math.max(0, params.totalOneWayCostBps - params.slippageBps);
+    const feeFraction = ScaledDecimal.fromString((effectiveFeeBps / 10_000).toFixed(8));
     const extraStressMultiplierDec = ScaledDecimal.fromString(
       Math.max(0, params.costStressMultiplier - 1).toFixed(8)
     );
@@ -868,7 +883,7 @@ export class ReplayEngine {
       const baseQty = pos.contracts.mul(spec.contractValue);
       const grossPnlUsdt = priceDiff.mul(baseQty);
       const exitNotionalUsdt = exitPrice.mul(baseQty);
-      const exitFeeUsdt = exitNotionalUsdt.mul(costFraction);
+      const exitFeeUsdt = exitNotionalUsdt.mul(feeFraction);
       const tradeFeesUsdt = pos.entryFeeUsdt.add(exitFeeUsdt);
       const netPnlUsdt = grossPnlUsdt.sub(tradeFeesUsdt).add(pos.fundingAccruedUsdt);
 
@@ -941,7 +956,7 @@ export class ReplayEngine {
         });
 
         if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
-          const entryFeeUsdt = sizing.notionalQuote.mul(costFraction);
+          const entryFeeUsdt = sizing.notionalQuote.mul(feeFraction);
           active = {
             proposal: pendingProposal,
             entryTs: bar.openTs,
@@ -1005,7 +1020,7 @@ export class ReplayEngine {
             ? barClose.sub(active.entryPrice)
             : active.entryPrice.sub(barClose);
         const closeGross = closeDiff.mul(baseQty);
-        const closeExitFee = barClose.mul(baseQty).mul(costFraction);
+        const closeExitFee = barClose.mul(baseQty).mul(feeFraction);
         barCloseEquity = equityUsdt
           .add(closeGross)
           .sub(active.entryFeeUsdt)
@@ -1018,7 +1033,7 @@ export class ReplayEngine {
             ? worstPrice.sub(active.entryPrice)
             : active.entryPrice.sub(worstPrice);
         const worstGross = worstDiff.mul(baseQty);
-        const worstExitFee = worstPrice.mul(baseQty).mul(costFraction);
+        const worstExitFee = worstPrice.mul(baseQty).mul(feeFraction);
         worstIntraEquity = equityUsdt
           .add(worstGross)
           .sub(active.entryFeeUsdt)
@@ -1112,6 +1127,7 @@ export class ReplayEngine {
     readonly riskFraction: number;
     readonly maxLeverage: number;
     readonly slippageBps: number;
+    readonly oneWayFeeBps?: number | undefined;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
   }): {
@@ -1153,6 +1169,7 @@ export class ReplayEngine {
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
           slippageBps: params.slippageBps,
+          oneWayFeeBps: params.oneWayFeeBps,
           totalOneWayCostBps: params.totalOneWayCostBps,
           costStressMultiplier: params.costStressMultiplier
         });
@@ -1178,6 +1195,7 @@ export class ReplayEngine {
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
           slippageBps: params.slippageBps,
+          oneWayFeeBps: params.oneWayFeeBps,
           totalOneWayCostBps: params.totalOneWayCostBps,
           costStressMultiplier: params.costStressMultiplier
         });

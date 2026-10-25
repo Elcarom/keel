@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS experiments (
   walk_forward_oos_avg_r REAL NOT NULL,
   replay_gate_passed INTEGER NOT NULL,
   created_at_ms INTEGER NOT NULL,
+  num_trials INTEGER NOT NULL DEFAULT 1,
   buy_and_hold_return_pct REAL NOT NULL DEFAULT 0,
   buy_and_hold_sharpe_ratio REAL NOT NULL DEFAULT 0,
   random_entry_return_pct REAL NOT NULL DEFAULT 0,
@@ -131,6 +132,7 @@ function mapExperimentRow(row: Record<string, unknown>): ExperimentRecord {
     walkForwardOutOfSampleAvgR: Number(row["walk_forward_oos_avg_r"]),
     replayGatePassed: Number(row["replay_gate_passed"]) === 1,
     createdAtMs: Number(row["created_at_ms"]),
+    numTrials: Number(row["num_trials"] ?? 1),
     buyAndHoldReturnPct: Number(row["buy_and_hold_return_pct"] ?? 0),
     buyAndHoldSharpeRatio: Number(row["buy_and_hold_sharpe_ratio"] ?? 0),
     randomEntryReturnPct: Number(row["random_entry_return_pct"] ?? 0),
@@ -573,10 +575,10 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
           data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
           avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
           sharpe_ratio, deflated_sharpe_ratio, stress_net_expectancy_r,
-          walk_forward_oos_avg_r, replay_gate_passed, created_at_ms,
+          walk_forward_oos_avg_r, replay_gate_passed, created_at_ms, num_trials,
           buy_and_hold_return_pct, buy_and_hold_sharpe_ratio,
           random_entry_return_pct, random_entry_sharpe_ratio
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         validated.experimentId,
         validated.strategyId,
@@ -600,6 +602,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
         validated.walkForwardOutOfSampleAvgR,
         validated.replayGatePassed ? 1 : 0,
         validated.createdAtMs,
+        validated.numTrials ?? 1,
         validated.buyAndHoldReturnPct,
         validated.buyAndHoldSharpeRatio,
         validated.randomEntryReturnPct,
