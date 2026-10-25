@@ -202,4 +202,68 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     expect(dmsCalled).toBe(true);
     expect(reconcileCalled).toBe(true);
   });
+
+  it("N1: scheduler steps repeatedly on the same confirmed bar idempotently without duplicating ticks", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    const nowMs = clock.nowMs();
+    const confirmedOpenTs = Math.floor(nowMs / 3600_000) * 3600_000 - 3600_000;
+
+    const ingestor = new OkxPublicIngestor({
+      marketDataRepo: dataStore.marketDataRepo,
+      fetchHistoryCandles: async () => [
+        {
+          openTs: confirmedOpenTs,
+          open: "50000.00",
+          high: "51000.00",
+          low: "49500.00",
+          close: "50500.00",
+          volumeContracts: "100",
+          volumeQuote: "5050000.00",
+          confirm: "1"
+        }
+      ]
+    });
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      ingestor,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // Step 1: Newly confirmed bar is ingested and ticked
+    const step1 = await scheduler.stepOnce();
+    expect(step1.ok).toBe(true);
+    expect(step1.barsIngested).toBeGreaterThanOrEqual(1);
+    expect(step1.ticksExecuted).toBe(1);
+
+    // Step 2-4: Exact same time / bar, must be idempotent no-op
+    const step2 = await scheduler.stepOnce();
+    expect(step2.ok).toBe(true);
+    expect(step2.ticksExecuted).toBe(0);
+
+    const step3 = await scheduler.stepOnce();
+    expect(step3.ok).toBe(true);
+    expect(step3.ticksExecuted).toBe(0);
+  });
 });

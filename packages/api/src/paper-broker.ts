@@ -97,10 +97,32 @@ export class PaperBroker implements Broker {
     const positionsOpened: PaperPositionRecord[] = [];
     const vetoedProposals: { proposal: Proposal; reason: string }[] = [];
 
+    // Per-bar idempotency: check if bar was already processed for this (instrument, strategy)
+    const strategyId = strategy?.strategyId;
+    if (strategyId) {
+      const lastCloseTs = this.paperAccountRepo.getLastProcessedBarCloseTs({
+        instrumentId: bar.instrumentId,
+        strategyId
+      });
+      if (lastCloseTs !== null && bar.closeTs <= lastCloseTs) {
+        return {
+          asOfMs,
+          barEvaluated: null,
+          positionsClosed,
+          positionsOpened,
+          vetoedProposals,
+          trialBalance: this.ledgerRepo.getTrialBalance()
+        };
+      }
+    }
+
     // 1. Evaluate open positions against confirmed bar high/low & 8h settled funding
     const openPositions = this.paperAccountRepo.listOpenPositions();
     for (const pos of openPositions) {
       if (pos.instrumentId !== bar.instrumentId) continue;
+      // N1: Evaluate exits only against bars that started on or after position openedAtMs.
+      // This prevents testing the signal bar's pre-entry range against the newly placed stop.
+      if (bar.openTs < pos.openedAtMs) continue;
 
       const stopPrice = ScaledDecimal.fromString(pos.protectiveStopPrice);
       const tpPrice = pos.takeProfitPrice ? ScaledDecimal.fromString(pos.takeProfitPrice) : null;
@@ -457,6 +479,14 @@ export class PaperBroker implements Broker {
           }
         }
       }
+    }
+
+    if (strategyId) {
+      this.paperAccountRepo.recordProcessedBar({
+        instrumentId: bar.instrumentId,
+        strategyId,
+        closeTs: bar.closeTs
+      });
     }
 
     return {

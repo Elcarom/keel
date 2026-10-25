@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS strategy_promotions (
   demotion_reason TEXT,
   updated_at_ms INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS paper_processed_bars (
+  instrument_id TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  close_ts INTEGER NOT NULL,
+  PRIMARY KEY (instrument_id, strategy_id)
+);
 `;
 
 function mapLedgerRow(row: Record<string, unknown>): LedgerEntryRecord {
@@ -522,6 +529,30 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
         record.updatedBy
       );
       return record;
+    },
+
+    getLastProcessedBarCloseTs(params: {
+      readonly instrumentId: string;
+      readonly strategyId: string;
+    }): number | null {
+      const row = db
+        .prepare(
+          `SELECT close_ts FROM paper_processed_bars WHERE instrument_id = ? AND strategy_id = ?`
+        )
+        .get(params.instrumentId, params.strategyId) as { close_ts: number } | undefined;
+      return row ? Number(row.close_ts) : null;
+    },
+
+    recordProcessedBar(params: {
+      readonly instrumentId: string;
+      readonly strategyId: string;
+      readonly closeTs: number;
+    }): void {
+      db.prepare(
+        `INSERT INTO paper_processed_bars (instrument_id, strategy_id, close_ts)
+         VALUES (?, ?, ?)
+         ON CONFLICT(instrument_id, strategy_id) DO UPDATE SET close_ts = excluded.close_ts`
+      ).run(params.instrumentId, params.strategyId, params.closeTs);
     }
   };
 }
