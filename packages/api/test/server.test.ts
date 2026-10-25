@@ -7,6 +7,7 @@ import {
   computeConfigHash,
   createDefaultConfig
 } from "@keel/core";
+import { OkxBroker } from "@keel/broker";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer, redactLogObject } from "../src/index.js";
 
@@ -357,6 +358,111 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       });
       expect(listExpRes.statusCode).toBe(200);
       expect(listExpRes.json().experiments.length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("routes POST /api/v1/broker/orders through RiskGuardian, rejects risk breaches with 403, and records true strategyId & initialRiskUsdt (C3)", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const dbPath = join(tempDir, "keel-broker.sqlite");
+    let bootstrapToken = "";
+    const okxBroker = new OkxBroker({ clock });
+    const app = await createKeelServer({
+      clock,
+      dbPath,
+      exchangeBroker: okxBroker,
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    try {
+      // 1. Bootstrap and obtain authenticated cookie
+      const bootRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/bootstrap",
+        headers: {
+          "cf-connecting-ip": "203.0.113.1",
+          "x-forwarded-proto": "https"
+        },
+        payload: {
+          bootstrapToken,
+          username: "risk-officer",
+          password: "correct-horse-battery-staple"
+        }
+      });
+      expect(bootRes.statusCode).toBe(200);
+      const cookieHeader = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
+
+      // 2. Reject order breaching risk caps (e.g. massive leverage / size beyond 1R risk budget) with 403
+      const breachRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/broker/orders",
+        headers: { cookie: cookieHeader },
+        payload: {
+          instrumentId: "BTC-USDT-SWAP",
+          strategyId: "donchian-trend-v1",
+          side: "long",
+          sizeLots: 10_000, // Massive size exceeding leverage and 1R budget
+          entryPrice: "50000.00",
+          protectiveStopPrice: "49000.00"
+        }
+      });
+      expect(breachRes.statusCode).toBe(403);
+      expect(breachRes.json().error).toContain("Risk veto");
+
+      // Verify missing attached stop is rejected with 403 (AC 3)
+      const missingStopRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/broker/orders",
+        headers: { cookie: cookieHeader },
+        payload: {
+          instrumentId: "BTC-USDT-SWAP",
+          strategyId: "donchian-trend-v1",
+          side: "long",
+          sizeLots: 1,
+          entryPrice: "50000.00"
+        }
+      });
+      expect(missingStopRes.statusCode).toBe(403);
+      expect(missingStopRes.json().error).toContain(
+        "Orders without mandatory attached protective stop are prohibited"
+      );
+
+      // 3. Submit a valid risk-conforming order via singular alias /api/v1/broker/order (AC 1)
+      const validRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/broker/order",
+        headers: { cookie: cookieHeader },
+        payload: {
+          instrumentId: "BTC-USDT-SWAP",
+          strategyId: "donchian-trend-v1",
+          side: "long",
+          sizeLots: 1,
+          entryPrice: "50000.00",
+          protectiveStopPrice: "49000.00"
+        }
+      });
+      expect(validRes.statusCode).toBe(200);
+
+      // 4. Verify that broker position records real strategyId and actual scaled initialRiskUsdt (AC 2)
+      const statusRes = await app.inject({
+        method: "GET",
+        url: "/api/v1/broker/status",
+        headers: { cookie: cookieHeader }
+      });
+      expect(statusRes.statusCode).toBe(200);
+      expect(statusRes.json().openPositionsCount).toBe(1);
+
+      // Verify position details from broker status
+      const positions = okxBroker.getOpenPositions();
+      expect(positions).toHaveLength(1);
+      const pos = positions[0];
+      expect(pos?.strategyId).toBe("donchian-trend-v1");
+      expect(pos?.strategyId).not.toBe("exchange-execution");
+      // 1 lot * 1000 stop distance * 0.01 contractValue = 10.00 USDT
+      expect(pos?.initialRiskUsdt).toBe("10.00");
     } finally {
       await app.close();
     }

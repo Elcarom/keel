@@ -703,7 +703,8 @@ export const keelApiContract = c.router({
           order: ExchangeOrderResultSchema
         }),
         400: ApiErrorSchema,
-        401: ApiErrorSchema
+        401: ApiErrorSchema,
+        403: ApiErrorSchema
       },
       summary: "Submit order with mandatory attached protective stop (ADR-0006)"
     },
