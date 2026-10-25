@@ -50,6 +50,39 @@ describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
     });
   });
 
+  it("enforces hardened promotion ladder validation floors (ADR-0012 / M-G)", () => {
+    // Schema must reject values below hardened floors
+    expect(() =>
+      KeelConfigSchema.parse({
+        promotionLadder: { replayMinTrades: 30 }
+      })
+    ).toThrow();
+
+    expect(() =>
+      KeelConfigSchema.parse({
+        promotionLadder: { replayMinSharpe: 0.2 }
+      })
+    ).toThrow();
+
+    expect(() =>
+      KeelConfigSchema.parse({
+        promotionLadder: { replayMinDeflatedSharpeConfidence: 0.5 }
+      })
+    ).toThrow();
+
+    // Valid values at or above floors must pass
+    const valid = KeelConfigSchema.parse({
+      promotionLadder: {
+        replayMinTrades: 100,
+        replayMinSharpe: 0.8,
+        replayMinDeflatedSharpeConfidence: 0.8
+      }
+    });
+    expect(valid.promotionLadder.replayMinTrades).toBe(100);
+    expect(valid.promotionLadder.replayMinSharpe).toBe(0.8);
+    expect(valid.promotionLadder.replayMinDeflatedSharpeConfidence).toBe(0.8);
+  });
+
   it("rejects risk settings that exceed hard ceilings (riskPerTradePct > 1.5% or leverage > 3.0x)", () => {
     const base = createDefaultConfig();
     const invalidRisk = {

@@ -56,10 +56,10 @@ export const RiskConfigSchema = z.object({
 export type RiskConfig = z.infer<typeof RiskConfigSchema>;
 
 export const PromotionLadderConfigSchema = z.object({
-  replayMinTrades: z.number().int().min(30).max(5000).default(150),
+  replayMinTrades: z.number().int().min(100).max(5000).default(150),
   replayMinWalkForwardFolds: z.number().int().min(3).max(20).default(5),
-  replayMinSharpe: z.number().min(0.2).max(5.0).default(1.0),
-  replayMinDeflatedSharpeConfidence: z.number().min(0.5).max(0.999).default(0.9),
+  replayMinSharpe: z.number().min(0.8).max(5.0).default(1.0),
+  replayMinDeflatedSharpeConfidence: z.number().min(0.8).max(0.999).default(0.9),
   replayCostStressMultiplier: z.number().min(1.25).max(5.0).default(2.0),
   shadowMinDays: z.number().int().min(7).max(180).default(14),
   shadowMinTrades: z.number().int().min(10).max(500).default(30),
@@ -344,7 +344,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     label: "Replay Minimum Trade Sample",
     helpText: "Minimum closed trades across walk-forward folds required for Replay-Validated gate.",
     unit: "trades",
-    min: 30,
+    min: 100,
     max: 5000,
     defaultValue: 150,
     riskClass: "confirm"
@@ -363,7 +363,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "promotionLadder.replayMinSharpe",
     label: "Replay Minimum Net Out-of-Sample Sharpe",
     helpText: "Minimum annualized net Sharpe ratio across walk-forward folds.",
-    min: 0.2,
+    min: 0.8,
     max: 5.0,
     defaultValue: 1.0,
     riskClass: "confirm"
@@ -372,7 +372,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "promotionLadder.replayMinDeflatedSharpeConfidence",
     label: "Minimum Deflated Sharpe Confidence",
     helpText: "Multiple-testing-adjusted DSR probability threshold required to pass Replay.",
-    min: 0.5,
+    min: 0.8,
     max: 0.999,
     defaultValue: 0.9,
     riskClass: "confirm"

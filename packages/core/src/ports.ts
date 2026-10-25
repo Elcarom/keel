@@ -388,6 +388,7 @@ export const ExperimentRecordSchema = z.object({
   walkForwardOutOfSampleAvgR: z.number(),
   replayGatePassed: z.boolean(),
   createdAtMs: z.number().int().nonnegative(),
+  numTrials: z.number().int().positive().default(1),
   buyAndHoldReturnPct: z.number().default(0),
   buyAndHoldSharpeRatio: z.number().default(0),
   randomEntryReturnPct: z.number().default(0),
