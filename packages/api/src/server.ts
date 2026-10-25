@@ -161,7 +161,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         return { apiKey, secretKey, passphrase };
       },
       isDemo: getActiveSnapshot().config.system.executionMode !== "Live",
-      notificationChannel: notifier
+      notificationChannel: notifier,
+      accountRepo: dataStore.paperAccountRepo
     });
 
   const getUptimeSeconds = (): number =>
@@ -184,7 +185,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   app.addHook("onClose", async () => {
     const active = getActiveSnapshot();
     if (active.config.system.shutdownPolicy === "flatten") {
-      paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+      await paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+      await okxBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
     }
     dataStore.close();
   });
@@ -1129,7 +1131,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
 
-        const closed = paperBroker.flattenAllPositions(body.reason);
+        const closed = await paperBroker.flattenAllPositions(body.reason);
         dataStore.auditRepo.append({
           ts: clock.nowMs(),
           actor: ingress.session.username ?? "system",
@@ -1242,10 +1244,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           evaluated.demotionReason !== null &&
           evaluated.currentStage !== existingPromo?.currentStage
         ) {
-          const paperClosed = paperBroker.flattenAllPositions(
+          const paperClosed = await paperBroker.flattenAllPositions(
             `Auto-Demotion: ${evaluated.demotionReason}`
           );
-          const exchangeClosed = okxBroker.flattenAllPositions(
+          const exchangeClosed = await okxBroker.flattenAllPositions(
             `Auto-Demotion: ${evaluated.demotionReason}`
           );
           const flattenedCount = paperClosed.length + exchangeClosed.length;
@@ -1405,8 +1407,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         // Auto-flatten any open positions for that strategy across brokers
-        const paperClosed = paperBroker.flattenAllPositions(`Demotion: ${body.reason}`);
-        const exchangeClosed = okxBroker.flattenAllPositions(`Demotion: ${body.reason}`);
+        const paperClosed = await paperBroker.flattenAllPositions(`Demotion: ${body.reason}`);
+        const exchangeClosed = await okxBroker.flattenAllPositions(`Demotion: ${body.reason}`);
         const flattenedCount = paperClosed.length + exchangeClosed.length;
 
         const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
@@ -2015,7 +2017,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
 
-        const flattened = okxBroker.flattenAllPositions(body.reason);
+        const flattened = await okxBroker.flattenAllPositions(body.reason);
 
         dataStore.auditRepo.append({
           ts: clock.nowMs(),

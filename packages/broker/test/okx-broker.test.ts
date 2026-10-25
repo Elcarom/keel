@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ManualClock, createDefaultConfig } from "@keel/core";
+import {
+  ManualClock,
+  createDefaultConfig,
+  type CircuitBreakerRecord,
+  type PaperAccountRepository,
+  type PaperOrderRecord,
+  type PaperPositionRecord
+} from "@keel/core";
 import { OkxBroker, buildOkxHeaders } from "../src/index.js";
 
 describe("OkxBroker & Attached Protective Stops (M5)", () => {
@@ -160,16 +167,49 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
       isDemo: true,
-      fetchFn: async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          code: "0",
-          msg: "",
-          data: [{ ordId: "ord_reconcile_1", clOrdId: "cl_1", sCode: "0" }]
-        }),
-        text: async () => ""
-      })
+      fetchFn: async (url) => {
+        if (url.includes("/api/v5/account/positions")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  instId: "BTC-USDT-SWAP",
+                  pos: "1",
+                  posSide: "net",
+                  avgPx: "50000.00"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [{ algoId: "algo_1", instId: "BTC-USDT-SWAP", slTriggerPx: "48000.00" }]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            msg: "",
+            data: [{ ordId: "ord_reconcile_1", clOrdId: "cl_1", sCode: "0" }]
+          }),
+          text: async () => ""
+        };
+      }
     });
 
     await broker.submitOrder({
@@ -184,7 +224,7 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     expect(recon.matched).toBe(true);
     expect(recon.localPositionsCount).toBe(1);
 
-    const flattened = broker.flattenAllPositions("Emergency manual flatten test");
+    const flattened = await broker.flattenAllPositions("Emergency manual flatten test");
     expect(flattened.length).toBe(1);
     expect(broker.getOpenPositions().length).toBe(0);
   });
@@ -463,5 +503,320 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
         takeProfitPrice: "51000.00"
       })
     ).rejects.toThrow(/Short take-profit price must be strictly below entry price/);
+  });
+
+  it("throws and dispatches CRITICAL alerts on non-zero DMS responses without swallowing errors (C6)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const alerts: unknown[] = [];
+
+    // Broker with rejecting DMS
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      notificationChannel: {
+        send: async (msg) => {
+          alerts.push(msg);
+          return { delivered: true };
+        }
+      },
+      fetchFn: async () => ({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+        text: async () => "Internal Server Error"
+      })
+    });
+
+    // sendDmsHeartbeat must THROW, not swallow error and return ok: true!
+    await expect(broker.sendDmsHeartbeat()).rejects.toThrow(/OKX DMS API error \(500\)/);
+
+    // CRITICAL alert must have been dispatched
+    expect(alerts.length).toBe(1);
+    expect(alerts[0]).toMatchObject({
+      severity: "CRITICAL",
+      title: "DEAD-MAN SWITCH HEARTBEAT REJECTED"
+    });
+
+    // DMS status must remain unhealthy (heartbeat not recorded)
+    const status = broker.getDmsStatus();
+    expect(status.healthy).toBe(false);
+    expect(status.lastHeartbeatAtMs).toBeNull();
+
+    // Also test OKX code !== "0"
+    const brokerWithCodeErr = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "50011", msg: "Too many requests" }),
+        text: async () => ""
+      })
+    });
+    await expect(brokerWithCodeErr.sendDmsHeartbeat()).rejects.toThrow(
+      /OKX DMS API error \(50011\)/
+    );
+
+    // Also test OKX item sCode !== "0"
+    const brokerWithSCodeErr = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          msg: "",
+          data: [{ sCode: "51008", sMsg: "Countdown error" }]
+        }),
+        text: async () => ""
+      })
+    });
+    await expect(brokerWithSCodeErr.sendDmsHeartbeat()).rejects.toThrow(
+      /OKX DMS API error \(51008\)/
+    );
+  });
+
+  it("queries OKX exchange positions & algo orders during reconciliation and detects drift (C5)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const alerts: unknown[] = [];
+
+    let queriedPositions = false;
+    let queriedAlgos = false;
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      notificationChannel: {
+        send: async (msg) => {
+          alerts.push(msg);
+          return { delivered: true };
+        }
+      },
+      fetchFn: async (url) => {
+        if (url.includes("/api/v5/account/positions")) {
+          queriedPositions = true;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  instId: "BTC-USDT-SWAP",
+                  pos: "1",
+                  posSide: "net",
+                  avgPx: "50000.00"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          queriedAlgos = true;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [] // No active algo orders on exchange!
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    // Reconcile when exchange has an open position but no attached stop
+    const recon = await broker.reconcilePositions();
+    expect(queriedPositions).toBe(true);
+    expect(queriedAlgos).toBe(true);
+    expect(recon.matched).toBe(false);
+    expect(recon.exchangePositionsCount).toBe(1);
+    expect(alerts.length).toBeGreaterThan(0);
+  });
+
+  it("flattens positions via exchange cancel-all and market reduceOnly orders (C5)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    const ordersSent: Array<Record<string, unknown>> = [];
+    let cancelAllSent = false;
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: async (url, init) => {
+        if (url.includes("/api/v5/trade/cancel-all-after")) {
+          cancelAllSent = true;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ code: "0", data: [] }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init.method === "POST") {
+          const body = JSON.parse(init.body ?? "{}");
+          ordersSent.push(body);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [{ ordId: "ord_flat_1", clOrdId: body.clOrdId, sCode: "0" }]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    // Submit long order
+    await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 2,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00"
+    });
+
+    expect(broker.getOpenPositions().length).toBe(1);
+
+    // Emergency Flatten
+    const flattened = await broker.flattenAllPositions("Emergency test flatten");
+    expect(flattened.length).toBe(1);
+    expect(broker.getOpenPositions().length).toBe(0);
+
+    // Assert cancel-all and reduceOnly market order were dispatched to OKX
+    expect(cancelAllSent).toBe(true);
+    const reduceOnlyOrder = ordersSent.find((o) => o["reduceOnly"] === true);
+    expect(reduceOnlyOrder).toBeDefined();
+    expect(reduceOnlyOrder?.["side"]).toBe("sell"); // Opposite of long
+    expect(reduceOnlyOrder?.["sz"]).toBe("2");
+    expect(reduceOnlyOrder?.["ordType"]).toBe("market");
+  });
+
+  it("persists positions, orders, and circuit breaker across restarts via PaperAccountRepository (C5)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    const positionsStore = new Map<string, PaperPositionRecord>();
+    const ordersStore: PaperOrderRecord[] = [];
+    let cbStore: CircuitBreakerRecord = {
+      status: "NORMAL",
+      reason: "Initial",
+      triggeredAtMs: 0,
+      cooldownUntilMs: null,
+      updatedBy: "system"
+    };
+
+    const mockRepo: PaperAccountRepository = {
+      savePosition: (pos: PaperPositionRecord) => {
+        positionsStore.set(pos.positionId, pos);
+        return pos;
+      },
+      getPosition: (id: string) => positionsStore.get(id) ?? null,
+      listOpenPositions: () =>
+        Array.from(positionsStore.values()).filter((p) => p.status === "OPEN"),
+      listAllPositions: () => Array.from(positionsStore.values()),
+      saveOrder: (ord: PaperOrderRecord) => {
+        ordersStore.push(ord);
+        return ord;
+      },
+      listOrders: () => ordersStore,
+      countFilledOrdersToday: () => ordersStore.length,
+      getCircuitBreaker: () => cbStore,
+      setCircuitBreaker: (cb: CircuitBreakerRecord) => {
+        cbStore = cb;
+        return cb;
+      }
+    };
+
+    // First broker instance writes state
+    const broker1 = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      accountRepo: mockRepo,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          data: [{ ordId: "ord_persist_1", sCode: "0" }]
+        }),
+        text: async () => ""
+      })
+    });
+
+    broker1.setCircuitBreaker({
+      status: "TRIPPED",
+      reason: "Daily loss limit reached",
+      triggeredAtMs: 1_750_000_000_000,
+      cooldownUntilMs: 1_750_086_400_000,
+      updatedBy: "risk-engine"
+    });
+
+    await broker1.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00"
+    });
+
+    expect(broker1.getOpenPositions().length).toBe(1);
+    expect(broker1.getOrders().length).toBe(1);
+
+    // Simulate restart with new OkxBroker instance sharing the same repository
+    const broker2 = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      accountRepo: mockRepo,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      })
+    });
+
+    // Verify state was recovered on restart
+    expect(broker2.getCircuitBreaker().status).toBe("TRIPPED");
+    expect(broker2.getCircuitBreaker().reason).toBe("Daily loss limit reached");
+    expect(broker2.getOpenPositions().length).toBe(1);
+    expect(broker2.getOpenPositions()[0]?.instrumentId).toBe("BTC-USDT-SWAP");
+    expect(broker2.getOrders().length).toBe(1);
+    expect(broker2.getOrders()[0]?.orderId).toBe("ord_persist_1");
   });
 });
