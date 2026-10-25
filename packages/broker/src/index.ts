@@ -229,6 +229,21 @@ export class OkxBroker implements ExchangeBroker {
       throw new Error("Short protective stop price must be strictly above entry price");
     }
 
+    // Validate take-profit if provided (C7)
+    let tpPx: ScaledDecimal | null = null;
+    if (input.takeProfitPrice && input.takeProfitPrice.trim() !== "") {
+      tpPx = ScaledDecimal.fromString(input.takeProfitPrice);
+      if (!tpPx.isPositive()) {
+        throw new Error("Take-profit price must be strictly positive");
+      }
+      if (input.side === "long" && tpPx.lte(entryPx)) {
+        throw new Error("Long take-profit price must be strictly above entry price");
+      }
+      if (input.side === "short" && tpPx.gte(entryPx)) {
+        throw new Error("Short take-profit price must be strictly below entry price");
+      }
+    }
+
     const nowMs = this.clock.nowMs();
     // OKX clOrdId must be alphanumeric ^[a-zA-Z0-9]{1,32}$
     const hash = sha256Hex(`${input.instrumentId}${input.side}${nowMs}`).slice(0, 16);
@@ -239,17 +254,23 @@ export class OkxBroker implements ExchangeBroker {
 
     const algoClOrdId = `sl${clOrdId.slice(1, 31)}`;
 
-    // OKX attachAlgoOrds format per ADR-0006
-    const attachAlgoOrds = [
-      {
-        attachAlgoClOrdId: algoClOrdId,
-        slTriggerPx: input.protectiveStopPrice,
-        slOrdPx: "-1", // market order execution on trigger
-        slTriggerPxType: "mark", // mark price to protect against wicks/manipulation
-        reduceOnly: true,
-        closeFraction: "1"
-      }
-    ];
+    // OKX attachAlgoOrds format per ADR-0006 with TP support (C7)
+    const attachAlgoOrd: Record<string, unknown> = {
+      attachAlgoClOrdId: algoClOrdId,
+      slTriggerPx: input.protectiveStopPrice,
+      slOrdPx: "-1", // market order execution on trigger
+      slTriggerPxType: "mark", // mark price to protect against wicks/manipulation
+      reduceOnly: true,
+      closeFraction: "1"
+    };
+
+    if (tpPx !== null && input.takeProfitPrice) {
+      attachAlgoOrd["tpTriggerPx"] = input.takeProfitPrice;
+      attachAlgoOrd["tpOrdPx"] = "-1";
+      attachAlgoOrd["tpTriggerPxType"] = "mark";
+    }
+
+    const attachAlgoOrds = [attachAlgoOrd];
 
     const orderPayload = {
       instId: input.instrumentId,
@@ -267,7 +288,7 @@ export class OkxBroker implements ExchangeBroker {
     const bodyStr = JSON.stringify(orderPayload);
 
     let orderId = `ord${clOrdId}`;
-    const algoOrderId = `algo${algoClOrdId}`;
+    let algoOrderId = `algo${algoClOrdId}`;
 
     if (creds && creds.apiKey) {
       const headers = buildOkxHeaders({
@@ -285,13 +306,71 @@ export class OkxBroker implements ExchangeBroker {
         body: bodyStr
       });
 
-      if (res.ok) {
-        const resData = (await res.json()) as {
-          data?: { ordId?: string; clOrdId?: string; tag?: string }[];
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`OKX order HTTP ${res.status}: ${errText}`);
+      }
+
+      const resData = (await res.json()) as {
+        code?: string;
+        msg?: string;
+        data?: Array<{
+          ordId?: string;
+          clOrdId?: string;
+          sCode?: string;
+          sMsg?: string;
+          tag?: string;
+        }>;
+      };
+
+      if (resData.code !== "0") {
+        throw new Error(
+          `OKX order rejected: code ${resData.code} - ${resData.msg ?? "unknown error"}`
+        );
+      }
+
+      const item = resData.data?.[0];
+      if (!item) {
+        throw new Error("OKX order response missing data payload");
+      }
+
+      if (item.sCode && item.sCode !== "0") {
+        throw new Error(
+          `OKX order failed: sCode ${item.sCode} - ${item.sMsg ?? "unknown sub-error"}`
+        );
+      }
+
+      if (item.ordId) {
+        orderId = item.ordId;
+      }
+
+      // Query OKX to confirm attached protective stop algo order
+      const algoPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(input.instrumentId)}&ordType=conditional&algoClOrdId=${encodeURIComponent(algoClOrdId)}`;
+      const algoHeaders = buildOkxHeaders({
+        method: "GET",
+        path: algoPath,
+        credentials: creds,
+        timestampIso: new Date(nowMs).toISOString(),
+        isDemo: this.isDemo
+      });
+
+      const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+        method: "GET",
+        headers: algoHeaders
+      });
+
+      if (algoRes.ok) {
+        const algoData = (await algoRes.json()) as {
+          code?: string;
+          data?: Array<{
+            algoId?: string;
+            algoClOrdId?: string;
+            state?: string;
+          }>;
         };
-        const item = resData.data?.[0];
-        if (item?.ordId) {
-          orderId = item.ordId;
+        const algoItem = algoData.data?.[0];
+        if (algoItem?.algoId) {
+          algoOrderId = algoItem.algoId;
         }
       }
     }

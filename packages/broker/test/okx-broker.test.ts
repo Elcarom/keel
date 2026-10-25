@@ -76,14 +76,16 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
 
     let capturedRequestBody = "";
     const mockFetch = async (_url: string, init: { body?: string | undefined }) => {
-      capturedRequestBody = init.body ?? "";
+      if (init.body) {
+        capturedRequestBody = init.body;
+      }
       return {
         ok: true,
         status: 200,
         json: async () => ({
           code: "0",
           msg: "",
-          data: [{ ordId: "1234567890", clOrdId: "cl_test_1" }]
+          data: [{ ordId: "1234567890", clOrdId: "cl_test_1", sCode: "0" }]
         }),
         text: async () => ""
       };
@@ -129,7 +131,13 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       clock,
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
-      isDemo: true
+      isDemo: true,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", msg: "", data: [] }),
+        text: async () => ""
+      })
     });
 
     let status = broker.getDmsStatus();
@@ -151,7 +159,17 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       clock,
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
-      isDemo: true
+      isDemo: true,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          msg: "",
+          data: [{ ordId: "ord_reconcile_1", clOrdId: "cl_1", sCode: "0" }]
+        }),
+        text: async () => ""
+      })
     });
 
     await broker.submitOrder({
@@ -251,5 +269,199 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     expect(alerts[0]).toMatchObject({ severity: "CRITICAL" });
     // Verify auto-flatten was triggered
     expect(broker.getOpenPositions().length).toBe(0);
+  });
+
+  it("throws explicit error on non-200 HTTP response, code !== '0', or item sCode !== '0' (C4)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    // 1. Non-200 HTTP status
+    const httpErrorBroker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async () => ({
+        ok: false,
+        status: 502,
+        json: async () => ({}),
+        text: async () => "Bad Gateway"
+      })
+    });
+
+    await expect(
+      httpErrorBroker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/OKX order HTTP 502: Bad Gateway/);
+
+    // 2. Gateway rejection (code !== '0')
+    const gatewayErrorBroker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "50011",
+          msg: "Too many requests",
+          data: []
+        }),
+        text: async () => "Too many requests"
+      })
+    });
+
+    await expect(
+      gatewayErrorBroker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/OKX order rejected: code 50011 - Too many requests/);
+
+    // 3. Order-level rejection (sCode !== '0')
+    const orderRejectionBroker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          msg: "",
+          data: [
+            {
+              clOrdId: "cl_1",
+              ordId: "",
+              sCode: "51008",
+              sMsg: "Order failed. Insufficient balance"
+            }
+          ]
+        }),
+        text: async () => ""
+      })
+    });
+
+    await expect(
+      orderRejectionBroker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/OKX order failed: sCode 51008 - Order failed. Insufficient balance/);
+  });
+
+  it("includes take-profit parameters in attachAlgoOrds and validates TP direction (C7)", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    let capturedPayload: Record<string, unknown> | null = null;
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async (url, init) => {
+        if (url.includes("/api/v5/trade/order") && init.method === "POST") {
+          capturedPayload = JSON.parse(init.body ?? "{}");
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  clOrdId: "cl_1",
+                  ordId: "ord_1001",
+                  sCode: "0",
+                  sMsg: ""
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (
+          url.includes("/api/v5/trade/order-algo") ||
+          url.includes("/api/v5/trade/orders-algo-pending")
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  algoId: "algo_exchange_9999",
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    // Valid long order with TP
+    const result = await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      takeProfitPrice: "54000.00"
+    });
+
+    expect(capturedPayload).not.toBeNull();
+    const attachAlgoOrds = capturedPayload?.["attachAlgoOrds"] as Array<Record<string, unknown>>;
+    expect(attachAlgoOrds).toBeDefined();
+    expect(attachAlgoOrds[0]?.["tpTriggerPx"]).toBe("54000.00");
+    expect(attachAlgoOrds[0]?.["tpOrdPx"]).toBe("-1");
+    expect(attachAlgoOrds[0]?.["tpTriggerPxType"]).toBe("mark");
+    expect(attachAlgoOrds[0]?.["slTriggerPx"]).toBe("48000.00");
+
+    // Confirmed algoOrderId from OKX algo order response
+    expect(result.algoOrderId).toBe("algo_exchange_9999");
+
+    // Invalid long order: TP below entry
+    await expect(
+      broker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00",
+        takeProfitPrice: "49000.00"
+      })
+    ).rejects.toThrow(/Long take-profit price must be strictly above entry price/);
+
+    // Invalid short order: TP above entry
+    await expect(
+      broker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "short",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "52000.00",
+        takeProfitPrice: "51000.00"
+      })
+    ).rejects.toThrow(/Short take-profit price must be strictly below entry price/);
   });
 });
