@@ -4,17 +4,23 @@ import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
   PromotionLadderEvaluator,
+  RiskGuardian,
   ScaledDecimal,
   SystemClock,
   createDefaultConfig,
+  defaultInstrumentSpec,
   diffConfigs,
+  getUtcDayStartMs,
   keelApiContract,
   type Clock,
   type ExchangeBroker,
   type KeelConfig,
   type LookbackValidationResult,
   type LlmGateway,
-  type PromotionStage
+  type PortfolioRiskState,
+  type PromotionStage,
+  type Proposal,
+  type StrategyRiskState
 } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries, type SqliteDataStore } from "@keel/data";
 import {
@@ -1758,21 +1764,169 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
 
+        const active = getActiveSnapshot();
+        const nowMs = clock.nowMs();
+        const strategyId = body.strategyId ?? "manual-execution";
+        const spec = defaultInstrumentSpec(body.instrumentId);
+
+        let evaluatedInitialRiskUsdt: string | undefined;
+        if (!body.reduceOnly) {
+          // Attached protective stop is mandatory per ADR-0006
+          if (!body.protectiveStopPrice || body.protectiveStopPrice.trim() === "") {
+            return {
+              status: 403,
+              body: {
+                error: "Orders without mandatory attached protective stop are prohibited (ADR-0006)"
+              }
+            };
+          }
+
+          const proposal: Proposal = {
+            proposalId: body.clOrdId ?? `prop-api-${nowMs}`,
+            strategyId,
+            strategyVersion: "1.0.0",
+            instrumentId: body.instrumentId,
+            side: body.side,
+            entryPrice: body.entryPrice,
+            protectiveStopPrice: body.protectiveStopPrice,
+            takeProfitPrice: body.takeProfitPrice ?? null,
+            convictionScore: 1.0,
+            rationale: "Direct API broker order submission",
+            tags: ["api", "broker-order"]
+          };
+
+          // Aggregate existing exposure across open exchange positions
+          const openPositions = okxBroker.getOpenPositions();
+          let grossNotional = ScaledDecimal.zero();
+          let netSignedNotional = ScaledDecimal.zero();
+          const notionalByInstrument: Record<string, ScaledDecimal> = {};
+          let strategyGrossNotional = ScaledDecimal.zero();
+          let totalUnrealizedPnl = ScaledDecimal.zero();
+          let strategyUnrealizedPnl = ScaledDecimal.zero();
+
+          for (const p of openPositions) {
+            const pContracts = ScaledDecimal.fromString(p.contracts);
+            const pPrice = ScaledDecimal.fromString(p.entryPrice);
+            const pSpec = defaultInstrumentSpec(p.instrumentId);
+            const pNotional = pContracts.mul(pSpec.contractValue).mul(pPrice);
+
+            grossNotional = grossNotional.add(pNotional);
+            const signed = p.side === "long" ? pNotional : ScaledDecimal.zero().sub(pNotional);
+            netSignedNotional = netSignedNotional.add(signed);
+
+            const existingInst = notionalByInstrument[p.instrumentId] ?? ScaledDecimal.zero();
+            notionalByInstrument[p.instrumentId] = existingInst.add(pNotional);
+
+            const pUnrealized = ScaledDecimal.fromString(p.unrealizedPnlUsdt);
+            totalUnrealizedPnl = totalUnrealizedPnl.add(pUnrealized);
+
+            if (p.strategyId === strategyId) {
+              strategyGrossNotional = strategyGrossNotional.add(pNotional);
+              strategyUnrealizedPnl = strategyUnrealizedPnl.add(pUnrealized);
+            }
+          }
+
+          const dayStartMs = getUtcDayStartMs(nowMs);
+          const strategyMetrics = dataStore.ledgerRepo.getRiskMetrics({
+            asOfMs: nowMs,
+            strategyId,
+            openUnrealizedPnlUsdt: strategyUnrealizedPnl
+          });
+          const portfolioMetrics = dataStore.ledgerRepo.getRiskMetrics({
+            asOfMs: nowMs,
+            strategyId: null,
+            openUnrealizedPnlUsdt: totalUnrealizedPnl
+          });
+          const tradesTodayCount = dataStore.paperAccountRepo.countFilledOrdersToday({
+            sinceMs: dayStartMs,
+            strategyId
+          });
+
+          const strategyState: StrategyRiskState = {
+            strategyId,
+            equityUsdt: strategyMetrics.currentEquityUsdt,
+            dayStartEquityUsdt: strategyMetrics.dayStartEquityUsdt,
+            weekStartEquityUsdt: strategyMetrics.weekStartEquityUsdt,
+            highWaterMarkEquityUsdt: strategyMetrics.highWaterMarkEquityUsdt,
+            currentGrossNotionalUsdt: strategyGrossNotional,
+            tradesTodayCount,
+            feesTodayUsdt: strategyMetrics.feesTodayUsdt
+          };
+
+          const portfolioState: PortfolioRiskState = {
+            equityUsdt: portfolioMetrics.currentEquityUsdt,
+            dayStartEquityUsdt: portfolioMetrics.dayStartEquityUsdt,
+            highWaterMarkEquityUsdt: portfolioMetrics.highWaterMarkEquityUsdt,
+            grossNotionalUsdt: grossNotional,
+            netSignedNotionalUsdt: netSignedNotional,
+            notionalByInstrumentUsdt: notionalByInstrument,
+            circuitBreaker: dataStore.paperAccountRepo.getCircuitBreaker()
+          };
+
+          const guardian = new RiskGuardian(active.config.risk);
+          const decision = guardian.evaluateProposal({
+            proposal,
+            instrument: spec,
+            strategyState,
+            portfolioState,
+            asOfMs: nowMs
+          });
+
+          if (!decision.approved) {
+            if (decision.triggeredCircuitBreaker) {
+              dataStore.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
+            }
+            return {
+              status: 403,
+              body: { error: `Risk veto [${decision.vetoCode}]: ${decision.vetoReason}` }
+            };
+          }
+
+          const requestedLots = ScaledDecimal.fromString(String(body.sizeLots));
+          if (requestedLots.gt(decision.contracts)) {
+            return {
+              status: 403,
+              body: {
+                error: `Risk veto [SIZING_VETO]: Requested size (${body.sizeLots}) exceeds 1R risk-sized maximum (${decision.contracts.toFixed(0)})`
+              }
+            };
+          }
+
+          // Compute actual initial risk scaled to requested sizeLots
+          const entryPx = ScaledDecimal.fromString(body.entryPrice);
+          const stopPx = ScaledDecimal.fromString(body.protectiveStopPrice);
+          const stopDistance = (
+            body.side === "long" ? entryPx.sub(stopPx) : stopPx.sub(entryPx)
+          ).abs();
+          evaluatedInitialRiskUsdt = requestedLots
+            .mul(stopDistance)
+            .mul(spec.contractValue)
+            .toFixed(2);
+        }
+
         try {
-          const order = await okxBroker.submitOrder(body);
+          const order = await okxBroker.submitOrder({
+            ...body,
+            protectiveStopPrice: body.protectiveStopPrice ?? "",
+            strategyId,
+            ...(evaluatedInitialRiskUsdt !== undefined
+              ? { initialRiskUsdt: evaluatedInitialRiskUsdt }
+              : {})
+          });
 
           dataStore.auditRepo.append({
-            ts: clock.nowMs(),
+            ts: nowMs,
             actor: ingress.session.username ?? "system",
             clientIp: ingress.clientIp,
             action: "broker.submit_order",
             riskClass: "confirm",
-            configHash: getActiveSnapshot().configHash,
+            configHash: active.configHash,
             details: {
               orderId: order.orderId,
               clOrdId: order.clOrdId,
               algoOrderId: order.algoOrderId,
               instrumentId: order.instrumentId,
+              strategyId,
               side: order.side,
               protectiveStopPrice: order.protectiveStopPrice
             }
@@ -1888,6 +2042,17 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   });
 
   app.register(s.plugin(router));
+
+  // Support both singular /api/v1/broker/order and contract plural /api/v1/broker/orders
+  app.post("/api/v1/broker/order", async (req, reply) => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/broker/orders",
+      headers: req.headers as Record<string, string>,
+      payload: req.body as Record<string, unknown>
+    });
+    return reply.status(res.statusCode).headers(res.headers).send(res.body);
+  });
 
   const webDist = options.webDistPath ?? path.resolve(import.meta.dirname, "../../web/dist");
 

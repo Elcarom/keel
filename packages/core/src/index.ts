@@ -163,6 +163,7 @@ export {
   type StrategyRiskState
 } from "./risk.js";
 export {
+  defaultInstrumentSpec,
   sizeByStopRisk,
   type InstrumentSpec,
   type PositionSide,

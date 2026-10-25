@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  defaultInstrumentSpec,
   sha256Hex,
   ScaledDecimal,
   type Clock,
@@ -310,16 +311,24 @@ export class OkxBroker implements ExchangeBroker {
 
     // Update local state
     const posId = `pos_${clOrdId}`;
+    const effectiveStrategyId = input.strategyId ?? "manual-execution";
+    const initialRisk =
+      input.initialRiskUsdt ??
+      (input.side === "long" ? entryPx.sub(stopPx) : stopPx.sub(entryPx))
+        .mul(ScaledDecimal.fromString(String(input.sizeLots)))
+        .mul(defaultInstrumentSpec(input.instrumentId).contractValue)
+        .toFixed(2);
+
     const newPosition: PaperPositionRecord = {
       positionId: posId,
-      strategyId: "exchange-execution",
+      strategyId: effectiveStrategyId,
       instrumentId: input.instrumentId,
       side: input.side,
       contracts: String(input.sizeLots),
       entryPrice: input.entryPrice,
       protectiveStopPrice: input.protectiveStopPrice,
       takeProfitPrice: input.takeProfitPrice ?? null,
-      initialRiskUsdt: "0.00",
+      initialRiskUsdt: initialRisk,
       unrealizedPnlUsdt: "0.00",
       realizedPnlUsdt: "0.00",
       feesPaidUsdt: "0.00",
@@ -338,7 +347,7 @@ export class OkxBroker implements ExchangeBroker {
       orderId,
       positionId: posId,
       proposalId: clOrdId,
-      strategyId: "exchange-execution",
+      strategyId: effectiveStrategyId,
       instrumentId: input.instrumentId,
       side: input.side,
       orderRole: "ENTRY",

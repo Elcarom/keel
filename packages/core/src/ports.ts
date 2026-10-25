@@ -580,9 +580,11 @@ export const ExchangeOrderInputSchema = z.object({
   side: z.enum(["long", "short"]),
   sizeLots: z.number().int().positive(),
   entryPrice: z.string().min(1),
-  protectiveStopPrice: z.string().min(1), // MANDATORY attached stop per ADR-0006
+  protectiveStopPrice: z.string().optional(), // MANDATORY attached stop checked at domain boundary with 403 (ADR-0006)
   takeProfitPrice: z.string().optional(),
   clOrdId: z.string().optional(),
+  strategyId: z.string().optional(),
+  initialRiskUsdt: z.string().optional(),
   reduceOnly: z.boolean().default(false)
 });
 export type ExchangeOrderInput = z.infer<typeof ExchangeOrderInputSchema>;
