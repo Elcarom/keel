@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ManualClock,
+  ScaledDecimal,
   createDefaultConfig,
   type CircuitBreakerRecord,
   type PaperAccountRepository,
@@ -818,5 +819,182 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     expect(broker2.getOpenPositions()[0]?.instrumentId).toBe("BTC-USDT-SWAP");
     expect(broker2.getOrders().length).toBe(1);
     expect(broker2.getOrders()[0]?.orderId).toBe("ord_persist_1");
+  });
+
+  it("reproduces M-F defect: unlinked broker does not post to ledger and reports static 0.00000000 unrealized PnL", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const unlinkedBroker = new OkxBroker({
+      clock,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          data: [{ ordId: "ord_unlinked", clOrdId: "cl_unlinked", sCode: "0" }]
+        }),
+        text: async () => ""
+      })
+    });
+
+    await unlinkedBroker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00"
+    });
+
+    const openPositions = unlinkedBroker.getOpenPositions();
+    expect(openPositions.length).toBe(1);
+    const pos = openPositions[0];
+    expect(pos?.unrealizedPnlUsdt).toBe("0.00000000");
+  });
+
+  it("remediates M-F: posts entry fee and close PnL to LedgerRepository, and computes dynamic mark-to-market unrealized PnL", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const recordedJournals: Array<{
+      txGroupId: string;
+      debitAccount: string;
+      creditAccount: string;
+      amountUsdt: string;
+    }> = [];
+
+    const mockLedgerRepo = {
+      recordJournal: (input: {
+        txGroupId: string;
+        ts: number;
+        strategyId: string | null;
+        instrumentId: string | null;
+        debitAccount:
+          | "cash:usdt"
+          | "equity_capital:usdt"
+          | "realized_pnl:usdt"
+          | "fees_expense:usdt"
+          | "funding_pnl:usdt";
+        creditAccount:
+          | "cash:usdt"
+          | "equity_capital:usdt"
+          | "realized_pnl:usdt"
+          | "fees_expense:usdt"
+          | "funding_pnl:usdt";
+        amountUsdt: string;
+        description: string;
+      }) => {
+        recordedJournals.push(input);
+        return {
+          entryId: `entry-${recordedJournals.length}`,
+          ...input
+        };
+      },
+      listEntries: () => [],
+      getTrialBalance: () => ({
+        totalDebitsUsdt: "0",
+        totalCreditsUsdt: "0",
+        isBalanced: true,
+        cashBalanceUsdt: "10000.00",
+        realizedPnlUsdt: "0",
+        feesExpenseUsdt: "0",
+        fundingPnlUsdt: "0",
+        netEquityUsdt: "10000.00",
+        entryCount: recordedJournals.length
+      }),
+      getRiskMetrics: () => ({
+        currentEquityUsdt: ScaledDecimal.fromString("10000.00"),
+        dayStartEquityUsdt: ScaledDecimal.fromString("10000.00"),
+        weekStartEquityUsdt: ScaledDecimal.fromString("10000.00"),
+        highWaterMarkEquityUsdt: ScaledDecimal.fromString("10000.00"),
+        feesTodayUsdt: ScaledDecimal.zero(),
+        drawdownPct: ScaledDecimal.zero()
+      })
+    };
+
+    const mockMarketDataRepo = {
+      ingestOkxCandles: () => ({ insertedCount: 0, skippedUnconfirmedCount: 0 }),
+      ingestSettledFunding: () => 0,
+      getConfirmedBarsAsOf: () => [
+        {
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H" as const,
+          openTs: 1_750_000_000_000 - 3600_000,
+          closeTs: 1_750_000_000_000,
+          open: "50000.00",
+          high: "56000.00",
+          low: "49000.00",
+          close: "55000.00", // Price moved up by 5000
+          volumeContracts: "100",
+          volumeQuote: "5000000",
+          confirm: "1" as const
+        }
+      ],
+      getConfirmedBarsInRange: () => [],
+      getSettledFundingAsOf: () => [],
+      getSettledFundingInRange: () => [],
+      detectGaps: () => []
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      ledgerRepo: mockLedgerRepo,
+      marketDataRepo: mockMarketDataRepo,
+      isDemo: true,
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          data: [{ ordId: "ord_mf_1", clOrdId: "cl_mf_1", sCode: "0" }]
+        }),
+        text: async () => ""
+      })
+    });
+
+    // 1. Submit order: 1 lot BTC long @ 50,000 (contractValue = 0.01 BTC, notional = 500 USDT)
+    const order = await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      strategyId: "donchian-breakout"
+    });
+
+    expect(order.status).toBe("FILLED");
+
+    // Fee journal must be posted to LedgerRepository
+    expect(recordedJournals.length).toBeGreaterThanOrEqual(1);
+    const feeJournal = recordedJournals.find((j) => j.debitAccount === "fees_expense:usdt");
+    expect(feeJournal).toBeDefined();
+    expect(feeJournal?.creditAccount).toBe("cash:usdt");
+    if (feeJournal) {
+      expect(ScaledDecimal.fromString(feeJournal.amountUsdt).isPositive()).toBe(true);
+    }
+
+    // Position and order records must record non-zero fees
+    const openPositions = broker.getOpenPositions();
+    expect(openPositions.length).toBe(1);
+    const pos = openPositions[0];
+    expect(pos).toBeDefined();
+    if (pos) {
+      expect(ScaledDecimal.fromString(pos.feesPaidUsdt).isPositive()).toBe(true);
+
+      // 2. Open positions must reflect dynamic mark-to-market unrealized PnL (close is 55000 vs entry 50000)
+      // 1 lot * 0.01 ctVal * (55000 - 50000) = +50.00 USDT
+      expect(pos.unrealizedPnlUsdt).not.toBe("0.00");
+      const upl = ScaledDecimal.fromString(pos.unrealizedPnlUsdt);
+      expect(upl.toFixed(2)).toBe("50.00");
+    }
+
+    // 3. Flatten position must post realized PnL and exit fee to LedgerRepository
+    await broker.flattenAllPositions("Test flatten");
+
+    const pnlJournal = recordedJournals.find((j) => j.creditAccount === "realized_pnl:usdt");
+    expect(pnlJournal).toBeDefined();
+    expect(pnlJournal?.debitAccount).toBe("cash:usdt");
+    if (pnlJournal) {
+      expect(ScaledDecimal.fromString(pnlJournal.amountUsdt).toFixed(2)).toBe("50.00");
+    }
   });
 });

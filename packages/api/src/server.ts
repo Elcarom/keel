@@ -172,8 +172,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       },
       isDemo: getActiveSnapshot().config.system.executionMode !== "Live",
       notificationChannel: notifier,
-      accountRepo: dataStore.paperAccountRepo
+      accountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo,
+      marketDataRepo: dataStore.marketDataRepo
     });
+
+  if (okxBroker instanceof OkxBroker) {
+    okxBroker.setRepositories({
+      accountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo,
+      marketDataRepo: dataStore.marketDataRepo
+    });
+  }
 
   const scheduler =
     options.scheduler ??
