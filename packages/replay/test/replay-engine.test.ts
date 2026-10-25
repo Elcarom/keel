@@ -362,4 +362,244 @@ describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Fo
 
     expect(Number.isFinite(result.walkForwardOutOfSampleAvgR)).toBe(true);
   });
+
+  it("executes fills at next-bar open with configurable slippage instead of signal-bar close (M2)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const baseTs = 1_710_000_000_000;
+    const oneHour = 3_600_000;
+
+    const candles = [];
+    // 21 lookback warmup bars at 100
+    for (let i = 0; i < 21; i += 1) {
+      candles.push({
+        openTs: String(baseTs + i * oneHour),
+        open: "100.00",
+        high: "102.00",
+        low: "98.00",
+        close: "100.00",
+        volumeContracts: "1000",
+        volumeQuote: "100000",
+        confirm: "1" as const
+      });
+    }
+    // Bar 21: Breakout triggers Donchian signal at close 105.00
+    candles.push({
+      openTs: String(baseTs + 21 * oneHour),
+      open: "100.00",
+      high: "106.00",
+      low: "99.00",
+      close: "105.00",
+      volumeContracts: "1000",
+      volumeQuote: "105000",
+      confirm: "1" as const
+    });
+    // Bar 22: Opens at 108.00 (higher than Bar 21 close 105.00)
+    candles.push({
+      openTs: String(baseTs + 22 * oneHour),
+      open: "108.00",
+      high: "115.00",
+      low: "107.00",
+      close: "112.00",
+      volumeContracts: "1000",
+      volumeQuote: "112000",
+      confirm: "1" as const
+    });
+    // Bar 23: Reaches take-profit or closes
+    candles.push({
+      openTs: String(baseTs + 23 * oneHour),
+      open: "112.00",
+      high: "125.00",
+      low: "111.00",
+      close: "120.00",
+      volumeContracts: "1000",
+      volumeQuote: "120000",
+      confirm: "1" as const
+    });
+
+    marketRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: baseTs,
+      toTs: baseTs + 24 * oneHour,
+      slippageBps: 10 // 10 bps slippage = 0.001
+    });
+
+    expect(result.trades.length).toBeGreaterThan(0);
+    const firstTrade = result.trades[0];
+    expect(firstTrade).toBeDefined();
+    if (!firstTrade) throw new Error("Expected trade");
+    // Signal was at bar 21 close (105.00). Next bar open was 108.00.
+    // Entry price must NOT be 105.00; with 10 bps slippage on 108.00 open:
+    // 108.00 * (1 + 0.001) = 108.108
+    expect(firstTrade.entryPrice.equals(ScaledDecimal.fromString("108.108"))).toBe(true);
+    expect(firstTrade.entryTs).toBe(baseTs + 22 * oneHour);
+  });
+
+  it("fills protective stop at the worse gap price when a bar gaps through the stop (M2)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const baseTs = 1_710_000_000_000;
+    const oneHour = 3_600_000;
+
+    const candles = [];
+    for (let i = 0; i < 21; i += 1) {
+      candles.push({
+        openTs: String(baseTs + i * oneHour),
+        open: "100.00",
+        high: "102.00",
+        low: "98.00",
+        close: "100.00",
+        volumeContracts: "1000",
+        volumeQuote: "100000",
+        confirm: "1" as const
+      });
+    }
+    // Bar 21: Signal at close 105.00
+    candles.push({
+      openTs: String(baseTs + 21 * oneHour),
+      open: "100.00",
+      high: "106.00",
+      low: "99.00",
+      close: "105.00",
+      volumeContracts: "1000",
+      volumeQuote: "105000",
+      confirm: "1" as const
+    });
+    // Bar 22: Enters at open 105.00. Stop is at ~97.00. Closes at 104.00.
+    candles.push({
+      openTs: String(baseTs + 22 * oneHour),
+      open: "105.00",
+      high: "106.00",
+      low: "103.00",
+      close: "104.00",
+      volumeContracts: "1000",
+      volumeQuote: "104000",
+      confirm: "1" as const
+    });
+    // Bar 23: Gaps down severely: opens at 80.00 (well below stop ~97.00)
+    candles.push({
+      openTs: String(baseTs + 23 * oneHour),
+      open: "80.00",
+      high: "82.00",
+      low: "78.00",
+      close: "80.00",
+      volumeContracts: "1000",
+      volumeQuote: "80000",
+      confirm: "1" as const
+    });
+
+    marketRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: baseTs,
+      toTs: baseTs + 24 * oneHour,
+      slippageBps: 0
+    });
+
+    expect(result.trades.length).toBeGreaterThan(0);
+    const stoppedTrade = result.trades[0];
+    expect(stoppedTrade).toBeDefined();
+    if (!stoppedTrade) throw new Error("Expected trade");
+    expect(stoppedTrade.exitReason).toBe("stop");
+    // With gap-aware stop fill, it MUST fill at bar open 80.00, NOT at the stop price ~97.00!
+    expect(stoppedTrade.exitPrice.equals(ScaledDecimal.fromString("80"))).toBe(true);
+  });
+
+  it("fills take-profit at the better gap price when a bar gaps through the target (M2)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const baseTs = 1_710_000_000_000;
+    const oneHour = 3_600_000;
+
+    const candles = [];
+    for (let i = 0; i < 21; i += 1) {
+      candles.push({
+        openTs: String(baseTs + i * oneHour),
+        open: "100.00",
+        high: "102.00",
+        low: "98.00",
+        close: "100.00",
+        volumeContracts: "1000",
+        volumeQuote: "100000",
+        confirm: "1" as const
+      });
+    }
+    // Bar 21: Signal at close 105.00
+    candles.push({
+      openTs: String(baseTs + 21 * oneHour),
+      open: "100.00",
+      high: "106.00",
+      low: "99.00",
+      close: "105.00",
+      volumeContracts: "1000",
+      volumeQuote: "105000",
+      confirm: "1" as const
+    });
+    // Bar 22: Enters at open 105.00. TP is at ~125.00. Closes at 108.00.
+    candles.push({
+      openTs: String(baseTs + 22 * oneHour),
+      open: "105.00",
+      high: "109.00",
+      low: "104.00",
+      close: "108.00",
+      volumeContracts: "1000",
+      volumeQuote: "108000",
+      confirm: "1" as const
+    });
+    // Bar 23: Gaps up massively: opens at 140.00 (well above TP ~125.00)
+    candles.push({
+      openTs: String(baseTs + 23 * oneHour),
+      open: "140.00",
+      high: "145.00",
+      low: "138.00",
+      close: "142.00",
+      volumeContracts: "1000",
+      volumeQuote: "142000",
+      confirm: "1" as const
+    });
+
+    marketRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: baseTs,
+      toTs: baseTs + 24 * oneHour,
+      slippageBps: 0
+    });
+
+    expect(result.trades.length).toBeGreaterThan(0);
+    const tpTrade = result.trades[0];
+    expect(tpTrade).toBeDefined();
+    if (!tpTrade) throw new Error("Expected trade");
+    expect(tpTrade.exitReason).toBe("take-profit");
+    // With gap-aware take-profit fill, it MUST fill at bar open 140.00, NOT at ~125.00!
+    expect(tpTrade.exitPrice.equals(ScaledDecimal.fromString("140"))).toBe(true);
+  });
 });
