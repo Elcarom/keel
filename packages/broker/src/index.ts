@@ -15,7 +15,8 @@ import {
   type PaperPositionRecord,
   type PaperTickResult,
   type ReconciliationResult,
-  type RiskConfig
+  type RiskConfig,
+  type PaperAccountRepository
 } from "@keel/core";
 
 export interface OkxCredentials {
@@ -47,6 +48,7 @@ export interface OkxBrokerOptions {
   readonly isDemo?: boolean | undefined;
   readonly fetchFn?: OkxFetchFn | undefined;
   readonly notificationChannel?: NotificationChannel | undefined;
+  readonly accountRepo?: PaperAccountRepository | undefined;
 }
 
 export function buildOkxHeaders(params: {
@@ -82,6 +84,7 @@ export class OkxBroker implements ExchangeBroker {
   private readonly isDemo: boolean;
   private readonly fetchFn: OkxFetchFn;
   private readonly notificationChannel: NotificationChannel | null;
+  private readonly accountRepo: PaperAccountRepository | null;
 
   private circuitBreaker: CircuitBreakerRecord = {
     status: "NORMAL",
@@ -101,6 +104,17 @@ export class OkxBroker implements ExchangeBroker {
     this.getCredentials = options.getCredentials ?? (() => null);
     this.isDemo = options.isDemo ?? true;
     this.notificationChannel = options.notificationChannel ?? null;
+    this.accountRepo = options.accountRepo ?? null;
+
+    if (this.accountRepo) {
+      this.circuitBreaker = this.accountRepo.getCircuitBreaker();
+      const open = this.accountRepo.listOpenPositions();
+      for (const pos of open) {
+        this.localPositions.set(pos.positionId, pos);
+      }
+      this.localOrders = [...this.accountRepo.listOrders(100)];
+    }
+
     this.fetchFn =
       options.fetchFn ??
       (async (url, init) => {
@@ -127,6 +141,9 @@ export class OkxBroker implements ExchangeBroker {
 
   public setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord {
     this.circuitBreaker = { ...record };
+    if (this.accountRepo) {
+      this.accountRepo.setCircuitBreaker(this.circuitBreaker);
+    }
     return this.getCircuitBreaker();
   }
 
@@ -176,28 +193,57 @@ export class OkxBroker implements ExchangeBroker {
 
       const baseUrl = "https://www.okx.com";
 
-      try {
-        const res = await this.fetchFn(`${baseUrl}${path}`, {
-          method: "POST",
-          headers,
-          body
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          if (this.notificationChannel) {
-            await this.notificationChannel.send({
-              severity: "CRITICAL",
-              title: "DEAD-MAN SWITCH HEARTBEAT REJECTED",
-              body: `OKX DMS API error (${res.status}): ${errText}`,
-              dedupKey: `dms-fail-${nowMs}`
-            });
-          }
-          throw new Error(`OKX DMS API error (${res.status}): ${errText}`);
+      const res = await this.fetchFn(`${baseUrl}${path}`, {
+        method: "POST",
+        headers,
+        body
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "DEAD-MAN SWITCH HEARTBEAT REJECTED",
+            body: `OKX DMS API error (${res.status}): ${errText}`,
+            dedupKey: `dms-fail-${nowMs}`
+          });
         }
-      } catch (err) {
-        if (!String(err).includes("fetch failed")) {
-          // Allowed in test simulation
+        throw new Error(`OKX DMS API error (${res.status}): ${errText}`);
+      }
+
+      const resData = (await res.json()) as {
+        code?: string;
+        msg?: string;
+        data?: Array<{
+          sCode?: string;
+          sMsg?: string;
+        }>;
+      };
+
+      if (resData.code && resData.code !== "0") {
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "DEAD-MAN SWITCH HEARTBEAT REJECTED",
+            body: `OKX DMS rejected with code ${resData.code}: ${resData.msg ?? "unknown error"}`,
+            dedupKey: `dms-fail-${nowMs}`
+          });
         }
+        throw new Error(`OKX DMS API error (${resData.code}): ${resData.msg ?? "unknown error"}`);
+      }
+
+      const item = resData.data?.[0];
+      if (item && item.sCode && item.sCode !== "0") {
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "DEAD-MAN SWITCH HEARTBEAT REJECTED",
+            body: `OKX DMS rejected with sCode ${item.sCode}: ${item.sMsg ?? "unknown sub-error"}`,
+            dedupKey: `dms-fail-${nowMs}`
+          });
+        }
+        throw new Error(`OKX DMS API error (${item.sCode}): ${item.sMsg ?? "unknown sub-error"}`);
       }
     }
 
@@ -421,8 +467,11 @@ export class OkxBroker implements ExchangeBroker {
     };
 
     this.localPositions.set(posId, newPosition);
+    if (this.accountRepo) {
+      this.accountRepo.savePosition(newPosition);
+    }
 
-    this.localOrders.push({
+    const orderRecord: PaperOrderRecord = {
       orderId,
       positionId: posId,
       proposalId: clOrdId,
@@ -436,7 +485,12 @@ export class OkxBroker implements ExchangeBroker {
       feeUsdt: "0.00",
       status: "FILLED",
       createdAtMs: nowMs
-    });
+    };
+
+    this.localOrders.push(orderRecord);
+    if (this.accountRepo) {
+      this.accountRepo.saveOrder(orderRecord);
+    }
 
     return orderResult;
   }
@@ -483,10 +537,14 @@ export class OkxBroker implements ExchangeBroker {
     // Update local open position stop price
     for (const [id, pos] of this.localPositions.entries()) {
       if (pos.instrumentId === params.instrumentId && pos.status === "OPEN") {
-        this.localPositions.set(id, {
+        const updated = {
           ...pos,
           protectiveStopPrice: params.newStopPrice
-        });
+        };
+        this.localPositions.set(id, updated);
+        if (this.accountRepo) {
+          this.accountRepo.savePosition(updated);
+        }
       }
     }
 
@@ -498,6 +556,130 @@ export class OkxBroker implements ExchangeBroker {
     const openPositions = this.getOpenPositions();
     const driftDetails: string[] = [];
     const driftPositions: PaperPositionRecord[] = [];
+    let exchangePositionsCount = openPositions.length;
+
+    const creds = this.getCredentials();
+    if (creds && creds.apiKey) {
+      // 1. Query OKX positions
+      const posPath = "/api/v5/account/positions";
+      const posHeaders = buildOkxHeaders({
+        method: "GET",
+        path: posPath,
+        credentials: creds,
+        timestampIso: new Date(nowMs).toISOString(),
+        isDemo: this.isDemo
+      });
+
+      const posRes = await this.fetchFn(`https://www.okx.com${posPath}`, {
+        method: "GET",
+        headers: posHeaders
+      });
+
+      if (!posRes.ok) {
+        throw new Error(`OKX reconciliation failed to query positions (${posRes.status})`);
+      }
+
+      const posData = (await posRes.json()) as {
+        code?: string;
+        msg?: string;
+        data?: Array<{
+          instId?: string;
+          pos?: string;
+          posSide?: string;
+          avgPx?: string;
+        }>;
+      };
+
+      if (posData.code && posData.code !== "0") {
+        throw new Error(`OKX reconciliation query positions rejected: ${posData.msg}`);
+      }
+
+      // Filter active exchange positions (non-zero pos)
+      const rawExchangePositions = posData.data ?? [];
+      const activeExchangePositions = rawExchangePositions.filter((p) => {
+        if (!p.pos) return false;
+        try {
+          return !ScaledDecimal.fromString(p.pos).isZero();
+        } catch {
+          return p.pos !== "0";
+        }
+      });
+
+      exchangePositionsCount = activeExchangePositions.length;
+
+      // 2. Query OKX pending conditional algo orders (protective stops)
+      const algoPath = "/api/v5/trade/orders-algo-pending?ordType=conditional";
+      const algoHeaders = buildOkxHeaders({
+        method: "GET",
+        path: algoPath,
+        credentials: creds,
+        timestampIso: new Date(nowMs).toISOString(),
+        isDemo: this.isDemo
+      });
+
+      const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+        method: "GET",
+        headers: algoHeaders
+      });
+
+      if (!algoRes.ok) {
+        throw new Error(`OKX reconciliation failed to query algo orders (${algoRes.status})`);
+      }
+
+      const algoData = (await algoRes.json()) as {
+        code?: string;
+        msg?: string;
+        data?: Array<{
+          algoId?: string;
+          instId?: string;
+          slTriggerPx?: string;
+          state?: string;
+        }>;
+      };
+
+      if (algoData.code && algoData.code !== "0") {
+        throw new Error(`OKX reconciliation query algos rejected: ${algoData.msg}`);
+      }
+
+      const activeAlgos = algoData.data ?? [];
+
+      // 3. Verify counts match
+      if (activeExchangePositions.length !== openPositions.length) {
+        driftDetails.push(
+          `Position count mismatch: exchange has ${activeExchangePositions.length}, local has ${openPositions.length}`
+        );
+      }
+
+      // 4. Verify each exchange position has a corresponding local position and an attached protective stop
+      for (const exPos of activeExchangePositions) {
+        const instId = exPos.instId ?? "unknown";
+        const matchingLocal = openPositions.find((p) => p.instrumentId === instId);
+        if (!matchingLocal) {
+          driftDetails.push(
+            `Exchange position on ${instId} (pos: ${exPos.pos}) not tracked locally`
+          );
+        }
+
+        // Check attached protective stop on OKX
+        const matchingAlgo = activeAlgos.find((a) => a.instId === instId);
+        if (!matchingAlgo) {
+          driftDetails.push(
+            `Exchange position on ${instId} has no active protective stop algo order on OKX`
+          );
+        }
+      }
+
+      // 5. Verify each local position exists on exchange
+      for (const locPos of openPositions) {
+        const matchingEx = activeExchangePositions.find((p) => p.instId === locPos.instrumentId);
+        if (!matchingEx) {
+          driftDetails.push(
+            `Local position ${locPos.positionId} (${locPos.instrumentId}) missing on exchange`
+          );
+          driftPositions.push(locPos);
+        }
+      }
+    }
 
     // Verify all open positions have valid positive protective stops
     for (const pos of openPositions) {
@@ -513,7 +695,9 @@ export class OkxBroker implements ExchangeBroker {
         driftDetails.push(
           `Position ${pos.positionId} (${pos.instrumentId}) missing protective stop. Placing replacement or auto-flattening.`
         );
-        driftPositions.push(pos);
+        if (!driftPositions.includes(pos)) {
+          driftPositions.push(pos);
+        }
       }
     }
 
@@ -523,28 +707,86 @@ export class OkxBroker implements ExchangeBroker {
         await this.notificationChannel.send({
           severity: "CRITICAL",
           title: "PROTECTIVE STOP DRIFT DETECTED (ADR-0006)",
-          body: `Found ${driftDetails.length} positions without active protective stops. Emergency mitigation initiated.`,
+          body: `Found ${driftDetails.length} positions without active protective stops or exchange drift: ${driftDetails.join("; ")}`,
           dedupKey: `reconciliation-drift-${nowMs}`
         });
       }
-      for (const pos of driftPositions) {
-        this.flattenAllPositions(
-          `Reconciliation drift: missing protective stop on ${pos.positionId}`
-        );
-      }
+      await this.flattenAllPositions("Reconciliation drift detected");
     }
 
     return {
       asOfMs: nowMs,
       matched: driftDetails.length === 0,
       localPositionsCount: openPositions.length,
-      exchangePositionsCount: openPositions.length,
+      exchangePositionsCount,
       driftDetails
     };
   }
 
-  public flattenAllPositions(reason: string): readonly PaperPositionRecord[] {
+  public async flattenAllPositions(reason: string): Promise<readonly PaperPositionRecord[]> {
+    const creds = this.getCredentials();
     const nowMs = this.clock.nowMs();
+
+    if (creds && creds.apiKey) {
+      // 1. Send cancel-all-after with timeOut: "0" to cancel resting orders on OKX
+      const cancelPath = "/api/v5/trade/cancel-all-after";
+      const cancelBody = JSON.stringify({ timeOut: "0" });
+      const cancelHeaders = buildOkxHeaders({
+        method: "POST",
+        path: cancelPath,
+        body: cancelBody,
+        credentials: creds,
+        timestampIso: new Date(nowMs).toISOString(),
+        isDemo: this.isDemo
+      });
+
+      try {
+        await this.fetchFn(`https://www.okx.com${cancelPath}`, {
+          method: "POST",
+          headers: cancelHeaders,
+          body: cancelBody
+        });
+      } catch {
+        // Continue to market reduceOnly orders
+      }
+
+      // 2. Submit market reduceOnly orders for all open positions
+      for (const pos of this.localPositions.values()) {
+        if (pos.status === "OPEN") {
+          const flatClOrdId =
+            `kflat${nowMs.toString(36)}${sha256Hex(pos.positionId).slice(0, 10)}`.slice(0, 32);
+          const flatBody = JSON.stringify({
+            instId: pos.instrumentId,
+            tdMode: "isolated",
+            side: pos.side === "long" ? "sell" : "buy",
+            ordType: "market",
+            sz: pos.contracts,
+            reduceOnly: true,
+            clOrdId: flatClOrdId
+          });
+
+          const flatHeaders = buildOkxHeaders({
+            method: "POST",
+            path: "/api/v5/trade/order",
+            body: flatBody,
+            credentials: creds,
+            timestampIso: new Date(nowMs).toISOString(),
+            isDemo: this.isDemo
+          });
+
+          try {
+            await this.fetchFn("https://www.okx.com/api/v5/trade/order", {
+              method: "POST",
+              headers: flatHeaders,
+              body: flatBody
+            });
+          } catch {
+            // Continued
+          }
+        }
+      }
+    }
+
     const closed: PaperPositionRecord[] = [];
 
     for (const [id, pos] of this.localPositions.entries()) {
@@ -558,10 +800,13 @@ export class OkxBroker implements ExchangeBroker {
           exitReason: reason
         };
         this.localPositions.set(id, closedPos);
+        if (this.accountRepo) {
+          this.accountRepo.savePosition(closedPos);
+        }
         closed.push(closedPos);
 
         // Record flatten market order
-        this.localOrders.push({
+        const flatOrder: PaperOrderRecord = {
           orderId: `flat_${pos.positionId}_${nowMs}`,
           positionId: pos.positionId,
           proposalId: `flat_${nowMs}`,
@@ -575,7 +820,11 @@ export class OkxBroker implements ExchangeBroker {
           feeUsdt: "0.00",
           status: "FILLED",
           createdAtMs: nowMs
-        });
+        };
+        this.localOrders.push(flatOrder);
+        if (this.accountRepo) {
+          this.accountRepo.saveOrder(flatOrder);
+        }
       }
     }
 

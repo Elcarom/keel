@@ -580,7 +580,9 @@ export interface Broker {
   getOpenPositions(): readonly PaperPositionRecord[];
   getAllPositions(limit?: number): readonly PaperPositionRecord[];
   getOrders(limit?: number): readonly PaperOrderRecord[];
-  flattenAllPositions(reason: string): readonly PaperPositionRecord[];
+  flattenAllPositions(
+    reason: string
+  ): readonly PaperPositionRecord[] | Promise<readonly PaperPositionRecord[]>;
   executeConfirmedBarTick(params: {
     readonly bar: ConfirmedBar;
     readonly strategy?: unknown;
