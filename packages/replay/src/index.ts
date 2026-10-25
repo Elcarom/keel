@@ -670,6 +670,7 @@ export class ReplayEngine {
       initialEquityUsdt,
       riskFraction,
       maxLeverage,
+      slippageBps,
       totalOneWayCostBps,
       costStressMultiplier
     });
@@ -686,6 +687,7 @@ export class ReplayEngine {
       initialEquityUsdt,
       riskFraction,
       maxLeverage,
+      slippageBps,
       totalOneWayCostBps,
       costStressMultiplier
     });
@@ -811,6 +813,7 @@ export class ReplayEngine {
     readonly initialEquityUsdt: ScaledDecimal;
     readonly riskFraction: number;
     readonly maxLeverage: number;
+    readonly slippageBps: number;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
   }): {
@@ -856,8 +859,10 @@ export class ReplayEngine {
     const equityCurve: ReplayEquityPoint[] = [];
     const periodicReturns: number[] = [];
     let active: ActivePosition | null = null;
+    let pendingProposal: Proposal | null = null;
 
     const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
+    const slippageFraction = ScaledDecimal.fromString((params.slippageBps / 10_000).toFixed(8));
     const extraStressMultiplierDec = ScaledDecimal.fromString(
       Math.max(0, params.costStressMultiplier - 1).toFixed(8)
     );
@@ -918,9 +923,66 @@ export class ReplayEngine {
       if (!bar) continue;
       clock.setMs(bar.closeTs);
       const nowMs = clock.nowMs();
+      const barOpen = ScaledDecimal.fromString(bar.open);
       const barHigh = ScaledDecimal.fromString(bar.high);
       const barLow = ScaledDecimal.fromString(bar.low);
       const barClose = ScaledDecimal.fromString(bar.close);
+
+      // Execute pending proposal confirmed on prior bar at this bar's open with slippage (M2)
+      if (pendingProposal !== null && active === null) {
+        const slippageAmount = barOpen.mul(slippageFraction);
+        const entryPrice =
+          pendingProposal.side === "long"
+            ? barOpen.add(slippageAmount)
+            : barOpen.sub(slippageAmount);
+
+        const proposedEntry = ScaledDecimal.fromString(pendingProposal.entryPrice);
+        const proposedStop = ScaledDecimal.fromString(pendingProposal.protectiveStopPrice);
+        const stopDist =
+          pendingProposal.side === "long"
+            ? proposedEntry.sub(proposedStop)
+            : proposedStop.sub(proposedEntry);
+        const stopPrice =
+          pendingProposal.side === "long" ? entryPrice.sub(stopDist) : entryPrice.add(stopDist);
+
+        let tpPrice: ScaledDecimal | null = null;
+        if (pendingProposal.takeProfitPrice) {
+          const proposedTp = ScaledDecimal.fromString(pendingProposal.takeProfitPrice);
+          const tpDist =
+            pendingProposal.side === "long"
+              ? proposedTp.sub(proposedEntry)
+              : proposedEntry.sub(proposedTp);
+          tpPrice =
+            pendingProposal.side === "long" ? entryPrice.add(tpDist) : entryPrice.sub(tpDist);
+        }
+
+        const sizing = sizeByStopRisk({
+          instrument: spec,
+          side: pendingProposal.side,
+          strategyEquityQuote: equityUsdt,
+          riskFraction: riskFractionDec,
+          entryPrice,
+          stopPrice,
+          maxGrossLeverage: maxLeverageDec
+        });
+
+        if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
+          const entryFeeUsdt = sizing.notionalQuote.mul(costFraction);
+          active = {
+            proposal: pendingProposal,
+            entryTs: bar.openTs,
+            entryPrice,
+            protectiveStopPrice: sizing.effectiveStopPrice,
+            takeProfitPrice: tpPrice,
+            contracts: sizing.contracts,
+            initialRiskUsdt: sizing.sizedRiskQuote,
+            entryFeeUsdt,
+            fundingAccruedUsdt: ScaledDecimal.zero(),
+            lastFundingTs: bar.openTs
+          };
+        }
+        pendingProposal = null;
+      }
 
       if (active) {
         // 1. Apply any settled 8h funding events in (active.lastFundingTs, nowMs]
@@ -941,25 +1003,29 @@ export class ReplayEngine {
           active.lastFundingTs = f.fundingTs;
         }
 
-        // 2. Conservative intrabar ProtectiveStop & take-profit check
+        // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2)
         if (active.proposal.side === "long") {
           const stopHit = barLow.lte(active.protectiveStopPrice);
           const tpHit = active.takeProfitPrice !== null && barHigh.gte(active.takeProfitPrice);
           if (stopHit) {
-            closePosition(active, nowMs, active.protectiveStopPrice, "stop");
+            const fillPrice = ScaledDecimal.min(barOpen, active.protectiveStopPrice);
+            closePosition(active, nowMs, fillPrice, "stop");
             active = null;
           } else if (tpHit && active.takeProfitPrice) {
-            closePosition(active, nowMs, active.takeProfitPrice, "take-profit");
+            const fillPrice = ScaledDecimal.max(barOpen, active.takeProfitPrice);
+            closePosition(active, nowMs, fillPrice, "take-profit");
             active = null;
           }
         } else {
           const stopHit = barHigh.gte(active.protectiveStopPrice);
           const tpHit = active.takeProfitPrice !== null && barLow.lte(active.takeProfitPrice);
           if (stopHit) {
-            closePosition(active, nowMs, active.protectiveStopPrice, "stop");
+            const fillPrice = ScaledDecimal.max(barOpen, active.protectiveStopPrice);
+            closePosition(active, nowMs, fillPrice, "stop");
             active = null;
           } else if (tpHit && active.takeProfitPrice) {
-            closePosition(active, nowMs, active.takeProfitPrice, "take-profit");
+            const fillPrice = ScaledDecimal.min(barOpen, active.takeProfitPrice);
+            closePosition(active, nowMs, fillPrice, "take-profit");
             active = null;
           }
         }
@@ -1020,8 +1086,8 @@ export class ReplayEngine {
       periodicReturns.push(r);
       prevEquityNum = eqNum;
 
-      // 4. When flat, build strictly causal FeatureSnapshot and evaluate Strategy
-      if (!active && idx < bars.length - 1) {
+      // 4. When flat and idx < bars.length - 1, build strictly causal FeatureSnapshot and evaluate Strategy
+      if (!active && pendingProposal === null && idx < bars.length - 1) {
         const snapshot = this.marketDataRepo.buildFeatureSnapshot({
           instrumentId: params.instrumentId,
           asOfMs: nowMs,
@@ -1030,34 +1096,7 @@ export class ReplayEngine {
         const menu = params.strategy.evaluate(snapshot);
         const chosen = this.chooser.choose([menu]);
         if (chosen) {
-          const entryPrice = ScaledDecimal.fromString(chosen.entryPrice);
-          const stopPrice = ScaledDecimal.fromString(chosen.protectiveStopPrice);
-          const sizing = sizeByStopRisk({
-            instrument: spec,
-            side: chosen.side,
-            strategyEquityQuote: equityUsdt,
-            riskFraction: riskFractionDec,
-            entryPrice,
-            stopPrice,
-            maxGrossLeverage: maxLeverageDec
-          });
-          if (sizing.ok) {
-            const entryFeeUsdt = sizing.notionalQuote.mul(costFraction);
-            active = {
-              proposal: chosen,
-              entryTs: nowMs,
-              entryPrice,
-              protectiveStopPrice: sizing.effectiveStopPrice,
-              takeProfitPrice: chosen.takeProfitPrice
-                ? ScaledDecimal.fromString(chosen.takeProfitPrice)
-                : null,
-              contracts: sizing.contracts,
-              initialRiskUsdt: sizing.sizedRiskQuote,
-              entryFeeUsdt,
-              fundingAccruedUsdt: ScaledDecimal.zero(),
-              lastFundingTs: nowMs
-            };
-          }
+          pendingProposal = chosen;
         }
       }
     }
@@ -1109,6 +1148,7 @@ export class ReplayEngine {
     readonly initialEquityUsdt: ScaledDecimal;
     readonly riskFraction: number;
     readonly maxLeverage: number;
+    readonly slippageBps: number;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
   }): {
@@ -1149,6 +1189,7 @@ export class ReplayEngine {
           initialEquityUsdt: params.initialEquityUsdt,
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
+          slippageBps: params.slippageBps,
           totalOneWayCostBps: params.totalOneWayCostBps,
           costStressMultiplier: params.costStressMultiplier
         });
@@ -1173,6 +1214,7 @@ export class ReplayEngine {
           initialEquityUsdt: params.initialEquityUsdt,
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
+          slippageBps: params.slippageBps,
           totalOneWayCostBps: params.totalOneWayCostBps,
           costStressMultiplier: params.costStressMultiplier
         });
