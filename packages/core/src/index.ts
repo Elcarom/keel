@@ -25,7 +25,8 @@ export {
   type ExecutionMode,
   type KeelConfig,
   type PromotionLadderConfig,
-  type RiskConfig
+  type RiskConfig,
+  type SystemConfig
 } from "./config.js";
 export {
   ApiErrorSchema,

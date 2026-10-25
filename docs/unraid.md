@@ -58,4 +58,4 @@ Keel never exposes an open setup page. On first boot against an empty `/data` vo
 ## 5. Updating & Graceful Shutdown
 
 - When Unraid stops or updates the container, `tini` forwards `SIGTERM` to Keel (`--stop-timeout=30`).
-- By default (`system.shutdownPolicy = "hold"`), Keel closes WebSocket streams cleanly while leaving any open Demo/Live positions protected by their exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), and OKX's 60-second **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any unexecuted resting limit orders ([ADR-0006](./adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
+- By default (`system.shutdownPolicy = "hold"`), Keel stops background scheduler ingestion loops cleanly and flushes the SQLite WAL, leaving any open Demo/Live positions protected by their exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), and OKX's 60-second **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any unexecuted resting limit orders ([ADR-0006](./adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).

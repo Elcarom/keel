@@ -136,6 +136,22 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Trigger an atomic online SQLite VACUUM INTO backup"
+    },
+    stepScheduler: {
+      method: "POST",
+      path: "/api/v1/system/scheduler/step",
+      body: z.object({}),
+      responses: {
+        200: z.object({
+          ok: z.boolean(),
+          timestampMs: z.number(),
+          barsIngested: z.number(),
+          ticksExecuted: z.number(),
+          errors: z.array(z.string())
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "Manually step the unattended ingest and strategy tick scheduler"
     }
   },
   auth: {

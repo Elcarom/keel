@@ -6,6 +6,7 @@ import {
   PromotionLadderEvaluator,
   RiskGuardian,
   ScaledDecimal,
+  SEALED_HOLDOUT_START_TS,
   SystemClock,
   createDefaultConfig,
   defaultInstrumentSpec,
@@ -22,7 +23,12 @@ import {
   type Proposal,
   type StrategyRiskState
 } from "@keel/core";
-import { createSqliteDataStore, seedSyntheticMarketSeries, type SqliteDataStore } from "@keel/data";
+import {
+  createSqliteDataStore,
+  seedSyntheticMarketSeries,
+  OkxPublicIngestor,
+  type SqliteDataStore
+} from "@keel/data";
 import {
   ContextAnalyst,
   EventGateAdvisor,
@@ -38,6 +44,7 @@ import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
 import { PaperBroker } from "./paper-broker.js";
+import { UnattendedScheduler } from "./scheduler.js";
 import { PINO_REDACT_PATHS } from "./redact.js";
 import {
   AuthManager,
@@ -62,6 +69,9 @@ export interface KeelServerOptions {
   readonly exchangeBroker?: ExchangeBroker | undefined;
   readonly webDistPath?: string | undefined;
   readonly logger?: boolean | undefined;
+  readonly enableScheduler?: boolean | undefined;
+  readonly schedulerIntervalMs?: number | undefined;
+  readonly scheduler?: UnattendedScheduler | undefined;
 }
 
 export async function createKeelServer(options: KeelServerOptions = {}): Promise<FastifyInstance> {
@@ -165,6 +175,26 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       accountRepo: dataStore.paperAccountRepo
     });
 
+  const scheduler =
+    options.scheduler ??
+    new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      exchangeBroker: okxBroker,
+      ingestor: new OkxPublicIngestor({
+        marketDataRepo: dataStore.marketDataRepo
+      }),
+      getRiskConfig: () => getActiveSnapshot().config.risk,
+      getSystemConfig: () => getActiveSnapshot().config.system,
+      notificationChannel: notifier,
+      intervalMs: options.schedulerIntervalMs
+    });
+
+  if (options.enableScheduler === true) {
+    scheduler.start();
+  }
+
   const getUptimeSeconds = (): number =>
     Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
 
@@ -183,6 +213,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   });
 
   app.addHook("onClose", async () => {
+    scheduler.stop();
     const active = getActiveSnapshot();
     if (active.config.system.shutdownPolicy === "flatten") {
       await paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
@@ -344,6 +375,24 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         return {
           status: 200,
           body: { backup }
+        };
+      },
+
+      stepScheduler: async ({ request }) => {
+        const authIngress = requireAuthenticatedIngress(request);
+        if (!authIngress) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const stepResult = await scheduler.stepOnce();
+        return {
+          status: 200,
+          body: {
+            ok: stepResult.ok,
+            timestampMs: stepResult.timestampMs,
+            barsIngested: stepResult.barsIngested,
+            ticksExecuted: stepResult.ticksExecuted,
+            errors: [...stepResult.errors]
+          }
         };
       }
     },
@@ -973,12 +1022,19 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         const active = getActiveSnapshot();
+        const effectiveToTs =
+          coverage.earliestOpenTs < SEALED_HOLDOUT_START_TS
+            ? Math.min(coverage.latestCloseTs, SEALED_HOLDOUT_START_TS)
+            : coverage.latestCloseTs;
+        const allowHoldoutAccess = coverage.earliestOpenTs >= SEALED_HOLDOUT_START_TS;
+
         const experiment = replayEngine.run({
           instrumentId: body.instrumentId,
           timeframe: body.timeframe,
           strategy,
           fromTs: coverage.earliestOpenTs,
-          toTs: coverage.latestCloseTs,
+          toTs: effectiveToTs,
+          allowHoldoutAccess,
           configHash: active.configHash,
           initialEquityUsdt: ScaledDecimal.fromString(
             active.config.risk.paperPortfolioEquityUsdt.toFixed(2)

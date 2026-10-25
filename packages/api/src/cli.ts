@@ -21,6 +21,7 @@ async function main(): Promise<void> {
     },
     dbPath,
     backupsDir,
+    enableScheduler: process.env["KEEL_ENABLE_SCHEDULER"] !== "false",
     logger: true
   });
 
