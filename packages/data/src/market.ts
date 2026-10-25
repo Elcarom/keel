@@ -570,7 +570,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
     saveExperiment(record: ExperimentRecord): ExperimentRecord {
       const validated = ExperimentRecordSchema.parse(record);
       db.prepare(
-        `INSERT INTO experiments (
+        `INSERT OR REPLACE INTO experiments (
           experiment_id, strategy_id, strategy_version, instrument_id, timeframe,
           data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
           avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
