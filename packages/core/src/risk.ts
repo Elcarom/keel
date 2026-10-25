@@ -367,6 +367,9 @@ export class PromotionLadderEvaluator {
     readonly paperTradesCount: number;
     readonly paperDrawdownPct: number;
     readonly asOfMs: number;
+    readonly paperDurationDays?: number | undefined;
+    readonly shadowDurationDays?: number | undefined;
+    readonly shadowTradesCount?: number | undefined;
   }): StrategyPromotionRecord {
     const exp = input.latestExperiment;
     const replayGatePassed =
@@ -462,16 +465,36 @@ export class PromotionLadderEvaluator {
       ) {
         eligibleNextStage = "Live-Ramp";
       }
-    } else if (replayGatePassed) {
-      if (
-        input.currentStage === "Research" ||
-        input.currentStage === "Replay" ||
-        input.currentStage === "Shadow"
-      ) {
-        nextCurrentStage = "Paper";
-      }
-      if (nextCurrentStage === "Paper") {
+    } else if (input.currentStage === "Paper") {
+      rampAllocationPct = 100;
+      const meetsPaperDays = (input.paperDurationDays ?? 0) >= this.config.paperMinDays;
+      const meetsPaperTrades = input.paperTradesCount >= this.config.paperMinTrades;
+      const safeDrawdown = input.paperDrawdownPct < this.config.liveDemotionDrawdownPct;
+      if (replayGatePassed && meetsPaperDays && meetsPaperTrades && safeDrawdown) {
         eligibleNextStage = "Demo";
+      } else {
+        eligibleNextStage = null;
+      }
+    } else if (input.currentStage === "Shadow") {
+      rampAllocationPct = 100;
+      const meetsShadowDays = (input.shadowDurationDays ?? 0) >= this.config.shadowMinDays;
+      const meetsShadowTrades = (input.shadowTradesCount ?? 0) >= this.config.shadowMinTrades;
+      if (replayGatePassed && meetsShadowDays && meetsShadowTrades) {
+        eligibleNextStage = "Paper";
+      } else {
+        eligibleNextStage = null;
+      }
+    } else if (replayGatePassed) {
+      if (input.currentStage === "Research" || input.currentStage === "Replay") {
+        nextCurrentStage = "Paper";
+        const meetsPaperDays = (input.paperDurationDays ?? 0) >= this.config.paperMinDays;
+        const meetsPaperTrades = input.paperTradesCount >= this.config.paperMinTrades;
+        const safeDrawdown = input.paperDrawdownPct < this.config.liveDemotionDrawdownPct;
+        if (meetsPaperDays && meetsPaperTrades && safeDrawdown) {
+          eligibleNextStage = "Demo";
+        } else {
+          eligibleNextStage = null;
+        }
       }
     } else if (exp !== null) {
       if (input.currentStage === "Research") {

@@ -362,7 +362,46 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
 
     expect(evalReplay.replayGatePassed).toBe(true);
     expect(evalReplay.currentStage).toBe("Paper");
-    expect(evalReplay.eligibleNextStage).toBe("Demo");
+    // With 0 days and 0 trades, it must NOT be eligible for Demo! (C9)
+    expect(evalReplay.eligibleNextStage).toBeNull();
+
+    // After 35 days and 55 trades in Paper, it becomes eligible for Demo
+    const eligiblePaper = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Paper",
+      latestExperiment: passingExperiment,
+      paperTradesCount: 55,
+      paperDurationDays: 35,
+      paperDrawdownPct: 4.2,
+      asOfMs: 1_702_600_000_000 + 35 * 86_400_000
+    });
+    expect(eligiblePaper.eligibleNextStage).toBe("Demo");
+
+    // In Shadow stage: < 14 days or < 30 trades must remain ineligible
+    const ineligibleShadow = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Shadow",
+      latestExperiment: passingExperiment,
+      shadowTradesCount: 10,
+      shadowDurationDays: 5,
+      paperTradesCount: 0,
+      paperDrawdownPct: 0,
+      asOfMs: 1_702_600_000_000
+    });
+    expect(ineligibleShadow.eligibleNextStage).toBeNull();
+
+    // After 15 days and 32 trades in Shadow, it becomes eligible for Paper
+    const eligibleShadow = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Shadow",
+      latestExperiment: passingExperiment,
+      shadowTradesCount: 32,
+      shadowDurationDays: 15,
+      paperTradesCount: 0,
+      paperDrawdownPct: 0,
+      asOfMs: 1_702_600_000_000 + 15 * 86_400_000
+    });
+    expect(eligibleShadow.eligibleNextStage).toBe("Paper");
 
     const demoted = evaluator.evaluate({
       strategyId: "donchian-trend",

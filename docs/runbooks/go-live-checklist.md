@@ -18,8 +18,8 @@ Keel operates in **Paper** mode by default. Moving any strategy or AI advisor to
 ## Gate G3: Before Unlocking `Live-Ramp` or `Live` Execution Mode
 
 - [ ] **Promotion Ladder Evidence**:
-  - Strategy has passed `Replay-Validated` (`≥ 150` trades, `DSR ≥ 0.90`, `PBO ≤ 0.20`, positive expectancy at `2.0x` cost stress).
-  - Strategy has completed `≥ 14 days` in `Forward Shadow` and `≥ 30 days / ≥ 50 trades` in `Paper Capital` with realized Sharpe inside the 90% bootstrap CI and zero reconciliation errors.
+  - Strategy has passed `Replay-Validated` (`≥ 150` trades, `DSR ≥ 0.90`, positive expectancy at `2.0x` cost stress, positive walk-forward out-of-sample expectancy, and benchmark outperformance against Buy & Hold and Random Entry baselines).
+  - Strategy has completed `≥ 14 days / ≥ 30 trades` in `Forward Shadow` and `≥ 30 days / ≥ 50 trades` in `Paper Capital` with continuous mark-to-market drawdown strictly within limits and zero reconciliation errors.
   - Any enabled AI advisor has `≥ 50` uncontaminated forward disagreements beating the **Baseline Chooser** (`p < 0.10`).
 - [ ] **Discord Alert Verification**: Click **Send Test Alert** in UI → Integrations and verify immediate delivery of a `CRITICAL` notification on your phone.
 - [ ] **Kill Switch Drill**: Trigger the **Kill Switch** in `Demo` mode from your phone over the Cloudflare Tunnel and confirm all resting orders cancel and open positions flatten within 3 seconds.
