@@ -270,6 +270,22 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     });
   });
 
+  const computeStrategyDrawdownPct = (strategyId: string): number => {
+    const openPositions = dataStore.paperAccountRepo.listOpenPositions();
+    let openUnrealized = ScaledDecimal.zero();
+    for (const pos of openPositions) {
+      if (pos.strategyId === strategyId) {
+        openUnrealized = openUnrealized.add(ScaledDecimal.fromString(pos.unrealizedPnlUsdt));
+      }
+    }
+    const riskMetrics = dataStore.ledgerRepo.getRiskMetrics({
+      asOfMs: clock.nowMs(),
+      strategyId,
+      openUnrealizedPnlUsdt: openUnrealized
+    });
+    return Number(riskMetrics.drawdownPct.toFixed(4));
+  };
+
   const s = initServer();
   const router = s.router(keelApiContract, {
     system: {
@@ -1202,13 +1218,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
         );
         const actualPaperTradesCount = strategyPositions.length;
+        const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
 
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
           currentStage,
           latestExperiment: latestExp,
           paperTradesCount: actualPaperTradesCount,
-          paperDrawdownPct: existingPromo?.paperDrawdownPct ?? 0,
+          paperDrawdownPct,
           asOfMs: clock.nowMs()
         });
 
@@ -1349,7 +1366,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           latestExperimentId: existingPromo.latestExperimentId,
           replayGatePassed: existingPromo.replayGatePassed,
           paperTradesCount: existingPromo.paperTradesCount,
-          paperDrawdownPct: existingPromo.paperDrawdownPct,
+          paperDrawdownPct: computeStrategyDrawdownPct(body.strategyId),
           rampAllocationPct,
           eligibleNextStage,
           demotionReason: null,
@@ -1405,7 +1422,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           latestExperimentId: existingPromo?.latestExperimentId ?? null,
           replayGatePassed: existingPromo?.replayGatePassed ?? false,
           paperTradesCount: existingPromo?.paperTradesCount ?? 0,
-          paperDrawdownPct: existingPromo?.paperDrawdownPct ?? 0,
+          paperDrawdownPct: computeStrategyDrawdownPct(body.strategyId),
           rampAllocationPct: 0,
           eligibleNextStage,
           demotionReason: body.reason,

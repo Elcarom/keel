@@ -223,4 +223,96 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
 
     store.close();
   });
+
+  it("derives persistent risk metrics, HWM, and daily/weekly resets at UTC midnight (C2)", () => {
+    // 2023-11-20 00:00:00 UTC is Monday midnight (1700438400000)
+    const mondayMidnightMs = 1_700_438_400_000;
+    const clock = new ManualClock(mondayMidnightMs);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+
+    // Seed at ts 0 gives 10,000 USDT
+    let metrics = store.ledgerRepo.getRiskMetrics({ asOfMs: mondayMidnightMs });
+    expect(metrics.currentEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(metrics.dayStartEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(metrics.weekStartEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(metrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(metrics.feesTodayUsdt.toFixed(2)).toBe("0.00");
+    expect(metrics.drawdownPct.toFixed(2)).toBe("0.00");
+
+    // Monday 10:00 UTC: Record profit 1,000 USDT and fee 20 USDT
+    const monday10am = mondayMidnightMs + 10 * 3_600_000;
+    store.ledgerRepo.recordJournal({
+      txGroupId: "tx-win-1",
+      ts: monday10am,
+      strategyId: "donchian-trend",
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "cash:usdt",
+      creditAccount: "realized_pnl:usdt",
+      amountUsdt: "1000.00000000",
+      description: "Profit on trade"
+    });
+    store.ledgerRepo.recordJournal({
+      txGroupId: "tx-fee-1",
+      ts: monday10am,
+      strategyId: "donchian-trend",
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "fees_expense:usdt",
+      creditAccount: "cash:usdt",
+      amountUsdt: "20.00000000",
+      description: "Trade fee"
+    });
+
+    metrics = store.ledgerRepo.getRiskMetrics({ asOfMs: monday10am, strategyId: "donchian-trend" });
+    // Cash = 10000 + 1000 - 20 = 10980
+    expect(metrics.currentEquityUsdt.toFixed(2)).toBe("10980.00");
+    expect(metrics.dayStartEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(metrics.weekStartEquityUsdt.toFixed(2)).toBe("10000.00");
+    // HWM touched 11000 before the fee journal
+    expect(metrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("11000.00");
+    expect(metrics.feesTodayUsdt.toFixed(2)).toBe("20.00");
+    // Drawdown = (11000 - 10980) / 11000 * 100 = 0.18%
+    expect(metrics.drawdownPct.toFixed(2)).toBe("0.18");
+
+    // Tuesday 00:00:00 UTC (1 day later)
+    const tuesdayMidnight = mondayMidnightMs + 86_400_000;
+    // Tuesday 04:00 UTC: Record loss 500 USDT
+    const tuesday4am = tuesdayMidnight + 4 * 3_600_000;
+    store.ledgerRepo.recordJournal({
+      txGroupId: "tx-loss-1",
+      ts: tuesday4am,
+      strategyId: "donchian-trend",
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "realized_pnl:usdt",
+      creditAccount: "cash:usdt",
+      amountUsdt: "500.00000000",
+      description: "Loss on trade"
+    });
+
+    metrics = store.ledgerRepo.getRiskMetrics({ asOfMs: tuesday4am, strategyId: "donchian-trend" });
+    // Cash = 10980 - 500 = 10480
+    expect(metrics.currentEquityUsdt.toFixed(2)).toBe("10480.00");
+    // Day start resets to Tuesday 00:00 UTC cash: 10980
+    expect(metrics.dayStartEquityUsdt.toFixed(2)).toBe("10980.00");
+    // Week start remains Monday 00:00 UTC cash: 10000
+    expect(metrics.weekStartEquityUsdt.toFixed(2)).toBe("10000.00");
+    // HWM persists from Monday peak: 11000
+    expect(metrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("11000.00");
+    // Fees today reset on Tuesday midnight: 0
+    expect(metrics.feesTodayUsdt.toFixed(2)).toBe("0.00");
+    // Drawdown = (11000 - 10480) / 11000 * 100 = 4.72%
+    expect(metrics.drawdownPct.toFixed(2)).toBe("4.72");
+
+    // Next Monday 00:00:00 UTC (week reset)
+    const nextMondayMidnight = mondayMidnightMs + 7 * 86_400_000;
+    metrics = store.ledgerRepo.getRiskMetrics({
+      asOfMs: nextMondayMidnight,
+      strategyId: "donchian-trend"
+    });
+    // Week start resets to 10480 at next Monday midnight
+    expect(metrics.weekStartEquityUsdt.toFixed(2)).toBe("10480.00");
+    expect(metrics.dayStartEquityUsdt.toFixed(2)).toBe("10480.00");
+    expect(metrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("11000.00");
+
+    store.close();
+  });
 });
