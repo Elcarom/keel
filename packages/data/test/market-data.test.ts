@@ -202,4 +202,101 @@ describe("M2-1 — ConfirmedMarketStore, confirm==='1' Gate, Gap Healer, Lookbac
     });
     expect(recomputed.snapshotId).toBe(snapshotMeta.snapshotId);
   });
+
+  it("ingests full date ranges and funding rates via OkxPublicIngestor with mock fetch", async () => {
+    const baseOpenTs = 1_700_000_000_000;
+    const dt1H = TIMEFRAME_DURATION_MS["1H"];
+    const barCount = 150; // Needs 2 pages of 100 limit
+
+    // Mock fetch that responds to OKX history-candles and funding-rate-history
+    const mockFetch: typeof fetch = async (input) => {
+      const urlStr = String(input);
+      const parsedUrl = new URL(urlStr);
+
+      if (parsedUrl.pathname === "/api/v5/market/history-candles") {
+        const afterParam = parsedUrl.searchParams.get("after");
+        const cursorMs = afterParam ? Number(afterParam) : baseOpenTs + barCount * dt1H;
+        // Generate up to 100 bars backwards from cursorMs - dt1H
+        const data: string[][] = [];
+        for (let i = 0; i < 100; i++) {
+          const barOpenTs = cursorMs - (i + 1) * dt1H;
+          if (barOpenTs < baseOpenTs) break;
+          data.push([
+            String(barOpenTs),
+            "60000.0",
+            "60500.0",
+            "59500.0",
+            "60200.0",
+            "100.0",
+            "1.0",
+            "6020000.0",
+            "1"
+          ]);
+        }
+        return new Response(JSON.stringify({ code: "0", data, msg: "" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (parsedUrl.pathname === "/api/v5/public/funding-rate-history") {
+        const afterParam = parsedUrl.searchParams.get("after");
+        const dt8H = 8 * dt1H;
+        const cursorMs = afterParam ? Number(afterParam) : baseOpenTs + barCount * dt1H;
+        const data = [];
+        for (let i = 0; i < 20; i++) {
+          const fundingTime = cursorMs - (i + 1) * dt8H;
+          if (fundingTime < baseOpenTs) break;
+          data.push({
+            instId: "BTC-USDT-SWAP",
+            instType: "SWAP",
+            fundingTime: String(fundingTime),
+            fundingRate: "0.0001",
+            realizedRate: "0.0001",
+            method: "current_period",
+            formulaType: "withRate"
+          });
+        }
+        return new Response(JSON.stringify({ code: "0", data, msg: "" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
+
+    const ingestor = new OkxPublicIngestor({
+      marketDataRepo: store.marketDataRepo,
+      fetchFn: mockFetch
+    });
+
+    const candleRes = await ingestor.ingestRange({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      fromOpenTs: baseOpenTs,
+      toOpenTs: baseOpenTs + (barCount - 1) * dt1H
+    });
+
+    expect(candleRes.insertedCount).toBe(barCount);
+    expect(candleRes.gapsDetected).toBe(1);
+
+    // Re-ingesting range detects 0 gaps
+    const reingestRes = await ingestor.ingestRange({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      fromOpenTs: baseOpenTs,
+      toOpenTs: baseOpenTs + (barCount - 1) * dt1H
+    });
+    expect(reingestRes.insertedCount).toBe(0);
+    expect(reingestRes.gapsDetected).toBe(0);
+
+    // Ingest funding rates
+    const fundingInserted = await ingestor.ingestFundingRates({
+      instrumentId: "BTC-USDT-SWAP",
+      fromFundingTs: baseOpenTs,
+      toFundingTs: baseOpenTs + (barCount - 1) * dt1H
+    });
+    expect(fundingInserted).toBeGreaterThan(0);
+  });
 });
