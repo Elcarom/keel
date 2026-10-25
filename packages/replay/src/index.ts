@@ -1,6 +1,7 @@
 import {
   ALL_BAR_TIMEFRAMES,
   ManualClock,
+  SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
   sha256Hex,
   sizeByStopRisk,
@@ -57,6 +58,8 @@ export interface ReplayRunInput {
   readonly replayMinSharpe?: number | undefined;
   readonly replayMinDeflatedSharpeConfidence?: number | undefined;
   readonly numTrialsForDsr?: number | undefined;
+  readonly allowHoldoutAccess?: boolean | undefined;
+  readonly candidateStrategies?: readonly Strategy[] | undefined;
 }
 
 export interface ReplayEquityPoint {
@@ -624,6 +627,12 @@ export class ReplayEngine {
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
+    if (input.toTs > SEALED_HOLDOUT_START_TS && !input.allowHoldoutAccess) {
+      throw new Error(
+        `Sealed holdout violation: Replay toTs (${input.toTs}) extends into sealed 2025 holdout (${SEALED_HOLDOUT_START_TS}) without explicit allowHoldoutAccess authorization (ADR-0009).`
+      );
+    }
+
     const initialEquityUsdt = input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
     const riskFraction = input.riskFractionPerTrade ?? 0.0075;
     const maxLeverage = input.maxGrossLeverage ?? 2.0;
@@ -665,11 +674,12 @@ export class ReplayEngine {
       costStressMultiplier
     });
 
-    const oosExpectancyR = this.computePurgedWalkForwardOosExpectancy({
+    const oosResult = this.computePurgedWalkForwardOosExpectancy({
       instrumentId: input.instrumentId,
       instrumentSpec: spec,
       timeframe: input.timeframe,
-      strategy: input.strategy,
+      primaryStrategy: input.strategy,
+      candidateStrategies: input.candidateStrategies,
       bars: allBars,
       embargoBars,
       walkForwardFolds,
@@ -721,9 +731,10 @@ export class ReplayEngine {
     const minDsr = input.replayMinDeflatedSharpeConfidence ?? 0.5;
 
     const replayGatePassed =
+      oosResult.isSufficientData &&
       simulation.trades.length >= minTrades &&
       simulation.stressNetExpectancyR > 0 &&
-      oosExpectancyR >= 0 &&
+      oosResult.oosExpectancyR >= 0 &&
       dsrMetrics.sharpeRatio >= minSharpe &&
       dsrMetrics.deflatedSharpeRatio >= minDsr &&
       simulation.maxDrawdownPct <= 25;
@@ -767,7 +778,7 @@ export class ReplayEngine {
       sharpeRatio: dsrMetrics.sharpeRatio,
       deflatedSharpeRatio: dsrMetrics.deflatedSharpeRatio,
       stressNetExpectancyR: simulation.stressNetExpectancyR,
-      walkForwardOutOfSampleAvgR: oosExpectancyR,
+      walkForwardOutOfSampleAvgR: oosResult.oosExpectancyR,
       replayGatePassed,
       createdAtMs,
       buyAndHoldReturnPct: buyAndHold.returnPct,
@@ -1090,7 +1101,8 @@ export class ReplayEngine {
     readonly instrumentId: string;
     readonly instrumentSpec: InstrumentSpec;
     readonly timeframe: BarTimeframe;
-    readonly strategy: Strategy;
+    readonly primaryStrategy: Strategy;
+    readonly candidateStrategies?: readonly Strategy[] | undefined;
     readonly bars: readonly ConfirmedBar[];
     readonly embargoBars: number;
     readonly walkForwardFolds: number;
@@ -1099,42 +1111,81 @@ export class ReplayEngine {
     readonly maxLeverage: number;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
-  }): number {
+  }): {
+    readonly oosExpectancyR: number;
+    readonly isSufficientData: boolean;
+  } {
     const total = params.bars.length;
     const folds = Math.max(2, params.walkForwardFolds);
     const embargo = Math.max(1, params.embargoBars);
-    if (total < embargo * folds + 20) {
-      return 0;
+    if (total < embargo * folds + 30) {
+      return { oosExpectancyR: 0, isSufficientData: false };
     }
     const foldLength = Math.floor(total / folds);
     const oosReturns: number[] = [];
+    const candidates =
+      params.candidateStrategies && params.candidateStrategies.length > 0
+        ? params.candidateStrategies
+        : [params.primaryStrategy];
 
-    for (let f = 0; f < folds; f += 1) {
-      const startIdx = Math.min(total, f * foldLength + embargo);
-      const endIdx = f === folds - 1 ? total : Math.min(total, (f + 1) * foldLength);
-      const foldBars = params.bars.slice(startIdx, endIdx);
-      if (foldBars.length > embargo) {
-        const foldSim = this.simulateWindow({
+    for (let f = 1; f < folds; f += 1) {
+      const trainBars = params.bars.slice(0, f * foldLength);
+      // Purge and embargo: remove the last embargo bars of the train fold
+      const purgedTrainBars = trainBars.slice(0, Math.max(0, trainBars.length - embargo));
+      if (purgedTrainBars.length <= embargo) {
+        continue;
+      }
+
+      // Fit: select best candidate on purged training data
+      let bestCandidate = params.primaryStrategy;
+      let bestInSampleScore = -Infinity;
+      for (const candidate of candidates) {
+        const trainSim = this.simulateWindow({
           instrumentId: params.instrumentId,
           instrumentSpec: params.instrumentSpec,
           timeframe: params.timeframe,
-          strategy: params.strategy,
-          bars: foldBars,
+          strategy: candidate,
+          bars: purgedTrainBars,
           initialEquityUsdt: params.initialEquityUsdt,
           riskFraction: params.riskFraction,
           maxLeverage: params.maxLeverage,
           totalOneWayCostBps: params.totalOneWayCostBps,
           costStressMultiplier: params.costStressMultiplier
         });
-        for (const t of foldSim.trades) {
+        const score = trainSim.stressNetExpectancyR;
+        if (score > bestInSampleScore) {
+          bestInSampleScore = score;
+          bestCandidate = candidate;
+        }
+      }
+
+      // Out-of-sample validation on fold f
+      const valStart = f * foldLength;
+      const valEnd = f === folds - 1 ? total : (f + 1) * foldLength;
+      const valBars = params.bars.slice(valStart, valEnd);
+      if (valBars.length > 0) {
+        const valSim = this.simulateWindow({
+          instrumentId: params.instrumentId,
+          instrumentSpec: params.instrumentSpec,
+          timeframe: params.timeframe,
+          strategy: bestCandidate,
+          bars: valBars,
+          initialEquityUsdt: params.initialEquityUsdt,
+          riskFraction: params.riskFraction,
+          maxLeverage: params.maxLeverage,
+          totalOneWayCostBps: params.totalOneWayCostBps,
+          costStressMultiplier: params.costStressMultiplier
+        });
+        for (const t of valSim.trades) {
           oosReturns.push(t.netR);
         }
       }
     }
+
     if (oosReturns.length === 0) {
-      return 0;
+      return { oosExpectancyR: 0, isSufficientData: false };
     }
     const avg = oosReturns.reduce((acc, r) => acc + r, 0) / oosReturns.length;
-    return Number(avg.toFixed(6));
+    return { oosExpectancyR: Number(avg.toFixed(6)), isSufficientData: true };
   }
 }

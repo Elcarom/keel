@@ -347,6 +347,11 @@ export interface MarketDataRepository {
   }[];
 }
 
+export const IN_SAMPLE_START_TS = 1_672_531_200_000; // 2023-01-01 00:00:00 UTC
+export const IN_SAMPLE_END_TS = 1_735_689_600_000; // 2025-01-01 00:00:00 UTC
+export const SEALED_HOLDOUT_START_TS = 1_735_689_600_000; // 2025-01-01 00:00:00 UTC
+export const SEALED_HOLDOUT_END_TS = 1_767_225_600_000; // 2026-01-01 00:00:00 UTC
+
 export const BenchmarkBaselineSchema = z.object({
   returnPct: z.number(),
   sharpeRatio: z.number(),
