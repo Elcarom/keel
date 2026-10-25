@@ -27,6 +27,7 @@ export const SystemConfigSchema = z.object({
   sseHeartbeatMs: z.number().int().min(5000).max(60000).default(15000),
   shutdownPolicy: z.enum(["hold", "flatten"]).default("hold")
 });
+export type SystemConfig = z.infer<typeof SystemConfigSchema>;
 
 export const StrategyRiskConfigSchema = z.object({
   riskPerTradePct: z.number().min(0.1).max(1.5).default(0.75),

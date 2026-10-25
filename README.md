@@ -183,7 +183,7 @@ Once logged into the Mission Control dashboard:
   - `GET /metrics`: Prometheus telemetry (uptime, execution mode, circuit breaker status).
 - **Graceful Shutdown**:
   - `tini` forwards `SIGTERM` signals to Keel.
-  - Upon shutdown, Keel closes market WebSocket streams cleanly. In `Demo` and `Live` modes, open positions remain safeguarded by exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), while the 60-second OKX **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any resting entry orders ([ADR-0006](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
+  - Upon shutdown, Keel stops unattended background ingest-and-tick scheduler loops cleanly, flushes the SQLite WAL, and executes container shutdown policies (`hold` or `flatten`). In `Demo` and `Live` modes, open positions remain safeguarded by exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), while the 60-second OKX **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any resting entry orders ([ADR-0006](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
 
 ---
 

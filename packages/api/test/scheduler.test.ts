@@ -1,0 +1,205 @@
+import { describe, expect, it } from "vitest";
+import {
+  ManualClock,
+  createDefaultConfig,
+  type CircuitBreakerRecord,
+  type ExchangeBroker
+} from "@keel/core";
+import { createSqliteDataStore, OkxPublicIngestor } from "@keel/data";
+import { UnattendedScheduler } from "../src/scheduler.js";
+import { PaperBroker } from "../src/paper-broker.js";
+
+describe("Unattended Ingest & Tick Scheduler (M7)", () => {
+  it("ingests newly confirmed bars and triggers strategy ticks autonomously", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    // Seed mock confirmed bars returned by OkxPublicIngestor
+    let ingestedCount = 0;
+    const ingestor = new OkxPublicIngestor({
+      marketDataRepo: dataStore.marketDataRepo,
+      fetchHistoryCandles: async ({ fromOpenTs }) => {
+        ingestedCount++;
+        return [
+          {
+            openTs: fromOpenTs,
+            open: "50000.00",
+            high: "51000.00",
+            low: "49500.00",
+            close: "50500.00",
+            volumeContracts: "100",
+            volumeQuote: "5050000.00",
+            confirm: "1" // Confirmed bar only!
+          }
+        ];
+      }
+    });
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      ingestor,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // Step the scheduler once
+    const stepResult = await scheduler.stepOnce();
+
+    expect(stepResult.ok).toBe(true);
+    expect(stepResult.barsIngested).toBeGreaterThanOrEqual(1);
+    expect(stepResult.ticksExecuted).toBeGreaterThanOrEqual(1);
+    expect(ingestedCount).toBeGreaterThanOrEqual(1);
+
+    // Verify bar was recorded in marketDataRepo
+    const latestBars = dataStore.marketDataRepo.getConfirmedBarsAsOf({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      asOfMs: clock.nowMs(),
+      limit: 1
+    });
+    const latest = latestBars[0] ?? null;
+    expect(latest).not.toBeNull();
+    expect(latest?.confirm).toBe("1");
+
+    // Verify tick was audited in auditRepo
+    const auditEntries = dataStore.auditRepo.listRecent(50);
+    const tickAudit = auditEntries.find((a) => a.action === "scheduler.unattended_tick");
+    expect(tickAudit).toBeDefined();
+    expect(tickAudit?.details?.["instrumentId"]).toBe("BTC-USDT-SWAP");
+  });
+
+  it("handles start and stop lifecycle cleanly without hanging", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      intervalMs: 10_000
+    });
+
+    expect(scheduler.isRunning()).toBe(false);
+    scheduler.start();
+    expect(scheduler.isRunning()).toBe(true);
+    scheduler.stop();
+    expect(scheduler.isRunning()).toBe(false);
+  });
+
+  it("maintains DMS heartbeats and exchange reconciliation in Demo execution mode", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    config.system.executionMode = "Demo";
+
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    let dmsCalled = false;
+    let reconcileCalled = false;
+
+    const mockExchangeBroker: ExchangeBroker = {
+      sendDmsHeartbeat: async () => {
+        dmsCalled = true;
+        return { ok: true, countdownSeconds: 60 };
+      },
+      reconcilePositions: async () => {
+        reconcileCalled = true;
+        return {
+          asOfMs: clock.nowMs(),
+          matched: true,
+          localPositionsCount: 0,
+          exchangePositionsCount: 0,
+          driftDetails: []
+        };
+      },
+      getDmsStatus: () => ({
+        enabled: true,
+        timeoutSeconds: 60,
+        lastHeartbeatAtMs: clock.nowMs(),
+        nextHeartbeatDueMs: clock.nowMs() + 15_000,
+        healthy: true
+      }),
+      submitOrder: async () => {
+        throw new Error("Not used in test");
+      },
+      amendAlgoOrder: async () => {
+        throw new Error("Not used in test");
+      },
+      getCircuitBreaker: () => ({
+        status: "NORMAL",
+        reason: "Initial",
+        triggeredAtMs: 0,
+        cooldownUntilMs: null,
+        updatedBy: "system"
+      }),
+      setCircuitBreaker: (cb: CircuitBreakerRecord) => cb,
+      getOpenPositions: () => [],
+      getAllPositions: () => [],
+      getOrders: () => [],
+      flattenAllPositions: async () => [],
+      executeConfirmedBarTick: () => {
+        throw new Error("Not used in test");
+      }
+    };
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      exchangeBroker: mockExchangeBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system
+    });
+
+    const res = await scheduler.stepOnce();
+    expect(res.ok).toBe(true);
+    expect(dmsCalled).toBe(true);
+    expect(reconcileCalled).toBe(true);
+  });
+});

@@ -14,4 +14,9 @@ export {
   type IngressContext,
   type SecretVaultOptions
 } from "./security.js";
+export {
+  UnattendedScheduler,
+  type UnattendedSchedulerOptions,
+  type SchedulerStepResult
+} from "./scheduler.js";
 export { createKeelServer, type KeelServerOptions } from "./server.js";
