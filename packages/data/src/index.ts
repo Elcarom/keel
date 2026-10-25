@@ -42,6 +42,7 @@ import {
   createMarketDataRepository,
   seedSyntheticMarketSeries,
   type FetchOkxHistoryCandlesFn,
+  type FetchOkxHistoryFundingFn,
   type OkxPublicIngestorOptions
 } from "./market.js";
 import {
@@ -58,6 +59,7 @@ export {
   createPromotionRepository,
   seedSyntheticMarketSeries,
   type FetchOkxHistoryCandlesFn,
+  type FetchOkxHistoryFundingFn,
   type OkxPublicIngestorOptions
 };
 

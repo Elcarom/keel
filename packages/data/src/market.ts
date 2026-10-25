@@ -579,9 +579,18 @@ export type FetchOkxHistoryCandlesFn = (input: {
   toOpenTs: number;
 }) => Promise<readonly RawOkxCandlePayload[]>;
 
+export type FetchOkxHistoryFundingFn = (input: {
+  instrumentId: string;
+  fromFundingTs: number;
+  toFundingTs: number;
+}) => Promise<readonly SettledFundingRate[]>;
+
 export interface OkxPublicIngestorOptions {
   readonly marketDataRepo: MarketDataRepository;
   readonly fetchHistoryCandles?: FetchOkxHistoryCandlesFn | undefined;
+  readonly fetchHistoryFunding?: FetchOkxHistoryFundingFn | undefined;
+  readonly fetchFn?: typeof fetch | undefined;
+  readonly requestDelayMs?: number | undefined;
 }
 
 /**
@@ -590,19 +599,21 @@ export interface OkxPublicIngestorOptions {
 export class OkxPublicIngestor {
   private readonly marketDataRepo: MarketDataRepository;
   private readonly fetchHistoryCandles: FetchOkxHistoryCandlesFn;
+  private readonly fetchHistoryFunding: FetchOkxHistoryFundingFn;
 
   public constructor(options: OkxPublicIngestorOptions) {
     this.marketDataRepo = options.marketDataRepo;
+    const fetchFunc = options.fetchFn ?? fetch;
+
     this.fetchHistoryCandles =
       options.fetchHistoryCandles ??
       (async ({ instrumentId, timeframe, fromOpenTs, toOpenTs }) => {
         const dt = TIMEFRAME_DURATION_MS[timeframe];
         const collected: RawOkxCandlePayload[] = [];
         let cursorAfterMs = toOpenTs + dt;
-        const maxPages = 20;
-        for (let page = 0; page < maxPages && cursorAfterMs > fromOpenTs; page += 1) {
+        while (cursorAfterMs > fromOpenTs) {
           const url = `https://www.okx.com/api/v5/market/history-candles?instId=${encodeURIComponent(instrumentId)}&bar=${encodeURIComponent(timeframe)}&after=${cursorAfterMs}&limit=100`;
-          const res = await fetch(url);
+          const res = await fetchFunc(url);
           if (!res.ok) {
             throw new Error(`OKX history-candles HTTP ${res.status}`);
           }
@@ -628,6 +639,55 @@ export class OkxPublicIngestor {
           }
           if (minTsInPage >= cursorAfterMs) break;
           cursorAfterMs = minTsInPage;
+          if (rows.length < 100 || minTsInPage <= fromOpenTs) break;
+          if (options.requestDelayMs && options.requestDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, options.requestDelayMs));
+          }
+        }
+        return collected;
+      });
+
+    this.fetchHistoryFunding =
+      options.fetchHistoryFunding ??
+      (async ({ instrumentId, fromFundingTs, toFundingTs }) => {
+        const dt8H = 8 * 3600 * 1000;
+        const collected: SettledFundingRate[] = [];
+        let cursorAfterMs = toFundingTs + dt8H;
+        while (cursorAfterMs > fromFundingTs) {
+          const url = `https://www.okx.com/api/v5/public/funding-rate-history?instId=${encodeURIComponent(instrumentId)}&after=${cursorAfterMs}&limit=100`;
+          const res = await fetchFunc(url);
+          if (!res.ok) {
+            throw new Error(`OKX funding-rate-history HTTP ${res.status}`);
+          }
+          const body = (await res.json()) as {
+            data?: Array<{
+              instId: string;
+              fundingTime: string;
+              fundingRate: string;
+              realizedRate?: string;
+            }>;
+          };
+          const rows = body.data ?? [];
+          if (rows.length === 0) break;
+          let minTsInPage = cursorAfterMs;
+          for (const row of rows) {
+            const fundingTs = Number(row.fundingTime);
+            if (fundingTs < minTsInPage) minTsInPage = fundingTs;
+            if (fundingTs >= fromFundingTs && fundingTs <= toFundingTs) {
+              collected.push({
+                instrumentId: row.instId,
+                fundingTs,
+                fundingRate: row.fundingRate,
+                realizedRate: row.realizedRate ?? row.fundingRate
+              });
+            }
+          }
+          if (minTsInPage >= cursorAfterMs) break;
+          cursorAfterMs = minTsInPage;
+          if (rows.length < 100 || minTsInPage <= fromFundingTs) break;
+          if (options.requestDelayMs && options.requestDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, options.requestDelayMs));
+          }
         }
         return collected;
       });
@@ -639,6 +699,16 @@ export class OkxPublicIngestor {
     fromOpenTs: number;
     toOpenTs: number;
   }): Promise<number> {
+    const res = await this.ingestRange(input);
+    return res.insertedCount;
+  }
+
+  public async ingestRange(input: {
+    instrumentId: string;
+    timeframe: BarTimeframe;
+    fromOpenTs: number;
+    toOpenTs: number;
+  }): Promise<{ insertedCount: number; gapsDetected: number }> {
     const gaps = this.marketDataRepo.detectGaps(input);
     let totalInserted = 0;
 
@@ -657,7 +727,19 @@ export class OkxPublicIngestor {
       totalInserted += res.insertedCount;
     }
 
-    return totalInserted;
+    return {
+      insertedCount: totalInserted,
+      gapsDetected: gaps.length
+    };
+  }
+
+  public async ingestFundingRates(input: {
+    instrumentId: string;
+    fromFundingTs: number;
+    toFundingTs: number;
+  }): Promise<number> {
+    const rates = await this.fetchHistoryFunding(input);
+    return this.marketDataRepo.ingestSettledFunding(rates);
   }
 }
 
