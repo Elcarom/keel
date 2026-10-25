@@ -273,4 +273,93 @@ describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Fo
     expect(result.equityCurve).toBeDefined();
     expect(result.equityCurve.length).toBeGreaterThan(0);
   });
+
+  it("strictly enforces sealed 2025 holdout partition and prevents accidental leakage (M1, ADR-0009)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    // Request extending into 2025 sealed holdout without explicit authorization
+    expect(() =>
+      engine.run({
+        instrumentId: "BTC-USDT-SWAP",
+        timeframe: "1H",
+        strategy,
+        fromTs: 1_700_000_000_000,
+        toTs: 1_736_000_000_000 // 2025-01-04
+      })
+    ).toThrow(/sealed holdout violation/i);
+
+    // With explicit allowHoldoutAccess, it does not throw
+    expect(() =>
+      engine.run({
+        instrumentId: "BTC-USDT-SWAP",
+        timeframe: "1H",
+        strategy,
+        fromTs: 1_700_000_000_000,
+        toTs: 1_736_000_000_000,
+        allowHoldoutAccess: true
+      })
+    ).not.toThrow();
+  });
+
+  it("fails replay gate honestly when bar count is insufficient for purged walk-forward cross-validation (M1)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    // Seed only 25 bars (insufficient for lookbacks + walk forward folds)
+    const seeded = seedSyntheticMarketSeries({
+      marketDataRepo: marketRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_710_000_000_000,
+      barCount1H: 25
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const strategy = new DonchianTrendStrategy({ channelLength: 20 });
+
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs,
+      walkForwardFolds: 3
+    });
+
+    // Insufficient data for honest walk-forward evaluation MUST fail the gate
+    expect(result.replayGatePassed).toBe(false);
+  });
+
+  it("fits parameter candidates on train folds and evaluates selected strategy on purged out-of-sample validation folds (M1)", () => {
+    const store = setupTestStore();
+    const marketRepo = store.marketDataRepo;
+    const seeded = seedSyntheticMarketSeries({
+      marketDataRepo: marketRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_710_000_000_000,
+      barCount1H: 500
+    });
+
+    const engine = new ReplayEngine({ marketDataRepo: marketRepo });
+    const primaryStrategy = new DonchianTrendStrategy({ channelLength: 20 });
+    const candidates = [
+      new DonchianTrendStrategy({ channelLength: 10 }),
+      new DonchianTrendStrategy({ channelLength: 16 }),
+      new DonchianTrendStrategy({ channelLength: 20 }),
+      new DonchianTrendStrategy({ channelLength: 26 })
+    ];
+
+    const result = engine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy: primaryStrategy,
+      candidateStrategies: candidates,
+      fromTs: seeded.fromTs,
+      toTs: seeded.toTs,
+      walkForwardFolds: 3
+    });
+
+    expect(Number.isFinite(result.walkForwardOutOfSampleAvgR)).toBe(true);
+  });
 });
