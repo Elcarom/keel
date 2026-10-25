@@ -23,20 +23,41 @@ export interface InstrumentSpec {
   readonly maxLeverage: ScaledDecimal;
 }
 
-export function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
-  const baseCurrency = instrumentId.split("-")[0] ?? "BTC";
-  const contractValStr = baseCurrency === "ETH" ? "0.1" : "0.01";
-  return {
-    instrumentId,
+export const INSTRUMENT_SPECS: Readonly<Record<string, InstrumentSpec>> = {
+  "BTC-USDT-SWAP": {
+    instrumentId: "BTC-USDT-SWAP",
     venue: "OKX_EEA",
-    baseCurrency,
+    baseCurrency: "BTC",
     settlementCurrency: "USDT",
-    contractValue: ScaledDecimal.fromString(contractValStr),
+    contractValue: ScaledDecimal.fromString("0.01"),
     lotSize: ScaledDecimal.fromString("0.01"),
     minOrderSize: ScaledDecimal.fromString("0.01"),
+    tickSize: ScaledDecimal.fromString("0.1"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "ETH-USDT-SWAP": {
+    instrumentId: "ETH-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "ETH",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("0.1"),
+    lotSize: ScaledDecimal.fromString("0.1"),
+    minOrderSize: ScaledDecimal.fromString("0.1"),
     tickSize: ScaledDecimal.fromString("0.01"),
     maxLeverage: ScaledDecimal.fromString("3")
-  };
+  }
+};
+
+export function getInstrumentSpec(instrumentId: string): InstrumentSpec {
+  const spec = INSTRUMENT_SPECS[instrumentId];
+  if (!spec) {
+    throw new Error(`Unsupported instrument: ${instrumentId}. Explicit InstrumentSpec required.`);
+  }
+  return spec;
+}
+
+export function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
+  return getInstrumentSpec(instrumentId);
 }
 
 export interface StopRiskSizingInput {

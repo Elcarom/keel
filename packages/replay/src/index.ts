@@ -3,6 +3,7 @@ import {
   ManualClock,
   SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
+  defaultInstrumentSpec,
   sha256Hex,
   sizeByStopRisk,
   type BarTimeframe,
@@ -74,22 +75,6 @@ export interface ReplayRunResult extends ExperimentRecord {
   readonly baselines: {
     readonly buyAndHold: BenchmarkBaseline;
     readonly randomEntry: BenchmarkBaseline;
-  };
-}
-
-function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
-  const baseCurrency = instrumentId.split("-")[0] ?? "BTC";
-  const contractValStr = baseCurrency === "ETH" ? "0.1" : "0.01";
-  return {
-    instrumentId,
-    venue: "OKX_EEA",
-    baseCurrency,
-    settlementCurrency: "USDT",
-    contractValue: ScaledDecimal.fromString(contractValStr),
-    lotSize: ScaledDecimal.fromString("0.01"),
-    minOrderSize: ScaledDecimal.fromString("0.01"),
-    tickSize: ScaledDecimal.fromString("0.01"),
-    maxLeverage: ScaledDecimal.fromString("3")
   };
 }
 

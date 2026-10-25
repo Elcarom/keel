@@ -21,8 +21,9 @@ export interface Strategy {
   evaluate(snapshot: FeatureSnapshot): ProposalMenu;
 }
 
-function toFixedDecimalString(value: number, decimals = 2): string {
-  return ScaledDecimal.fromString(value.toFixed(decimals)).toString();
+function toFixedDecimalString(value: number, decimals = 8): string {
+  const clamped = Math.max(1e-8, value);
+  return ScaledDecimal.fromString(clamped.toFixed(decimals)).toString();
 }
 
 function computeTrueRange(bar: ConfirmedBar, prevClose: string): number {
@@ -33,10 +34,12 @@ function computeTrueRange(bar: ConfirmedBar, prevClose: string): number {
 }
 
 function computeAtr(bars: readonly ConfirmedBar[], length: number): number {
+  const latest = bars[bars.length - 1];
+  const refPrice = latest ? Math.abs(Number(latest.close)) : 1;
+  const minVol = Math.max(1e-8, refPrice * 1e-4);
   if (bars.length < 2) {
-    const single = bars[0];
-    if (!single) return 10;
-    return Math.max(1, Number(single.high) - Number(single.low));
+    if (!latest) return minVol;
+    return Math.max(minVol, Number(latest.high) - Number(latest.low));
   }
   const slice = bars.slice(-Math.min(bars.length, length + 1));
   let sumTr = 0;
@@ -49,7 +52,8 @@ function computeAtr(bars: readonly ConfirmedBar[], length: number): number {
       count += 1;
     }
   }
-  return Math.max(1, count > 0 ? sumTr / count : 10);
+  const avgTr = count > 0 ? sumTr / count : minVol;
+  return Math.max(minVol, avgTr);
 }
 
 function buildProtectiveLevels(params: {
@@ -62,22 +66,23 @@ function buildProtectiveLevels(params: {
   takeProfitPrice: string;
 } {
   const entry = Number(params.entryPriceStr);
-  const safeDist = Math.max(1, Math.min(entry * 0.25, params.stopDistancePoints));
+  const minDistance = Math.max(1e-8, entry * 1e-4);
+  const safeDist = Math.max(minDistance, Math.min(entry * 0.25, params.stopDistancePoints));
   const rewardDist = safeDist * Math.max(1, params.rewardMultiple);
 
   if (params.side === "long") {
-    const stopVal = Math.max(0.01, entry - safeDist);
+    const stopVal = Math.max(minDistance, entry - safeDist);
     const tpVal = entry + rewardDist;
     return {
-      protectiveStopPrice: toFixedDecimalString(stopVal, 2),
-      takeProfitPrice: toFixedDecimalString(tpVal, 2)
+      protectiveStopPrice: toFixedDecimalString(stopVal),
+      takeProfitPrice: toFixedDecimalString(tpVal)
     };
   }
   const stopVal = entry + safeDist;
-  const tpVal = Math.max(0.01, entry - rewardDist);
+  const tpVal = Math.max(minDistance, entry - rewardDist);
   return {
-    protectiveStopPrice: toFixedDecimalString(stopVal, 2),
-    takeProfitPrice: toFixedDecimalString(tpVal, 2)
+    protectiveStopPrice: toFixedDecimalString(stopVal),
+    takeProfitPrice: toFixedDecimalString(tpVal)
   };
 }
 
@@ -158,12 +163,14 @@ export class DonchianTrendStrategy implements Strategy {
     }
 
     const closeNum = Number(latest.close);
+    const minVol = Math.max(1e-8, closeNum * 1e-4);
     const atr = computeAtr(bars, this.channelLength);
-    const stopDistancePoints = Math.max(1, atr * this.atrStopMultiplier);
+    const safeAtr = Math.max(minVol, atr);
+    const stopDistancePoints = Math.max(minVol, atr * this.atrStopMultiplier);
 
     const proposals: Proposal[] = [];
     if (closeNum > highestHigh) {
-      const breakoutMagnitude = (closeNum - highestHigh) / Math.max(1, atr);
+      const breakoutMagnitude = (closeNum - highestHigh) / safeAtr;
       const convictionScore = Number(
         Math.min(0.95, 0.55 + Math.min(0.35, breakoutMagnitude * 0.15)).toFixed(4)
       );
@@ -185,11 +192,11 @@ export class DonchianTrendStrategy implements Strategy {
         protectiveStopPrice: levels.protectiveStopPrice,
         takeProfitPrice: levels.takeProfitPrice,
         convictionScore,
-        rationale: `Donchian ${this.channelLength}-bar upside breakout above ${highestHigh.toFixed(2)} (ATR=${atr.toFixed(2)})`,
+        rationale: `Donchian ${this.channelLength}-bar upside breakout above ${toFixedDecimalString(highestHigh)} (ATR=${toFixedDecimalString(atr)})`,
         tags: ["trend", "donchian", this.timeframe]
       });
     } else if (closeNum < lowestLow) {
-      const breakoutMagnitude = (lowestLow - closeNum) / Math.max(1, atr);
+      const breakoutMagnitude = (lowestLow - closeNum) / safeAtr;
       const convictionScore = Number(
         Math.min(0.95, 0.55 + Math.min(0.35, breakoutMagnitude * 0.15)).toFixed(4)
       );
@@ -211,7 +218,7 @@ export class DonchianTrendStrategy implements Strategy {
         protectiveStopPrice: levels.protectiveStopPrice,
         takeProfitPrice: levels.takeProfitPrice,
         convictionScore,
-        rationale: `Donchian ${this.channelLength}-bar downside breakdown below ${lowestLow.toFixed(2)} (ATR=${atr.toFixed(2)})`,
+        rationale: `Donchian ${this.channelLength}-bar downside breakdown below ${toFixedDecimalString(lowestLow)} (ATR=${toFixedDecimalString(atr)})`,
         tags: ["trend", "donchian", this.timeframe]
       });
     }
@@ -290,7 +297,6 @@ export class VolNormalizedMeanReversionStrategy implements Strategy {
     const closes = window.map((b) => Number(b.close));
     const mean = closes.reduce((acc, v) => acc + v, 0) / closes.length;
     const variance = closes.reduce((acc, v) => acc + (v - mean) ** 2, 0) / closes.length;
-    const stdDev = Math.max(1, Math.sqrt(variance));
     const latest = bars[bars.length - 1];
     if (!latest) {
       return {
@@ -303,9 +309,11 @@ export class VolNormalizedMeanReversionStrategy implements Strategy {
       };
     }
     const closeNum = Number(latest.close);
+    const minVol = Math.max(1e-8, closeNum * 1e-4);
+    const stdDev = Math.max(minVol, Math.sqrt(variance));
     const zScore = (closeNum - mean) / stdDev;
     const atr = computeAtr(bars, this.lookbackBars);
-    const stopDistancePoints = Math.max(1, atr * this.atrStopMultiplier);
+    const stopDistancePoints = Math.max(minVol, atr * this.atrStopMultiplier);
 
     const proposals: Proposal[] = [];
     if (zScore <= -this.entryZScore) {
@@ -446,10 +454,11 @@ export class VolNormalizedMomentumStrategy implements Strategy {
     }
     const latestClose = Number(latest.close);
     const anchorClose = Number(anchor.close);
+    const minVol = Math.max(1e-8, latestClose * 1e-4);
     const atr = computeAtr(bars, this.lookbackBars);
-    const normMomentum =
-      (latestClose - anchorClose) / Math.max(1, atr * Math.sqrt(this.lookbackBars));
-    const stopDistancePoints = Math.max(1, atr * this.atrStopMultiplier);
+    const safeVol = Math.max(minVol, atr * Math.sqrt(this.lookbackBars));
+    const normMomentum = (latestClose - anchorClose) / safeVol;
+    const stopDistancePoints = Math.max(minVol, atr * this.atrStopMultiplier);
 
     const proposals: Proposal[] = [];
     if (normMomentum >= this.momentumThresholdAtr) {
