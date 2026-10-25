@@ -113,3 +113,23 @@ _Avoid_: Peak balance, max equity
 **Kill Switch**:
 An immediate, deterministic emergency command (triggered manually from Mission Control or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions at market, and locks the system against new entries until manually reset.
 _Avoid_: Panic button, emergency stop, halt
+
+**Kill Switch Flatten**:
+The verified double-action execution of a Kill Switch event: issuing a cancel-all on resting orders (`cancel-all-after`), submitting market `reduceOnly=true` closing orders for 100% of open net positions across all venues, asserting exchange positions reach zero, and locking the circuit breaker in `KILL_SWITCH_HALT`.
+_Avoid_: Soft flatten, local close
+
+**Sealed Holdout Period**:
+An out-of-sample partition of historical market data (specifically 2025-01-01 to 2025-12-31 UTC) that is strictly quarantined and never observed during strategy conception, indicator parameter tuning, or promotion gate calibration, evaluated exactly once in final verification.
+_Avoid_: Test set, validation split
+
+**In-Sample Period**:
+The historical market data window (2023-01-01 to 2024-12-31 UTC) allocated for feature computation, model fitting, and purged walk-forward cross-validation under 2x cost stress.
+_Avoid_: Train set, backtest range
+
+**Next-Bar Open Execution**:
+The causal execution model where a trade Proposal generated upon the confirmation of bar `t` executes strictly at the opening price of bar `t+1` (adjusted for slippage), preventing intra-bar look-ahead.
+_Avoid_: Close fill, instantaneous execution
+
+**Gap-Aware Stop Fill**:
+Simulated protective stop execution that accounts for price jumps between bars: filling long stops at `min(open, stopPrice)` and short stops at `max(open, stopPrice)` rather than assuming execution at the exact stop level.
+_Avoid_: Perfect fill, idealized stop
