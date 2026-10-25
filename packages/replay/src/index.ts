@@ -92,31 +92,64 @@ function normalCdf(z: number): number {
   return 0.5 * (1 + sign * erf);
 }
 
-function inverseNormalCdf(p: number): number {
-  const clamped = Math.min(0.999999, Math.max(0.000001, p));
-  const a0 = -3.969683028665376e1;
-  const a1 = 2.209460984245205e2;
-  const a2 = -2.759285104469687e2;
-  const a3 = 1.38357751867269e2;
-  const a4 = -3.066479806614716e1;
-  const a5 = 2.506628277459239;
-  const b0 = -5.447609879822406e1;
-  const b1 = 1.615858368580409e2;
-  const b2 = -1.556989798598866e2;
-  const b3 = 6.680131188771972e1;
-  const b4 = -1.328068155288572e1;
-  const q = clamped - 0.5;
-  if (Math.abs(q) <= 0.425) {
-    const r = 0.180625 - q * q;
+/**
+ * Mathematically verified Peter J. Acklam algorithm (2003) for the inverse normal CDF.
+ * Accurate to relative error < 1.15e-9 across the entire standard normal distribution domain.
+ */
+export function inverseNormalCdf(p: number): number {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+
+  // Central region coefficients
+  const a1 = -3.969683028665376e1;
+  const a2 = 2.209460984245205e2;
+  const a3 = -2.759285104469687e2;
+  const a4 = 1.38357751867269e2;
+  const a5 = -3.066479806614716e1;
+  const a6 = 2.506628277459239;
+
+  const b1 = -5.447609879822406e1;
+  const b2 = 1.615858368580409e2;
+  const b3 = -1.556989798598866e2;
+  const b4 = 6.680131188771972e1;
+  const b5 = -1.328068155288572e1;
+
+  // Tail region coefficients
+  const c1 = -7.784894002430293e-3;
+  const c2 = -3.223964580411365e-1;
+  const c3 = -2.400758277161838;
+  const c4 = -2.549732539343734;
+  const c5 = 4.374664141464968;
+  const c6 = 2.938163982698783;
+
+  const d1 = 7.784695709041462e-3;
+  const d2 = 3.224671290700398e-1;
+  const d3 = 2.445134137142996;
+  const d4 = 3.754408661907416;
+
+  const pLow = 0.02425;
+  const pHigh = 1 - pLow;
+
+  if (p < pLow) {
+    const q = Math.sqrt(-2 * Math.log(p));
     return (
-      (q * (((((a0 * r + a1) * r + a2) * r + a3) * r + a4) * r + a5)) /
-      (((((b0 * r + b1) * r + b2) * r + b3) * r + b4) * r + 1)
+      (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+      ((((d1 * q + d2) * q + d3) * q + d4) * q + 1)
+    );
+  } else if (p <= pHigh) {
+    const q = p - 0.5;
+    const r = q * q;
+    return (
+      (q * (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6)) /
+      (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1)
+    );
+  } else {
+    const q = Math.sqrt(-2 * Math.log(1 - p));
+    return (
+      -(((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+      ((((d1 * q + d2) * q + d3) * q + d4) * q + 1)
     );
   }
-  const r = q < 0 ? clamped : 1 - clamped;
-  const s = Math.sqrt(-Math.log(r));
-  const z = s - (2.30753 + 0.27061 * s) / (1 + (0.99229 + 0.04481 * s) * s);
-  return q < 0 ? -z : z;
 }
 
 export function computeDeflatedSharpeRatio(params: {

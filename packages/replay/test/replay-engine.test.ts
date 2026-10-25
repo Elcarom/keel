@@ -6,7 +6,7 @@ import {
   VolNormalizedMeanReversionStrategy,
   VolNormalizedMomentumStrategy
 } from "@keel/strategy";
-import { ReplayEngine, computeDeflatedSharpeRatio } from "../src/index.js";
+import { ReplayEngine, computeDeflatedSharpeRatio, inverseNormalCdf } from "../src/index.js";
 
 describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Forward, & DSR", () => {
   const openStores: SqliteDataStore[] = [];
@@ -142,5 +142,15 @@ describe("M2-3: Event-Driven ReplayEngine, 8h Funding/Cost Model, Purged Walk-Fo
       numTrials: 20
     });
     expect(highDsr.deflatedSharpeRatio).toBeGreaterThan(lowDsr.deflatedSharpeRatio);
+  });
+
+  it("calculates accurate inverse normal CDF quantiles per Peter J. Acklam algorithm (C1)", () => {
+    // Known standard normal quantiles:
+    expect(inverseNormalCdf(0.5)).toBeCloseTo(0.0, 5);
+    expect(inverseNormalCdf(0.9)).toBeCloseTo(1.28155, 4);
+    expect(inverseNormalCdf(0.95)).toBeCloseTo(1.64485, 4);
+    expect(inverseNormalCdf(0.975)).toBeCloseTo(1.95996, 4);
+    expect(inverseNormalCdf(0.99)).toBeCloseTo(2.32635, 4);
+    expect(inverseNormalCdf(0.025)).toBeCloseTo(-1.95996, 4);
   });
 });
