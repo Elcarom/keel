@@ -71,7 +71,11 @@ CREATE TABLE IF NOT EXISTS experiments (
   stress_net_expectancy_r REAL NOT NULL,
   walk_forward_oos_avg_r REAL NOT NULL,
   replay_gate_passed INTEGER NOT NULL,
-  created_at_ms INTEGER NOT NULL
+  created_at_ms INTEGER NOT NULL,
+  buy_and_hold_return_pct REAL NOT NULL DEFAULT 0,
+  buy_and_hold_sharpe_ratio REAL NOT NULL DEFAULT 0,
+  random_entry_return_pct REAL NOT NULL DEFAULT 0,
+  random_entry_sharpe_ratio REAL NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_experiments_created
@@ -126,7 +130,11 @@ function mapExperimentRow(row: Record<string, unknown>): ExperimentRecord {
     stressNetExpectancyR: Number(row["stress_net_expectancy_r"]),
     walkForwardOutOfSampleAvgR: Number(row["walk_forward_oos_avg_r"]),
     replayGatePassed: Number(row["replay_gate_passed"]) === 1,
-    createdAtMs: Number(row["created_at_ms"])
+    createdAtMs: Number(row["created_at_ms"]),
+    buyAndHoldReturnPct: Number(row["buy_and_hold_return_pct"] ?? 0),
+    buyAndHoldSharpeRatio: Number(row["buy_and_hold_sharpe_ratio"] ?? 0),
+    randomEntryReturnPct: Number(row["random_entry_return_pct"] ?? 0),
+    randomEntrySharpeRatio: Number(row["random_entry_sharpe_ratio"] ?? 0)
   });
 }
 
@@ -515,8 +523,10 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
           data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
           avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
           sharpe_ratio, deflated_sharpe_ratio, stress_net_expectancy_r,
-          walk_forward_oos_avg_r, replay_gate_passed, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          walk_forward_oos_avg_r, replay_gate_passed, created_at_ms,
+          buy_and_hold_return_pct, buy_and_hold_sharpe_ratio,
+          random_entry_return_pct, random_entry_sharpe_ratio
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         validated.experimentId,
         validated.strategyId,
@@ -539,7 +549,11 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
         validated.stressNetExpectancyR,
         validated.walkForwardOutOfSampleAvgR,
         validated.replayGatePassed ? 1 : 0,
-        validated.createdAtMs
+        validated.createdAtMs,
+        validated.buyAndHoldReturnPct,
+        validated.buyAndHoldSharpeRatio,
+        validated.randomEntryReturnPct,
+        validated.randomEntrySharpeRatio
       );
       return validated;
     },

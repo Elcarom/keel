@@ -344,7 +344,11 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
       stressNetExpectancyR: 0.18,
       walkForwardOutOfSampleAvgR: 0.22,
       replayGatePassed: true,
-      createdAtMs: 1_702_592_000_000
+      createdAtMs: 1_702_592_000_000,
+      buyAndHoldReturnPct: 5.2,
+      buyAndHoldSharpeRatio: 0.8,
+      randomEntryReturnPct: -1.5,
+      randomEntrySharpeRatio: -0.2
     };
 
     const evalReplay = evaluator.evaluate({
