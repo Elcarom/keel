@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  createDefaultConfig,
   defaultInstrumentSpec,
   sha256Hex,
   ScaledDecimal,
@@ -16,7 +17,9 @@ import {
   type PaperTickResult,
   type ReconciliationResult,
   type RiskConfig,
-  type PaperAccountRepository
+  type PaperAccountRepository,
+  type LedgerRepository,
+  type MarketDataRepository
 } from "@keel/core";
 
 export interface OkxCredentials {
@@ -43,12 +46,14 @@ export interface OkxFetchFn {
 
 export interface OkxBrokerOptions {
   readonly clock: Clock;
-  readonly getRiskConfig: () => RiskConfig;
+  readonly getRiskConfig?: (() => RiskConfig) | undefined;
   readonly getCredentials?: (() => OkxCredentials | null) | undefined;
   readonly isDemo?: boolean | undefined;
   readonly fetchFn?: OkxFetchFn | undefined;
   readonly notificationChannel?: NotificationChannel | undefined;
   readonly accountRepo?: PaperAccountRepository | undefined;
+  readonly ledgerRepo?: LedgerRepository | undefined;
+  readonly marketDataRepo?: MarketDataRepository | undefined;
 }
 
 export function buildOkxHeaders(params: {
@@ -84,7 +89,9 @@ export class OkxBroker implements ExchangeBroker {
   private readonly isDemo: boolean;
   private readonly fetchFn: OkxFetchFn;
   private readonly notificationChannel: NotificationChannel | null;
-  private readonly accountRepo: PaperAccountRepository | null;
+  private accountRepo: PaperAccountRepository | null;
+  private ledgerRepo: LedgerRepository | null;
+  private marketDataRepo: MarketDataRepository | null;
 
   private circuitBreaker: CircuitBreakerRecord = {
     status: "NORMAL",
@@ -100,11 +107,13 @@ export class OkxBroker implements ExchangeBroker {
 
   public constructor(options: OkxBrokerOptions) {
     this.clock = options.clock;
-    this.getRiskConfig = options.getRiskConfig;
+    this.getRiskConfig = options.getRiskConfig ?? (() => createDefaultConfig().risk);
     this.getCredentials = options.getCredentials ?? (() => null);
     this.isDemo = options.isDemo ?? true;
     this.notificationChannel = options.notificationChannel ?? null;
     this.accountRepo = options.accountRepo ?? null;
+    this.ledgerRepo = options.ledgerRepo ?? null;
+    this.marketDataRepo = options.marketDataRepo ?? null;
 
     if (this.accountRepo) {
       this.circuitBreaker = this.accountRepo.getCircuitBreaker();
@@ -135,6 +144,28 @@ export class OkxBroker implements ExchangeBroker {
       });
   }
 
+  public setRepositories(repos: {
+    readonly accountRepo?: PaperAccountRepository | undefined;
+    readonly ledgerRepo?: LedgerRepository | undefined;
+    readonly marketDataRepo?: MarketDataRepository | undefined;
+  }): void {
+    if (!this.accountRepo && repos.accountRepo) {
+      this.accountRepo = repos.accountRepo;
+      this.circuitBreaker = this.accountRepo.getCircuitBreaker();
+      const open = this.accountRepo.listOpenPositions();
+      for (const pos of open) {
+        this.localPositions.set(pos.positionId, pos);
+      }
+      this.localOrders = [...this.accountRepo.listOrders(100)];
+    }
+    if (!this.ledgerRepo && repos.ledgerRepo) {
+      this.ledgerRepo = repos.ledgerRepo;
+    }
+    if (!this.marketDataRepo && repos.marketDataRepo) {
+      this.marketDataRepo = repos.marketDataRepo;
+    }
+  }
+
   public getCircuitBreaker(): CircuitBreakerRecord {
     return { ...this.circuitBreaker };
   }
@@ -148,6 +179,42 @@ export class OkxBroker implements ExchangeBroker {
   }
 
   public getOpenPositions(): readonly PaperPositionRecord[] {
+    const nowMs = this.clock.nowMs();
+    if (this.marketDataRepo) {
+      for (const [id, pos] of this.localPositions.entries()) {
+        if (pos.status === "OPEN") {
+          try {
+            const bars = this.marketDataRepo.getConfirmedBarsAsOf({
+              instrumentId: pos.instrumentId,
+              timeframe: "1H",
+              asOfMs: nowMs,
+              limit: 1
+            });
+            if (bars && bars.length > 0 && bars[0]) {
+              const markPx = ScaledDecimal.fromString(bars[0].close);
+              const entryPx = ScaledDecimal.fromString(pos.entryPrice);
+              const contracts = ScaledDecimal.fromString(pos.contracts);
+              const spec = defaultInstrumentSpec(pos.instrumentId);
+              const upl =
+                pos.side === "long"
+                  ? contracts.mul(spec.contractValue).mul(markPx.sub(entryPx))
+                  : contracts.mul(spec.contractValue).mul(entryPx.sub(markPx));
+
+              const updated: PaperPositionRecord = {
+                ...pos,
+                unrealizedPnlUsdt: upl.toFixed(8)
+              };
+              this.localPositions.set(id, updated);
+              if (this.accountRepo) {
+                this.accountRepo.savePosition(updated);
+              }
+            }
+          } catch {
+            // Keep existing unrealized PnL if query fails
+          }
+        }
+      }
+    }
     return Array.from(this.localPositions.values()).filter((p) => p.status === "OPEN");
   }
 
@@ -437,12 +504,31 @@ export class OkxBroker implements ExchangeBroker {
     // Update local state
     const posId = `pos_${clOrdId}`;
     const effectiveStrategyId = input.strategyId ?? "manual-execution";
+    const contractsDec = ScaledDecimal.fromString(String(input.sizeLots));
+    const spec = defaultInstrumentSpec(input.instrumentId);
     const initialRisk =
       input.initialRiskUsdt ??
       (input.side === "long" ? entryPx.sub(stopPx) : stopPx.sub(entryPx))
-        .mul(ScaledDecimal.fromString(String(input.sizeLots)))
-        .mul(defaultInstrumentSpec(input.instrumentId).contractValue)
+        .mul(contractsDec)
+        .mul(spec.contractValue)
         .toFixed(2);
+
+    const notional = contractsDec.mul(spec.contractValue).mul(entryPx);
+    const feeRate = ScaledDecimal.fromString("0.0006");
+    const entryFee = notional.mul(feeRate);
+
+    if (this.ledgerRepo && entryFee.isPositive()) {
+      this.ledgerRepo.recordJournal({
+        txGroupId: `open-${posId}`,
+        ts: nowMs,
+        strategyId: effectiveStrategyId,
+        instrumentId: input.instrumentId,
+        debitAccount: "fees_expense:usdt",
+        creditAccount: "cash:usdt",
+        amountUsdt: entryFee.toFixed(8),
+        description: `Entry execution fee on exchange order ${orderId}`
+      });
+    }
 
     const newPosition: PaperPositionRecord = {
       positionId: posId,
@@ -454,10 +540,10 @@ export class OkxBroker implements ExchangeBroker {
       protectiveStopPrice: input.protectiveStopPrice,
       takeProfitPrice: input.takeProfitPrice ?? null,
       initialRiskUsdt: initialRisk,
-      unrealizedPnlUsdt: "0.00",
-      realizedPnlUsdt: "0.00",
-      feesPaidUsdt: "0.00",
-      fundingPaidUsdt: "0.00",
+      unrealizedPnlUsdt: "0.00000000",
+      realizedPnlUsdt: "0.00000000",
+      feesPaidUsdt: entryFee.toFixed(8),
+      fundingPaidUsdt: "0.00000000",
       openedAtMs: nowMs,
       lastFundingSettledTs: nowMs,
       status: "OPEN",
@@ -482,7 +568,7 @@ export class OkxBroker implements ExchangeBroker {
       contracts: String(input.sizeLots),
       fillPrice: input.entryPrice,
       protectiveStopPrice: input.protectiveStopPrice,
-      feeUsdt: "0.00",
+      feeUsdt: entryFee.toFixed(8),
       status: "FILLED",
       createdAtMs: nowMs
     };
@@ -587,6 +673,8 @@ export class OkxBroker implements ExchangeBroker {
           pos?: string;
           posSide?: string;
           avgPx?: string;
+          markPx?: string;
+          upl?: string;
         }>;
       };
 
@@ -606,6 +694,50 @@ export class OkxBroker implements ExchangeBroker {
       });
 
       exchangePositionsCount = activeExchangePositions.length;
+
+      // Update local position mark-to-market unrealized PnL from exchange data
+      for (const exPos of activeExchangePositions) {
+        const instId = exPos.instId ?? "unknown";
+        const matchingLocal = openPositions.find((p) => p.instrumentId === instId);
+        if (matchingLocal) {
+          let updatedUpl: ScaledDecimal | null = null;
+          if (exPos.upl !== undefined && exPos.upl !== null && exPos.upl.trim() !== "") {
+            try {
+              updatedUpl = ScaledDecimal.fromString(exPos.upl);
+            } catch {
+              // Ignore invalid decimal
+            }
+          } else if (
+            exPos.markPx !== undefined &&
+            exPos.markPx !== null &&
+            exPos.markPx.trim() !== ""
+          ) {
+            try {
+              const markPx = ScaledDecimal.fromString(exPos.markPx);
+              const entryPx = ScaledDecimal.fromString(matchingLocal.entryPrice);
+              const contracts = ScaledDecimal.fromString(matchingLocal.contracts);
+              const spec = defaultInstrumentSpec(matchingLocal.instrumentId);
+              updatedUpl =
+                matchingLocal.side === "long"
+                  ? contracts.mul(spec.contractValue).mul(markPx.sub(entryPx))
+                  : contracts.mul(spec.contractValue).mul(entryPx.sub(markPx));
+            } catch {
+              // Ignore invalid decimal
+            }
+          }
+
+          if (updatedUpl !== null) {
+            const updated: PaperPositionRecord = {
+              ...matchingLocal,
+              unrealizedPnlUsdt: updatedUpl.toFixed(8)
+            };
+            this.localPositions.set(matchingLocal.positionId, updated);
+            if (this.accountRepo) {
+              this.accountRepo.savePosition(updated);
+            }
+          }
+        }
+      }
 
       // 2. Query OKX pending conditional algo orders (protective stops)
       const algoPath = "/api/v5/trade/orders-algo-pending?ordType=conditional";
@@ -791,12 +923,85 @@ export class OkxBroker implements ExchangeBroker {
 
     for (const [id, pos] of this.localPositions.entries()) {
       if (pos.status === "OPEN") {
+        let exitPriceDec = ScaledDecimal.fromString(pos.entryPrice);
+        if (this.marketDataRepo) {
+          try {
+            const bars = this.marketDataRepo.getConfirmedBarsAsOf({
+              instrumentId: pos.instrumentId,
+              timeframe: "1H",
+              asOfMs: nowMs,
+              limit: 1
+            });
+            if (bars && bars.length > 0 && bars[0]) {
+              exitPriceDec = ScaledDecimal.fromString(bars[0].close);
+            }
+          } catch {
+            // fallback to entryPrice
+          }
+        }
+
+        const entryPriceDec = ScaledDecimal.fromString(pos.entryPrice);
+        const contractsDec = ScaledDecimal.fromString(pos.contracts);
+        const spec = defaultInstrumentSpec(pos.instrumentId);
+        const grossPnl =
+          pos.side === "long"
+            ? contractsDec.mul(spec.contractValue).mul(exitPriceDec.sub(entryPriceDec))
+            : contractsDec.mul(spec.contractValue).mul(entryPriceDec.sub(exitPriceDec));
+
+        const exitNotional = contractsDec.mul(spec.contractValue).mul(exitPriceDec);
+        const exitFee = exitNotional.mul(ScaledDecimal.fromString("0.0006"));
+
+        if (this.ledgerRepo) {
+          const txGroup = `close-${pos.positionId}-${nowMs}`;
+          if (grossPnl.isPositive()) {
+            this.ledgerRepo.recordJournal({
+              txGroupId: txGroup,
+              ts: nowMs,
+              strategyId: pos.strategyId,
+              instrumentId: pos.instrumentId,
+              debitAccount: "cash:usdt",
+              creditAccount: "realized_pnl:usdt",
+              amountUsdt: grossPnl.toFixed(8),
+              description: `Gross profit on ${pos.positionId} (${reason})`
+            });
+          } else if (grossPnl.lt(ScaledDecimal.zero())) {
+            this.ledgerRepo.recordJournal({
+              txGroupId: txGroup,
+              ts: nowMs,
+              strategyId: pos.strategyId,
+              instrumentId: pos.instrumentId,
+              debitAccount: "realized_pnl:usdt",
+              creditAccount: "cash:usdt",
+              amountUsdt: grossPnl.abs().toFixed(8),
+              description: `Gross loss on ${pos.positionId} (${reason})`
+            });
+          }
+
+          if (exitFee.isPositive()) {
+            this.ledgerRepo.recordJournal({
+              txGroupId: txGroup,
+              ts: nowMs,
+              strategyId: pos.strategyId,
+              instrumentId: pos.instrumentId,
+              debitAccount: "fees_expense:usdt",
+              creditAccount: "cash:usdt",
+              amountUsdt: exitFee.toFixed(8),
+              description: `Exit execution fee on ${pos.positionId}`
+            });
+          }
+        }
+
+        const prevFees = ScaledDecimal.fromString(pos.feesPaidUsdt);
+        const totalFees = prevFees.add(exitFee);
+
         const closedPos: PaperPositionRecord = {
           ...pos,
           status: "CLOSED",
           closedAtMs: nowMs,
-          exitPrice: pos.entryPrice,
-          realizedPnlUsdt: "0.00",
+          exitPrice: exitPriceDec.toFixed(8),
+          realizedPnlUsdt: grossPnl.toFixed(8),
+          unrealizedPnlUsdt: "0.00000000",
+          feesPaidUsdt: totalFees.toFixed(8),
           exitReason: reason
         };
         this.localPositions.set(id, closedPos);
@@ -815,9 +1020,9 @@ export class OkxBroker implements ExchangeBroker {
           side: pos.side === "long" ? "short" : "long",
           orderRole: "FLATTEN",
           contracts: pos.contracts,
-          fillPrice: pos.entryPrice,
+          fillPrice: exitPriceDec.toFixed(8),
           protectiveStopPrice: "0",
-          feeUsdt: "0.00",
+          feeUsdt: exitFee.toFixed(8),
           status: "FILLED",
           createdAtMs: nowMs
         };

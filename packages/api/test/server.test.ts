@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   CONFIG_FIELD_REGISTRY,
   ManualClock,
+  ScaledDecimal,
   computeConfigHash,
   createDefaultConfig
 } from "@keel/core";
@@ -463,6 +464,27 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(pos?.strategyId).not.toBe("exchange-execution");
       // 1 lot * 1000 stop distance * 0.01 contractValue = 10.00 USDT
       expect(pos?.initialRiskUsdt).toBe("10.00");
+      // M-F: exchange positions and fills must record non-zero fees paid
+      expect(pos?.feesPaidUsdt).toBeDefined();
+      if (pos) {
+        expect(ScaledDecimal.fromString(pos.feesPaidUsdt).isPositive()).toBe(true);
+      }
+
+      // 5. Verify LedgerRepository reflects exchange entry fees (cash reduced, feesExpense increased)
+      const paperStatusRes = await app.inject({
+        method: "GET",
+        url: "/api/v1/paper/status",
+        headers: { cookie: cookieHeader }
+      });
+      expect(paperStatusRes.statusCode).toBe(200);
+      const trialBalance = paperStatusRes.json().trialBalance;
+      expect(trialBalance.isBalanced).toBe(true);
+      expect(ScaledDecimal.fromString(trialBalance.feesExpenseUsdt).isPositive()).toBe(true);
+      expect(
+        ScaledDecimal.fromString(trialBalance.cashBalanceUsdt).lt(
+          ScaledDecimal.fromString("10000.00000000")
+        )
+      ).toBe(true);
     } finally {
       await app.close();
     }
