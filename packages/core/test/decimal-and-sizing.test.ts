@@ -4,6 +4,8 @@ import {
   ManualClock,
   ScaledDecimal,
   SystemClock,
+  defaultInstrumentSpec,
+  getInstrumentSpec,
   sizeByStopRisk,
   type InstrumentSpec
 } from "../src/index.js";
@@ -217,5 +219,63 @@ describe("@keel/core — Injected Clock port", () => {
 
     const sys = new SystemClock();
     expect(sys.nowMs()).toBeGreaterThan(1_700_000_000_000);
+  });
+});
+
+describe("@keel/core — Instrument specifications (M5)", () => {
+  it("enforces explicit static specs for BTC and ETH and rejects unknown instruments", () => {
+    const btc = getInstrumentSpec("BTC-USDT-SWAP");
+    expect(btc.contractValue.toString()).toBe("0.01");
+    expect(btc.lotSize.toString()).toBe("0.01");
+    expect(btc.tickSize.toString()).toBe("0.1");
+    expect(btc.minOrderSize.toString()).toBe("0.01");
+
+    const eth = getInstrumentSpec("ETH-USDT-SWAP");
+    expect(eth.contractValue.toString()).toBe("0.1");
+    expect(eth.lotSize.toString()).toBe("0.1");
+    expect(eth.tickSize.toString()).toBe("0.01");
+    expect(eth.minOrderSize.toString()).toBe("0.1");
+
+    // defaultInstrumentSpec delegates to getInstrumentSpec
+    expect(defaultInstrumentSpec("BTC-USDT-SWAP")).toEqual(btc);
+
+    // Non-BTC/ETH instruments must not silently default to ctVal 0.01
+    expect(() => getInstrumentSpec("SOL-USDT-SWAP")).toThrow(/Unsupported instrument/);
+    expect(() => defaultInstrumentSpec("SOL-USDT-SWAP")).toThrow(/Unsupported instrument/);
+
+    // Verify fractional contract lot sizing with production static specs
+    const btcSizing = sizeByStopRisk({
+      instrument: btc,
+      side: "long",
+      strategyEquityQuote: ScaledDecimal.fromString("10000"),
+      riskFraction: ScaledDecimal.fromString("0.0075"), // $75 risk budget
+      entryPrice: ScaledDecimal.fromString("60000"),
+      stopPrice: ScaledDecimal.fromString("58800"), // delta $1200
+      maxGrossLeverage: ScaledDecimal.fromString("2")
+    });
+    expect(btcSizing.ok).toBe(true);
+    if (btcSizing.ok) {
+      // 1 contract = 0.01 BTC = $600 notional. Risk per contract = $12.
+      // Contracts = floor(75 / 12) = 6.25 contracts (aligned to 0.01 lot size).
+      expect(btcSizing.contracts.toString()).toBe("6.25");
+      expect(btcSizing.notionalQuote.toString()).toBe("3750");
+    }
+
+    const ethSizing = sizeByStopRisk({
+      instrument: eth,
+      side: "long",
+      strategyEquityQuote: ScaledDecimal.fromString("10000"),
+      riskFraction: ScaledDecimal.fromString("0.0075"), // $75 risk budget
+      entryPrice: ScaledDecimal.fromString("3000"),
+      stopPrice: ScaledDecimal.fromString("2900"), // delta $100
+      maxGrossLeverage: ScaledDecimal.fromString("2")
+    });
+    expect(ethSizing.ok).toBe(true);
+    if (ethSizing.ok) {
+      // 1 contract = 0.1 ETH = $300 notional. Risk per contract = $10.
+      // Contracts = floor(75 / 10) = 7.5 contracts (aligned to 0.1 lot size).
+      expect(ethSizing.contracts.toString()).toBe("7.5");
+      expect(ethSizing.notionalQuote.toString()).toBe("2250");
+    }
   });
 });

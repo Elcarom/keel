@@ -1,6 +1,7 @@
 import {
   RiskGuardian,
   ScaledDecimal,
+  defaultInstrumentSpec,
   getUtcDayStartMs,
   type BarTimeframe,
   type Broker,
@@ -32,22 +33,6 @@ export interface PaperBrokerOptions {
 }
 
 export { type PaperTickResult };
-
-function defaultInstrumentSpec(instrumentId: string): InstrumentSpec {
-  const baseCurrency = instrumentId.split("-")[0] ?? "BTC";
-  const contractValStr = baseCurrency === "ETH" ? "0.1" : "0.01";
-  return {
-    instrumentId,
-    venue: "OKX_EEA",
-    baseCurrency,
-    settlementCurrency: "USDT",
-    contractValue: ScaledDecimal.fromString(contractValStr),
-    lotSize: ScaledDecimal.fromString("0.01"),
-    minOrderSize: ScaledDecimal.fromString("0.01"),
-    tickSize: ScaledDecimal.fromString("0.01"),
-    maxLeverage: ScaledDecimal.fromString("3")
-  };
-}
 
 /**
  * Deterministic PaperBroker (ADR-0006).
