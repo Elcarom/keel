@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ManualClock, createDefaultConfig, type ConfirmedBar } from "@keel/core";
 import { createSqliteDataStore } from "@keel/data";
 import { DonchianTrendStrategy } from "@keel/strategy";
+import { ReplayEngine } from "@keel/replay";
 import { PaperBroker } from "../src/paper-broker.js";
 
 function makeBar(overrides?: Partial<ConfirmedBar>): ConfirmedBar {
@@ -49,8 +50,16 @@ describe("PaperBroker (ADR-0006)", () => {
       );
     }
 
+    const signalBar = historyBars[historyBars.length - 2];
     const currentBar = historyBars[historyBars.length - 1];
-    if (!currentBar) throw new Error("Expected currentBar");
+    if (!signalBar || !currentBar) throw new Error("Expected bars");
+    // Bar 6 emits breakout proposal
+    broker.executeConfirmedBarTick({
+      bar: signalBar,
+      strategy,
+      featureBars: { "1H": historyBars.slice(0, -1) }
+    });
+    // Bar 7 executes proposal at next-bar open
     const result = broker.executeConfirmedBarTick({
       bar: currentBar,
       strategy,
@@ -108,12 +117,29 @@ describe("PaperBroker (ADR-0006)", () => {
     });
     historyBars.push(signalBar);
 
-    // Tick the same confirmed bar 4 times
+    // Tick signal bar: emits proposal for next bar
+    broker.executeConfirmedBarTick({
+      bar: signalBar,
+      strategy,
+      featureBars: { "1H": historyBars }
+    });
+
+    const execBar = makeBar({
+      openTs: 1_700_000_000_000 + 8 * 3600_000,
+      closeTs: 1_700_000_000_000 + 9 * 3600_000,
+      open: "51600.00",
+      high: "52000.00",
+      low: "51200.00",
+      close: "51800.00"
+    });
+    historyBars.push(execBar);
+
+    // Tick the execution bar 4 times
     let totalOpened = 0;
     let totalClosed = 0;
     for (let tick = 0; tick < 4; tick++) {
       const res = broker.executeConfirmedBarTick({
-        bar: signalBar,
+        bar: execBar,
         strategy,
         featureBars: { "1H": historyBars }
       });
@@ -129,6 +155,226 @@ describe("PaperBroker (ADR-0006)", () => {
     expect(totalClosed).toBe(0);
     expect(openPositions.length).toBe(1);
     expect(allPositions.length).toBe(1);
+
+    store.close();
+  });
+
+  it("M-A: paper broker executes entries at next-bar open with slippage and stops with gap-aware fills", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const config = createDefaultConfig();
+
+    const broker = new PaperBroker({
+      clock,
+      ledgerRepo: store.ledgerRepo,
+      paperAccountRepo: store.paperAccountRepo,
+      getRiskConfig: () => config.risk,
+      slippageBps: 10 // 10 bps slippage
+    });
+
+    const strategy = new DonchianTrendStrategy({ channelLength: 5 });
+    const historyBars: ConfirmedBar[] = [];
+    for (let i = 0; i < 7; i++) {
+      historyBars.push(
+        makeBar({
+          openTs: 1_700_000_000_000 + i * 3600_000,
+          closeTs: 1_700_000_000_000 + (i + 1) * 3600_000,
+          high: String(49000 + i * 100),
+          low: String(48500 + i * 100),
+          close: String(48900 + i * 100)
+        })
+      );
+    }
+
+    // Bar 7: Breakout bar generates long proposal at close (51500)
+    const signalBar = makeBar({
+      openTs: 1_700_000_000_000 + 7 * 3600_000,
+      closeTs: 1_700_000_000_000 + 8 * 3600_000,
+      open: "49600.00",
+      high: "52000.00",
+      low: "49500.00",
+      close: "51500.00"
+    });
+    historyBars.push(signalBar);
+
+    // Tick signal bar: proposal is generated for next bar
+    broker.executeConfirmedBarTick({
+      bar: signalBar,
+      strategy,
+      featureBars: { "1H": historyBars }
+    });
+
+    // Bar 8: Execution bar opens at 52000.00.
+    // Next-bar-open entry price with 10 bps slippage: 52000 * 1.0010 = 52052.00
+    // Bar also has a normal trading range above stop
+    const execBar = makeBar({
+      openTs: 1_700_000_000_000 + 8 * 3600_000,
+      closeTs: 1_700_000_000_000 + 9 * 3600_000,
+      open: "52000.00",
+      high: "52500.00",
+      low: "51800.00",
+      close: "52200.00"
+    });
+    historyBars.push(execBar);
+
+    const tick2 = broker.executeConfirmedBarTick({
+      bar: execBar,
+      strategy,
+      featureBars: { "1H": historyBars }
+    });
+
+    expect(tick2.positionsOpened.length).toBe(1);
+    const opened = tick2.positionsOpened[0];
+    if (!opened) throw new Error("Expected opened position");
+
+    // Entry price must be next-bar-open with slippage: 52052.00 (not signal close 51500.00)
+    expect(Number(opened.entryPrice)).toBeCloseTo(52052.0, 1);
+
+    // Bar 9: Gap-down bar through stop price!
+    // If stop was at ~50500, and bar gaps down opening at 48000, gap fill must be 48000 (not stop price 50500)
+    const gapBar = makeBar({
+      openTs: 1_700_000_000_000 + 9 * 3600_000,
+      closeTs: 1_700_000_000_000 + 10 * 3600_000,
+      open: "48000.00", // Gapped down far below stop
+      high: "48500.00",
+      low: "47500.00",
+      close: "48200.00"
+    });
+    historyBars.push(gapBar);
+
+    const tick3 = broker.executeConfirmedBarTick({
+      bar: gapBar,
+      strategy,
+      featureBars: { "1H": historyBars }
+    });
+
+    expect(tick3.positionsClosed.length).toBe(1);
+    const closed = tick3.positionsClosed[0];
+    if (!closed) throw new Error("Expected closed position");
+
+    // Exit price must be the gapped open price (48000), not the exact stop price
+    expect(Number(closed.exitPrice)).toBe(48000);
+    expect(closed.exitReason).toBe("protective_stop");
+
+    store.close();
+  });
+
+  it("M-A: achieves bit-for-bit fill price, contracts, and PnL parity between PaperBroker and ReplayEngine across identical confirmed bars", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const config = createDefaultConfig();
+
+    const slippageBps = 10;
+    const paperBroker = new PaperBroker({
+      clock,
+      ledgerRepo: store.ledgerRepo,
+      paperAccountRepo: store.paperAccountRepo,
+      getRiskConfig: () => config.risk,
+      slippageBps
+    });
+
+    const strategy = new DonchianTrendStrategy({ channelLength: 5 });
+    const bars: ConfirmedBar[] = [];
+    for (let i = 0; i < 7; i++) {
+      bars.push(
+        makeBar({
+          openTs: 1_700_000_000_000 + i * 3600_000,
+          closeTs: 1_700_000_000_000 + (i + 1) * 3600_000,
+          high: String(49000 + i * 100),
+          low: String(48500 + i * 100),
+          close: String(48900 + i * 100)
+        })
+      );
+    }
+
+    // Bar 7: Breakout bar generates long proposal at close (51500)
+    const signalBar = makeBar({
+      openTs: 1_700_000_000_000 + 7 * 3600_000,
+      closeTs: 1_700_000_000_000 + 8 * 3600_000,
+      open: "49600.00",
+      high: "52000.00",
+      low: "49500.00",
+      close: "51500.00"
+    });
+    bars.push(signalBar);
+
+    // Bar 8: Execution bar opening at 52000.00
+    const execBar = makeBar({
+      openTs: 1_700_000_000_000 + 8 * 3600_000,
+      closeTs: 1_700_000_000_000 + 9 * 3600_000,
+      open: "52000.00",
+      high: "52500.00",
+      low: "51800.00",
+      close: "52200.00"
+    });
+    bars.push(execBar);
+
+    // Bar 9: Gap-down bar through stop price
+    const gapBar = makeBar({
+      openTs: 1_700_000_000_000 + 9 * 3600_000,
+      closeTs: 1_700_000_000_000 + 10 * 3600_000,
+      open: "48000.00",
+      high: "48500.00",
+      low: "47500.00",
+      close: "48200.00"
+    });
+    bars.push(gapBar);
+
+    // 1. Run ReplayEngine across these bars
+    store.marketDataRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles: bars.map((b) => ({
+        openTs: b.openTs,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volumeContracts: b.volumeContracts,
+        volumeQuote: b.volumeQuote,
+        confirm: "1"
+      }))
+    });
+
+    const replayEngine = new ReplayEngine({
+      marketDataRepo: store.marketDataRepo,
+      experimentRepo: store.experimentRepo
+    });
+
+    const replayResult = replayEngine.run({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      strategy,
+      fromTs: bars[0]?.openTs ?? 0,
+      toTs: bars[bars.length - 1]?.closeTs ?? 0,
+      slippageBps
+    });
+
+    expect(replayResult.trades.length).toBe(1);
+    const replayTrade = replayResult.trades[0];
+    if (!replayTrade) throw new Error("Expected replay trade");
+
+    // 2. Step PaperBroker bar-by-bar across the exact same bars
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i];
+      if (!b) continue;
+      paperBroker.executeConfirmedBarTick({
+        bar: b,
+        strategy,
+        featureBars: { "1H": bars.slice(0, i + 1) }
+      });
+    }
+
+    const paperPositions = store.paperAccountRepo.listAllPositions();
+    const paperClosed = paperPositions.find((p) => p.status === "CLOSED");
+    expect(paperClosed).toBeDefined();
+    if (!paperClosed) throw new Error("Expected closed paper position");
+
+    // 3. Parity Assertions: bit-for-bit identical fill price, stop exit, contracts, and gross PnL
+    expect(paperClosed.entryPrice).toBe(replayTrade.entryPrice.toFixed(8));
+    expect(paperClosed.exitPrice).toBe(replayTrade.exitPrice.toFixed(8));
+    expect(paperClosed.contracts).toBe(replayTrade.contracts.toFixed(8));
+    expect(paperClosed.realizedPnlUsdt).toBe(replayTrade.grossPnlUsdt.toFixed(8));
 
     store.close();
   });

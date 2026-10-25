@@ -7,6 +7,7 @@ import {
   PaperOrderRecordSchema,
   PaperPositionRecordSchema,
   PromotionStageSchema,
+  ProposalSchema,
   ScaledDecimal,
   StrategyPromotionRecordSchema,
   getUtcDayStartMs,
@@ -21,6 +22,7 @@ import {
   type PaperOrderRecord,
   type PaperPositionRecord,
   type PromotionRepository,
+  type Proposal,
   type StrategyPromotionRecord
 } from "@keel/core";
 
@@ -108,6 +110,13 @@ CREATE TABLE IF NOT EXISTS paper_processed_bars (
   strategy_id TEXT NOT NULL,
   close_ts INTEGER NOT NULL,
   PRIMARY KEY (instrument_id, strategy_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_pending_proposals (
+  strategy_id TEXT NOT NULL,
+  instrument_id TEXT NOT NULL,
+  proposal_json TEXT NOT NULL,
+  PRIMARY KEY (strategy_id, instrument_id)
 );
 `;
 
@@ -553,6 +562,42 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
          VALUES (?, ?, ?)
          ON CONFLICT(instrument_id, strategy_id) DO UPDATE SET close_ts = excluded.close_ts`
       ).run(params.instrumentId, params.strategyId, params.closeTs);
+    },
+
+    getPendingProposal(params: {
+      readonly strategyId: string;
+      readonly instrumentId: string;
+    }): Proposal | null {
+      const row = db
+        .prepare(
+          `SELECT proposal_json FROM paper_pending_proposals WHERE strategy_id = ? AND instrument_id = ?`
+        )
+        .get(params.strategyId, params.instrumentId) as { proposal_json: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.proposal_json) as unknown;
+        return ProposalSchema.parse(parsed);
+      } catch {
+        return null;
+      }
+    },
+
+    savePendingProposal(params: {
+      readonly strategyId: string;
+      readonly instrumentId: string;
+      readonly proposal: Proposal | null;
+    }): void {
+      if (params.proposal === null) {
+        db.prepare(
+          `DELETE FROM paper_pending_proposals WHERE strategy_id = ? AND instrument_id = ?`
+        ).run(params.strategyId, params.instrumentId);
+      } else {
+        db.prepare(
+          `INSERT INTO paper_pending_proposals (strategy_id, instrument_id, proposal_json)
+           VALUES (?, ?, ?)
+           ON CONFLICT(strategy_id, instrument_id) DO UPDATE SET proposal_json = excluded.proposal_json`
+        ).run(params.strategyId, params.instrumentId, JSON.stringify(params.proposal));
+      }
     }
   };
 }

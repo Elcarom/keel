@@ -1,7 +1,9 @@
 import {
   RiskGuardian,
   ScaledDecimal,
+  computeNextBarOpenEntry,
   defaultInstrumentSpec,
+  evaluateIntrabarExit,
   getUtcDayStartMs,
   type BarTimeframe,
   type Broker,
@@ -50,6 +52,7 @@ export class PaperBroker implements Broker {
   private readonly getRiskConfig: () => RiskConfig;
   private readonly chooser = new BaselineChooser();
   private readonly totalFeeRateBps: number;
+  private readonly slippageBps: number;
 
   public constructor(options: PaperBrokerOptions) {
     this.clock = options.clock;
@@ -59,6 +62,7 @@ export class PaperBroker implements Broker {
     const taker = options.takerFeeBps ?? 5;
     const spread = options.halfSpreadBps ?? 2;
     const slippage = options.slippageBps ?? 3;
+    this.slippageBps = slippage;
     this.totalFeeRateBps = taker + spread + slippage;
   }
 
@@ -116,16 +120,202 @@ export class PaperBroker implements Broker {
       }
     }
 
-    // 1. Evaluate open positions against confirmed bar high/low & 8h settled funding
+    // 1. Next-Bar-Open Execution: Check if there is a pending proposal from the prior bar (M-A / ADR-0009)
+    const pendingProp = strategyId
+      ? this.paperAccountRepo.getPendingProposal({
+          strategyId,
+          instrumentId: bar.instrumentId
+        })
+      : null;
+
+    if (pendingProp !== null) {
+      const openPositions = this.paperAccountRepo.listOpenPositions();
+      const hasOpenForInst = openPositions.some((p) => p.instrumentId === bar.instrumentId);
+      if (!hasOpenForInst) {
+        const exec = computeNextBarOpenEntry({
+          side: pendingProp.side,
+          barOpen: ScaledDecimal.fromString(bar.open),
+          slippageBps: this.slippageBps,
+          proposedEntryPrice: ScaledDecimal.fromString(pendingProp.entryPrice),
+          proposedStopPrice: ScaledDecimal.fromString(pendingProp.protectiveStopPrice),
+          proposedTpPrice: pendingProp.takeProfitPrice
+            ? ScaledDecimal.fromString(pendingProp.takeProfitPrice)
+            : null
+        });
+
+        const adjustedProp: Proposal = {
+          ...pendingProp,
+          entryPrice: exec.entryPrice.toFixed(8),
+          protectiveStopPrice: exec.effectiveStopPrice.toFixed(8),
+          takeProfitPrice: exec.effectiveTpPrice ? exec.effectiveTpPrice.toFixed(8) : null
+        };
+
+        const riskConfig = this.getRiskConfig();
+        const guardian = new RiskGuardian(riskConfig);
+
+        // Aggregate current open positions exposure & unrealized PnL
+        let grossNotional = ScaledDecimal.zero();
+        let netSignedNotional = ScaledDecimal.zero();
+        const notionalByInstrument: Record<string, ScaledDecimal> = {};
+        let strategyGrossNotional = ScaledDecimal.zero();
+        let totalUnrealizedPnl = ScaledDecimal.zero();
+        let strategyUnrealizedPnl = ScaledDecimal.zero();
+
+        for (const p of openPositions) {
+          const pContracts = ScaledDecimal.fromString(p.contracts);
+          const pPrice = ScaledDecimal.fromString(p.entryPrice);
+          const pSpec = defaultInstrumentSpec(p.instrumentId);
+          const pNotional = pContracts.mul(pSpec.contractValue).mul(pPrice);
+
+          grossNotional = grossNotional.add(pNotional);
+          const signed = p.side === "long" ? pNotional : ScaledDecimal.zero().sub(pNotional);
+          netSignedNotional = netSignedNotional.add(signed);
+
+          const existingInst = notionalByInstrument[p.instrumentId] ?? ScaledDecimal.zero();
+          notionalByInstrument[p.instrumentId] = existingInst.add(pNotional);
+
+          const pUnrealized = ScaledDecimal.fromString(p.unrealizedPnlUsdt);
+          totalUnrealizedPnl = totalUnrealizedPnl.add(pUnrealized);
+
+          if (p.strategyId === adjustedProp.strategyId) {
+            strategyGrossNotional = strategyGrossNotional.add(pNotional);
+            strategyUnrealizedPnl = strategyUnrealizedPnl.add(pUnrealized);
+          }
+        }
+
+        const dayStartMs = getUtcDayStartMs(asOfMs);
+        const strategyMetrics = this.ledgerRepo.getRiskMetrics({
+          asOfMs,
+          strategyId: adjustedProp.strategyId,
+          openUnrealizedPnlUsdt: strategyUnrealizedPnl
+        });
+        const portfolioMetrics = this.ledgerRepo.getRiskMetrics({
+          asOfMs,
+          strategyId: null,
+          openUnrealizedPnlUsdt: totalUnrealizedPnl
+        });
+        const tradesTodayCount = this.paperAccountRepo.countFilledOrdersToday({
+          sinceMs: dayStartMs,
+          strategyId: adjustedProp.strategyId
+        });
+
+        const strategyState: StrategyRiskState = {
+          strategyId: adjustedProp.strategyId,
+          equityUsdt: strategyMetrics.currentEquityUsdt,
+          dayStartEquityUsdt: strategyMetrics.dayStartEquityUsdt,
+          weekStartEquityUsdt: strategyMetrics.weekStartEquityUsdt,
+          highWaterMarkEquityUsdt: strategyMetrics.highWaterMarkEquityUsdt,
+          currentGrossNotionalUsdt: strategyGrossNotional,
+          tradesTodayCount,
+          feesTodayUsdt: strategyMetrics.feesTodayUsdt
+        };
+
+        const portfolioState: PortfolioRiskState = {
+          equityUsdt: portfolioMetrics.currentEquityUsdt,
+          dayStartEquityUsdt: portfolioMetrics.dayStartEquityUsdt,
+          highWaterMarkEquityUsdt: portfolioMetrics.highWaterMarkEquityUsdt,
+          grossNotionalUsdt: grossNotional,
+          netSignedNotionalUsdt: netSignedNotional,
+          notionalByInstrumentUsdt: notionalByInstrument,
+          circuitBreaker: this.paperAccountRepo.getCircuitBreaker()
+        };
+
+        const decision = guardian.evaluateProposal({
+          proposal: adjustedProp,
+          instrument: spec,
+          strategyState,
+          portfolioState,
+          asOfMs
+        });
+
+        if (!decision.approved) {
+          vetoedProposals.push({ proposal: adjustedProp, reason: decision.vetoReason });
+          if (decision.triggeredCircuitBreaker) {
+            this.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
+          }
+        } else {
+          const entryPrice = exec.entryPrice;
+          const notional = decision.contracts.mul(spec.contractValue).mul(entryPrice);
+          const entryFee = notional.mul(
+            ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
+          );
+          const existingPosCount = this.paperAccountRepo.listAllPositions().length;
+          const posId = `pos-${adjustedProp.strategyId}-${asOfMs}-${existingPosCount + 1}`;
+
+          // Record entry fee in double-entry ledger
+          const txGroup = `open-${posId}`;
+          if (entryFee.isPositive()) {
+            this.ledgerRepo.recordJournal({
+              txGroupId: txGroup,
+              ts: asOfMs,
+              strategyId: adjustedProp.strategyId,
+              instrumentId: adjustedProp.instrumentId,
+              debitAccount: "fees_expense:usdt",
+              creditAccount: "cash:usdt",
+              amountUsdt: entryFee.toFixed(8),
+              description: `Entry execution fee on ${posId}`
+            });
+          }
+
+          const newPos: PaperPositionRecord = {
+            positionId: posId,
+            strategyId: adjustedProp.strategyId,
+            instrumentId: adjustedProp.instrumentId,
+            side: adjustedProp.side,
+            contracts: decision.contracts.toFixed(8),
+            entryPrice: entryPrice.toFixed(8),
+            protectiveStopPrice: decision.effectiveStopPrice.toFixed(8),
+            takeProfitPrice: adjustedProp.takeProfitPrice,
+            initialRiskUsdt: decision.initialRiskUsdt.toFixed(8),
+            unrealizedPnlUsdt: "0.00000000",
+            realizedPnlUsdt: "0.00000000",
+            feesPaidUsdt: entryFee.toFixed(8),
+            fundingPaidUsdt: "0.00000000",
+            openedAtMs: bar.openTs,
+            lastFundingSettledTs: asOfMs,
+            status: "OPEN",
+            closedAtMs: null,
+            exitPrice: null,
+            exitReason: null
+          };
+
+          this.paperAccountRepo.savePosition(newPos);
+          positionsOpened.push(newPos);
+
+          this.paperAccountRepo.saveOrder({
+            orderId: `ord-${posId}-entry`,
+            positionId: posId,
+            proposalId: adjustedProp.proposalId,
+            strategyId: adjustedProp.strategyId,
+            instrumentId: adjustedProp.instrumentId,
+            side: adjustedProp.side,
+            orderRole: "ENTRY",
+            contracts: decision.contracts.toFixed(8),
+            fillPrice: entryPrice.toFixed(8),
+            protectiveStopPrice: decision.effectiveStopPrice.toFixed(8),
+            feeUsdt: entryFee.toFixed(8),
+            status: "FILLED",
+            createdAtMs: bar.openTs
+          });
+        }
+      }
+      this.paperAccountRepo.savePendingProposal({
+        strategyId: pendingProp.strategyId,
+        instrumentId: bar.instrumentId,
+        proposal: null
+      });
+    }
+
+    // 2. Evaluate open positions against confirmed bar high/low & 8h settled funding (Gap-aware fills)
     const openPositions = this.paperAccountRepo.listOpenPositions();
     for (const pos of openPositions) {
       if (pos.instrumentId !== bar.instrumentId) continue;
       // N1: Evaluate exits only against bars that started on or after position openedAtMs.
-      // This prevents testing the signal bar's pre-entry range against the newly placed stop.
       if (bar.openTs < pos.openedAtMs) continue;
 
       const stopPrice = ScaledDecimal.fromString(pos.protectiveStopPrice);
       const tpPrice = pos.takeProfitPrice ? ScaledDecimal.fromString(pos.takeProfitPrice) : null;
+      const barOpen = ScaledDecimal.fromString(bar.open);
       const barHigh = ScaledDecimal.fromString(bar.high);
       const barLow = ScaledDecimal.fromString(bar.low);
       const barClose = ScaledDecimal.fromString(bar.close);
@@ -182,33 +372,19 @@ export class PaperBroker implements Broker {
         }
       }
 
-      let closed = false;
-      let exitPrice: ScaledDecimal | null = null;
-      let exitReason: string | null = null;
+      // Shared gap-aware exit evaluation (M-A / ADR-0009)
+      const exitRes = evaluateIntrabarExit({
+        side: pos.side,
+        barOpen,
+        barHigh,
+        barLow,
+        stopPrice,
+        tpPrice
+      });
 
-      if (pos.side === "long") {
-        if (barLow.lte(stopPrice)) {
-          closed = true;
-          exitPrice = stopPrice;
-          exitReason = "protective_stop";
-        } else if (tpPrice && barHigh.gte(tpPrice)) {
-          closed = true;
-          exitPrice = tpPrice;
-          exitReason = "take_profit";
-        }
-      } else {
-        if (barHigh.gte(stopPrice)) {
-          closed = true;
-          exitPrice = stopPrice;
-          exitReason = "protective_stop";
-        } else if (tpPrice && barLow.lte(tpPrice)) {
-          closed = true;
-          exitPrice = tpPrice;
-          exitReason = "take_profit";
-        }
-      }
-
-      if (closed && exitPrice !== null && exitReason !== null) {
+      if (exitRes.closed && exitRes.exitPrice !== null && exitRes.exitReason !== null) {
+        const exitPrice = exitRes.exitPrice;
+        const exitReason = exitRes.exitReason;
         const grossPnl =
           pos.side === "long"
             ? contracts.mul(spec.contractValue).mul(exitPrice.sub(entryPrice))
@@ -306,7 +482,7 @@ export class PaperBroker implements Broker {
       }
     }
 
-    // 2. Evaluate Strategy Proposals if strategy provided and flat on instrument
+    // 3. Evaluate Strategy Proposals on bar close if flat on instrument (saved for next-bar open)
     const activeOpenOnInstrument = this.paperAccountRepo
       .listOpenPositions()
       .filter((p) => p.instrumentId === bar.instrumentId);
@@ -331,7 +507,7 @@ export class PaperBroker implements Broker {
         } else {
           const riskConfig = this.getRiskConfig();
           const guardian = new RiskGuardian(riskConfig);
-          // Aggregate existing open positions exposure & unrealized PnL
+
           const currentOpen = this.paperAccountRepo.listOpenPositions();
           let grossNotional = ScaledDecimal.zero();
           let netSignedNotional = ScaledDecimal.zero();
@@ -413,68 +589,10 @@ export class PaperBroker implements Broker {
               this.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
             }
           } else {
-            const entryPrice = ScaledDecimal.fromString(prop.entryPrice);
-            const notional = decision.contracts.mul(spec.contractValue).mul(entryPrice);
-            const entryFee = notional.mul(
-              ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
-            );
-            const existingPosCount = this.paperAccountRepo.listAllPositions().length;
-            const posId = `pos-${prop.strategyId}-${asOfMs}-${existingPosCount + 1}`;
-
-            // Record entry fee in double-entry ledger
-            const txGroup = `open-${posId}`;
-            if (entryFee.isPositive()) {
-              this.ledgerRepo.recordJournal({
-                txGroupId: txGroup,
-                ts: asOfMs,
-                strategyId: prop.strategyId,
-                instrumentId: prop.instrumentId,
-                debitAccount: "fees_expense:usdt",
-                creditAccount: "cash:usdt",
-                amountUsdt: entryFee.toFixed(8),
-                description: `Entry execution fee on ${posId}`
-              });
-            }
-
-            const newPos: PaperPositionRecord = {
-              positionId: posId,
+            this.paperAccountRepo.savePendingProposal({
               strategyId: prop.strategyId,
-              instrumentId: prop.instrumentId,
-              side: prop.side,
-              contracts: decision.contracts.toFixed(8),
-              entryPrice: entryPrice.toFixed(8),
-              protectiveStopPrice: decision.effectiveStopPrice.toFixed(8),
-              takeProfitPrice: prop.takeProfitPrice,
-              initialRiskUsdt: decision.initialRiskUsdt.toFixed(8),
-              unrealizedPnlUsdt: "0.00000000",
-              realizedPnlUsdt: "0.00000000",
-              feesPaidUsdt: entryFee.toFixed(8),
-              fundingPaidUsdt: "0.00000000",
-              openedAtMs: asOfMs,
-              lastFundingSettledTs: asOfMs,
-              status: "OPEN",
-              closedAtMs: null,
-              exitPrice: null,
-              exitReason: null
-            };
-
-            this.paperAccountRepo.savePosition(newPos);
-            positionsOpened.push(newPos);
-
-            this.paperAccountRepo.saveOrder({
-              orderId: `ord-${posId}-entry`,
-              positionId: posId,
-              proposalId: prop.proposalId,
-              strategyId: prop.strategyId,
-              instrumentId: prop.instrumentId,
-              side: prop.side,
-              orderRole: "ENTRY",
-              contracts: decision.contracts.toFixed(8),
-              fillPrice: entryPrice.toFixed(8),
-              protectiveStopPrice: decision.effectiveStopPrice.toFixed(8),
-              feeUsdt: entryFee.toFixed(8),
-              status: "FILLED",
-              createdAtMs: asOfMs
+              instrumentId: bar.instrumentId,
+              proposal: prop
             });
           }
         }

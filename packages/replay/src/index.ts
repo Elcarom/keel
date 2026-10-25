@@ -3,7 +3,9 @@ import {
   ManualClock,
   SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
+  computeNextBarOpenEntry,
   defaultInstrumentSpec,
+  evaluateIntrabarExit,
   sha256Hex,
   sizeByStopRisk,
   type BarTimeframe,
@@ -847,7 +849,6 @@ export class ReplayEngine {
     let pendingProposal: Proposal | null = null;
 
     const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
-    const slippageFraction = ScaledDecimal.fromString((params.slippageBps / 10_000).toFixed(8));
     const extraStressMultiplierDec = ScaledDecimal.fromString(
       Math.max(0, params.costStressMultiplier - 1).toFixed(8)
     );
@@ -915,31 +916,19 @@ export class ReplayEngine {
 
       // Execute pending proposal confirmed on prior bar at this bar's open with slippage (M2)
       if (pendingProposal !== null && active === null) {
-        const slippageAmount = barOpen.mul(slippageFraction);
-        const entryPrice =
-          pendingProposal.side === "long"
-            ? barOpen.add(slippageAmount)
-            : barOpen.sub(slippageAmount);
-
-        const proposedEntry = ScaledDecimal.fromString(pendingProposal.entryPrice);
-        const proposedStop = ScaledDecimal.fromString(pendingProposal.protectiveStopPrice);
-        const stopDist =
-          pendingProposal.side === "long"
-            ? proposedEntry.sub(proposedStop)
-            : proposedStop.sub(proposedEntry);
-        const stopPrice =
-          pendingProposal.side === "long" ? entryPrice.sub(stopDist) : entryPrice.add(stopDist);
-
-        let tpPrice: ScaledDecimal | null = null;
-        if (pendingProposal.takeProfitPrice) {
-          const proposedTp = ScaledDecimal.fromString(pendingProposal.takeProfitPrice);
-          const tpDist =
-            pendingProposal.side === "long"
-              ? proposedTp.sub(proposedEntry)
-              : proposedEntry.sub(proposedTp);
-          tpPrice =
-            pendingProposal.side === "long" ? entryPrice.add(tpDist) : entryPrice.sub(tpDist);
-        }
+        const exec = computeNextBarOpenEntry({
+          side: pendingProposal.side,
+          barOpen,
+          slippageBps: params.slippageBps,
+          proposedEntryPrice: ScaledDecimal.fromString(pendingProposal.entryPrice),
+          proposedStopPrice: ScaledDecimal.fromString(pendingProposal.protectiveStopPrice),
+          proposedTpPrice: pendingProposal.takeProfitPrice
+            ? ScaledDecimal.fromString(pendingProposal.takeProfitPrice)
+            : null
+        });
+        const entryPrice = exec.entryPrice;
+        const stopPrice = exec.effectiveStopPrice;
+        const tpPrice = exec.effectiveTpPrice;
 
         const sizing = sizeByStopRisk({
           instrument: spec,
@@ -989,30 +978,19 @@ export class ReplayEngine {
         }
 
         // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2)
-        if (active.proposal.side === "long") {
-          const stopHit = barLow.lte(active.protectiveStopPrice);
-          const tpHit = active.takeProfitPrice !== null && barHigh.gte(active.takeProfitPrice);
-          if (stopHit) {
-            const fillPrice = ScaledDecimal.min(barOpen, active.protectiveStopPrice);
-            closePosition(active, nowMs, fillPrice, "stop");
-            active = null;
-          } else if (tpHit && active.takeProfitPrice) {
-            const fillPrice = ScaledDecimal.max(barOpen, active.takeProfitPrice);
-            closePosition(active, nowMs, fillPrice, "take-profit");
-            active = null;
-          }
-        } else {
-          const stopHit = barHigh.gte(active.protectiveStopPrice);
-          const tpHit = active.takeProfitPrice !== null && barLow.lte(active.takeProfitPrice);
-          if (stopHit) {
-            const fillPrice = ScaledDecimal.max(barOpen, active.protectiveStopPrice);
-            closePosition(active, nowMs, fillPrice, "stop");
-            active = null;
-          } else if (tpHit && active.takeProfitPrice) {
-            const fillPrice = ScaledDecimal.min(barOpen, active.takeProfitPrice);
-            closePosition(active, nowMs, fillPrice, "take-profit");
-            active = null;
-          }
+        const exitRes = evaluateIntrabarExit({
+          side: active.proposal.side,
+          barOpen,
+          barHigh,
+          barLow,
+          stopPrice: active.protectiveStopPrice,
+          tpPrice: active.takeProfitPrice
+        });
+
+        if (exitRes.closed && exitRes.exitPrice && exitRes.exitReason) {
+          const reason = exitRes.exitReason === "protective_stop" ? "stop" : "take-profit";
+          closePosition(active, nowMs, exitRes.exitPrice, reason);
+          active = null;
         }
       }
 
