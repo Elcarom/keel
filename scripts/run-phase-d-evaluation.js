@@ -50,6 +50,20 @@ async function run() {
     `Holdout Period:    ${new Date(HOLDOUT_FROM_TS).toISOString()} to ${new Date(HOLDOUT_TO_TS).toISOString()}`
   );
 
+  // Assert complete settled funding coverage before running evaluation (N2a)
+  for (const inst of INSTRUMENTS) {
+    const fundingGaps = store.marketDataRepo.detectFundingGaps({
+      instrumentId: inst,
+      fromFundingTs: IN_SAMPLE_FROM_TS + 8 * 3600 * 1000,
+      toFundingTs: HOLDOUT_TO_TS
+    });
+    if (fundingGaps.length > 0) {
+      throw new Error(
+        `Phase D evaluation aborted: missing settled funding data for ${inst} (${fundingGaps.length} gaps detected). Run scripts/ingest-3yr-data.js to ingest real funding rates.`
+      );
+    }
+  }
+
   const inSampleResults = [];
   const holdoutResults = [];
 

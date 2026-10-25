@@ -51,22 +51,33 @@ async function run() {
       throw new Error(`Data integrity failure: ${gaps.length} gaps detected in ${instrumentId}`);
     }
 
-    // Ingest/seed 8-hour settled funding rates across the 3 years
+    // Ingest real 8-hour settled funding rates across the 3 years via OKX public API
     console.log(`Populating 8H settled funding rates for ${instrumentId}...`);
-    const fundingRates = [];
     const dt8H = 8 * 3600 * 1000;
     const startFundingTs = FROM_OPEN_TS + dt8H;
-    for (let fTs = startFundingTs; fTs <= TO_OPEN_TS + 3600000; fTs += dt8H) {
-      // Historical base funding rate 0.01% (0.0001) standard across linear crypto swaps
-      fundingRates.push({
-        instrumentId,
-        fundingTs: fTs,
-        fundingRate: "0.0001",
-        realizedRate: "0.0001"
-      });
-    }
-    const insertedFunding = marketDataRepo.ingestSettledFunding(fundingRates);
+    const endFundingTs = TO_OPEN_TS + 3600000;
+    const insertedFunding = await ingestor.ingestFundingRates({
+      instrumentId,
+      fromFundingTs: startFundingTs,
+      toFundingTs: endFundingTs
+    });
     console.log(`Persisted ${insertedFunding} funding records for ${instrumentId}`);
+
+    // Verify funding coverage and continuity
+    const fundingGaps = marketDataRepo.detectFundingGaps({
+      instrumentId,
+      fromFundingTs: startFundingTs,
+      toFundingTs: endFundingTs
+    });
+    console.log(
+      `Funding gap verification for ${instrumentId}: ${fundingGaps.length} gaps detected.`
+    );
+    if (fundingGaps.length > 0) {
+      console.error("Detected funding gaps:", fundingGaps);
+      throw new Error(
+        `Funding data integrity failure: ${fundingGaps.length} gaps detected in ${instrumentId}`
+      );
+    }
   }
 
   // Compute coverage metadata
