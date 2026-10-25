@@ -166,25 +166,27 @@ export class UnattendedScheduler {
                 settledFundingRates: fundingRates
               });
 
-              ticksExecuted++;
+              if (tickResult.barEvaluated !== null) {
+                ticksExecuted++;
 
-              this.dataStore.auditRepo.append({
-                ts: nowMs,
-                actor: "scheduler",
-                clientIp: "127.0.0.1",
-                action: "scheduler.unattended_tick",
-                riskClass: "safe",
-                configHash: "system-scheduled",
-                details: {
-                  instrumentId: instId,
-                  strategyId: stratId,
-                  barOpenTs: latestBar.openTs,
-                  barClosePrice: latestBar.close,
-                  positionsOpened: tickResult.positionsOpened.length,
-                  positionsClosed: tickResult.positionsClosed.length,
-                  vetoedCount: tickResult.vetoedProposals.length
-                }
-              });
+                this.dataStore.auditRepo.append({
+                  ts: nowMs,
+                  actor: "scheduler",
+                  clientIp: "127.0.0.1",
+                  action: "scheduler.unattended_tick",
+                  riskClass: "safe",
+                  configHash: "system-scheduled",
+                  details: {
+                    instrumentId: instId,
+                    strategyId: stratId,
+                    barOpenTs: latestBar.openTs,
+                    barClosePrice: latestBar.close,
+                    positionsOpened: tickResult.positionsOpened.length,
+                    positionsClosed: tickResult.positionsClosed.length,
+                    vetoedCount: tickResult.vetoedProposals.length
+                  }
+                });
+              }
             } catch (err) {
               errors.push(`Strategy tick failed for ${stratId} on ${instId}: ${String(err)}`);
             }

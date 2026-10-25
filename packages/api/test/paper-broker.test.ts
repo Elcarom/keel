@@ -71,6 +71,68 @@ describe("PaperBroker (ADR-0006)", () => {
     store.close();
   });
 
+  it("N1: ticks the same confirmed bar 4 times and asserts exactly one open position and zero spurious exits", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const config = createDefaultConfig();
+
+    const broker = new PaperBroker({
+      clock,
+      ledgerRepo: store.ledgerRepo,
+      paperAccountRepo: store.paperAccountRepo,
+      getRiskConfig: () => config.risk
+    });
+
+    const strategy = new DonchianTrendStrategy({ channelLength: 5 });
+    const historyBars: ConfirmedBar[] = [];
+    for (let i = 0; i < 7; i++) {
+      historyBars.push(
+        makeBar({
+          openTs: 1_700_000_000_000 + i * 3600_000,
+          closeTs: 1_700_000_000_000 + (i + 1) * 3600_000,
+          high: String(49000 + i * 100),
+          low: String(48500 + i * 100),
+          close: String(48900 + i * 100)
+        })
+      );
+    }
+
+    // Signal bar with breakout to trigger long, but a deep intra-bar low (40000) far below the stop price
+    const signalBar = makeBar({
+      openTs: 1_700_000_000_000 + 7 * 3600_000,
+      closeTs: 1_700_000_000_000 + 8 * 3600_000,
+      open: "49600.00",
+      high: "52000.00",
+      low: "40000.00",
+      close: "51500.00"
+    });
+    historyBars.push(signalBar);
+
+    // Tick the same confirmed bar 4 times
+    let totalOpened = 0;
+    let totalClosed = 0;
+    for (let tick = 0; tick < 4; tick++) {
+      const res = broker.executeConfirmedBarTick({
+        bar: signalBar,
+        strategy,
+        featureBars: { "1H": historyBars }
+      });
+      totalOpened += res.positionsOpened.length;
+      totalClosed += res.positionsClosed.length;
+    }
+
+    const openPositions = store.paperAccountRepo.listOpenPositions();
+    const allPositions = store.paperAccountRepo.listAllPositions();
+
+    // Must be idempotent: exactly 1 position opened, 0 spurious exits, exactly 1 open position
+    expect(totalOpened).toBe(1);
+    expect(totalClosed).toBe(0);
+    expect(openPositions.length).toBe(1);
+    expect(allPositions.length).toBe(1);
+
+    store.close();
+  });
+
   it("conservatively executes protective stop when intrabar low hits stopPrice", () => {
     const clock = new ManualClock(1_700_000_000_000);
     const store = createSqliteDataStore({ dbPath: ":memory:", clock });

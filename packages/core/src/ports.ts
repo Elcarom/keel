@@ -532,6 +532,15 @@ export interface PaperAccountRepository {
   }): number;
   getCircuitBreaker(): CircuitBreakerRecord;
   setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
+  getLastProcessedBarCloseTs(params: {
+    readonly instrumentId: string;
+    readonly strategyId: string;
+  }): number | null;
+  recordProcessedBar(params: {
+    readonly instrumentId: string;
+    readonly strategyId: string;
+    readonly closeTs: number;
+  }): void;
 }
 
 export const PromotionStageSchema = z.enum([
