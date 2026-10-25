@@ -9,9 +9,12 @@ import {
   PromotionStageSchema,
   ScaledDecimal,
   StrategyPromotionRecordSchema,
+  getUtcDayStartMs,
+  getUtcWeekStartMs,
   type CircuitBreakerRecord,
   type LedgerEntryRecord,
   type LedgerRepository,
+  type LedgerRiskMetrics,
   type LedgerTrialBalance,
   type NewLedgerJournalInput,
   type PaperAccountRepository,
@@ -274,6 +277,98 @@ export function createLedgerRepository(
         netEquityUsdt: cash.toFixed(8),
         entryCount: rows.length
       });
+    },
+
+    getRiskMetrics(params: {
+      readonly asOfMs: number;
+      readonly strategyId?: string | null | undefined;
+      readonly openUnrealizedPnlUsdt?: ScaledDecimal | undefined;
+    }): LedgerRiskMetrics {
+      const { asOfMs, strategyId, openUnrealizedPnlUsdt } = params;
+      const unrealized = openUnrealizedPnlUsdt ?? ScaledDecimal.zero();
+      const dayStartMs = getUtcDayStartMs(asOfMs);
+      const weekStartMs = getUtcWeekStartMs(asOfMs);
+
+      let query = `SELECT ts, strategy_id, debit_account, credit_account, amount_usdt
+                   FROM ledger_entries
+                   WHERE ts <= ?`;
+      const queryParams: unknown[] = [asOfMs];
+      if (strategyId) {
+        query += ` AND (strategy_id IS NULL OR strategy_id = ?)`;
+        queryParams.push(strategyId);
+      }
+      query += ` ORDER BY ts ASC, rowid ASC`;
+
+      const rows = db.prepare(query).all(...queryParams) as {
+        ts: number;
+        strategy_id: string | null;
+        debit_account: string;
+        credit_account: string;
+        amount_usdt: string;
+      }[];
+
+      let runningCash = ScaledDecimal.zero();
+      let hwm = ScaledDecimal.zero();
+      let dayStartCash = ScaledDecimal.zero();
+      let weekStartCash = ScaledDecimal.zero();
+      let feesToday = ScaledDecimal.zero();
+
+      let hasDayStart = false;
+      let hasWeekStart = false;
+
+      for (const row of rows) {
+        const amt = ScaledDecimal.fromString(row.amount_usdt);
+        if (row.debit_account === "cash:usdt") {
+          runningCash = runningCash.add(amt);
+        } else if (row.credit_account === "cash:usdt") {
+          runningCash = runningCash.sub(amt);
+        }
+
+        if (runningCash.gt(hwm)) {
+          hwm = runningCash;
+        }
+
+        if (row.ts <= dayStartMs) {
+          dayStartCash = runningCash;
+          hasDayStart = true;
+        } else {
+          if (row.debit_account === "fees_expense:usdt") {
+            feesToday = feesToday.add(amt);
+          }
+        }
+
+        if (row.ts <= weekStartMs) {
+          weekStartCash = runningCash;
+          hasWeekStart = true;
+        }
+      }
+
+      if (!hasDayStart) {
+        dayStartCash = runningCash;
+      }
+      if (!hasWeekStart) {
+        weekStartCash = runningCash;
+      }
+
+      const currentEquity = runningCash.add(unrealized);
+      if (currentEquity.gt(hwm)) {
+        hwm = currentEquity;
+      }
+
+      let drawdownPct = ScaledDecimal.zero();
+      if (hwm.isPositive() && currentEquity.lt(hwm)) {
+        const diff = hwm.sub(currentEquity);
+        drawdownPct = diff.mul(ScaledDecimal.fromString("100")).divFloor(hwm);
+      }
+
+      return {
+        currentEquityUsdt: currentEquity,
+        dayStartEquityUsdt: dayStartCash,
+        weekStartEquityUsdt: weekStartCash,
+        highWaterMarkEquityUsdt: hwm,
+        feesTodayUsdt: feesToday,
+        drawdownPct
+      };
     }
   };
 }
@@ -383,6 +478,20 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
         .prepare(`SELECT * FROM paper_orders ORDER BY created_at_ms DESC LIMIT ?`)
         .all(limit);
       return rows.map((r) => mapOrderRow(r as Record<string, unknown>));
+    },
+
+    countFilledOrdersToday(params: {
+      readonly sinceMs: number;
+      readonly strategyId?: string | null | undefined;
+    }): number {
+      let query = `SELECT COUNT(*) AS cnt FROM paper_orders WHERE status = 'FILLED' AND order_role = 'ENTRY' AND created_at_ms >= ?`;
+      const queryParams: unknown[] = [params.sinceMs];
+      if (params.strategyId) {
+        query += ` AND strategy_id = ?`;
+        queryParams.push(params.strategyId);
+      }
+      const row = db.prepare(query).get(...queryParams) as { cnt: number } | undefined;
+      return Number(row?.cnt ?? 0);
     },
 
     getCircuitBreaker(): CircuitBreakerRecord {

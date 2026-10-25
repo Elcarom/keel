@@ -1,6 +1,7 @@
 import {
   RiskGuardian,
   ScaledDecimal,
+  getUtcDayStartMs,
   type BarTimeframe,
   type Broker,
   type CircuitBreakerRecord,
@@ -323,15 +324,14 @@ export class PaperBroker implements Broker {
         } else {
           const riskConfig = this.getRiskConfig();
           const guardian = new RiskGuardian(riskConfig);
-          const trialBal = this.ledgerRepo.getTrialBalance();
-          const equity = ScaledDecimal.fromString(trialBal.netEquityUsdt);
-
-          // Aggregate existing open positions exposure
+          // Aggregate existing open positions exposure & unrealized PnL
           const currentOpen = this.paperAccountRepo.listOpenPositions();
           let grossNotional = ScaledDecimal.zero();
           let netSignedNotional = ScaledDecimal.zero();
           const notionalByInstrument: Record<string, ScaledDecimal> = {};
           let strategyGrossNotional = ScaledDecimal.zero();
+          let totalUnrealizedPnl = ScaledDecimal.zero();
+          let strategyUnrealizedPnl = ScaledDecimal.zero();
 
           for (const p of currentOpen) {
             const pContracts = ScaledDecimal.fromString(p.contracts);
@@ -346,26 +346,46 @@ export class PaperBroker implements Broker {
             const existingInst = notionalByInstrument[p.instrumentId] ?? ScaledDecimal.zero();
             notionalByInstrument[p.instrumentId] = existingInst.add(pNotional);
 
+            const pUnrealized = ScaledDecimal.fromString(p.unrealizedPnlUsdt);
+            totalUnrealizedPnl = totalUnrealizedPnl.add(pUnrealized);
+
             if (p.strategyId === prop.strategyId) {
               strategyGrossNotional = strategyGrossNotional.add(pNotional);
+              strategyUnrealizedPnl = strategyUnrealizedPnl.add(pUnrealized);
             }
           }
 
+          const dayStartMs = getUtcDayStartMs(asOfMs);
+          const strategyMetrics = this.ledgerRepo.getRiskMetrics({
+            asOfMs,
+            strategyId: prop.strategyId,
+            openUnrealizedPnlUsdt: strategyUnrealizedPnl
+          });
+          const portfolioMetrics = this.ledgerRepo.getRiskMetrics({
+            asOfMs,
+            strategyId: null,
+            openUnrealizedPnlUsdt: totalUnrealizedPnl
+          });
+          const tradesTodayCount = this.paperAccountRepo.countFilledOrdersToday({
+            sinceMs: dayStartMs,
+            strategyId: prop.strategyId
+          });
+
           const strategyState: StrategyRiskState = {
             strategyId: prop.strategyId,
-            equityUsdt: equity,
-            dayStartEquityUsdt: equity,
-            weekStartEquityUsdt: equity,
-            highWaterMarkEquityUsdt: equity,
+            equityUsdt: strategyMetrics.currentEquityUsdt,
+            dayStartEquityUsdt: strategyMetrics.dayStartEquityUsdt,
+            weekStartEquityUsdt: strategyMetrics.weekStartEquityUsdt,
+            highWaterMarkEquityUsdt: strategyMetrics.highWaterMarkEquityUsdt,
             currentGrossNotionalUsdt: strategyGrossNotional,
-            tradesTodayCount: 0,
-            feesTodayUsdt: ScaledDecimal.zero()
+            tradesTodayCount,
+            feesTodayUsdt: strategyMetrics.feesTodayUsdt
           };
 
           const portfolioState: PortfolioRiskState = {
-            equityUsdt: equity,
-            dayStartEquityUsdt: equity,
-            highWaterMarkEquityUsdt: equity,
+            equityUsdt: portfolioMetrics.currentEquityUsdt,
+            dayStartEquityUsdt: portfolioMetrics.dayStartEquityUsdt,
+            highWaterMarkEquityUsdt: portfolioMetrics.highWaterMarkEquityUsdt,
             grossNotionalUsdt: grossNotional,
             netSignedNotionalUsdt: netSignedNotional,
             notionalByInstrumentUsdt: notionalByInstrument,

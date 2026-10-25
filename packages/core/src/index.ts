@@ -114,6 +114,7 @@ export {
   type LedgerAccount,
   type LedgerEntryRecord,
   type LedgerRepository,
+  type LedgerRiskMetrics,
   type LedgerTrialBalance,
   type LlmCallBudgetReservation,
   type LlmCompletionRequest,
@@ -154,6 +155,8 @@ export {
 export {
   PromotionLadderEvaluator,
   RiskGuardian,
+  getUtcDayStartMs,
+  getUtcWeekStartMs,
   type PortfolioRiskState,
   type RiskDecision,
   type RiskVetoCode,

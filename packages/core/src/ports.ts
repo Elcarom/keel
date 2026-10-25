@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ScaledDecimal } from "./decimal.js";
 import {
   ConfigRiskClassSchema,
   KeelConfigSchema,
@@ -442,10 +443,24 @@ export interface NewLedgerJournalInput {
   readonly description: string;
 }
 
+export interface LedgerRiskMetrics {
+  readonly currentEquityUsdt: ScaledDecimal;
+  readonly dayStartEquityUsdt: ScaledDecimal;
+  readonly weekStartEquityUsdt: ScaledDecimal;
+  readonly highWaterMarkEquityUsdt: ScaledDecimal;
+  readonly feesTodayUsdt: ScaledDecimal;
+  readonly drawdownPct: ScaledDecimal;
+}
+
 export interface LedgerRepository {
   recordJournal(input: NewLedgerJournalInput): LedgerEntryRecord;
   listEntries(limit?: number): readonly LedgerEntryRecord[];
   getTrialBalance(): LedgerTrialBalance;
+  getRiskMetrics(params: {
+    readonly asOfMs: number;
+    readonly strategyId?: string | null | undefined;
+    readonly openUnrealizedPnlUsdt?: ScaledDecimal | undefined;
+  }): LedgerRiskMetrics;
 }
 
 export const PaperPositionRecordSchema = z.object({
@@ -495,6 +510,10 @@ export interface PaperAccountRepository {
   listAllPositions(limit?: number): readonly PaperPositionRecord[];
   saveOrder(order: PaperOrderRecord): PaperOrderRecord;
   listOrders(limit?: number): readonly PaperOrderRecord[];
+  countFilledOrdersToday(params: {
+    readonly sinceMs: number;
+    readonly strategyId?: string | null | undefined;
+  }): number;
   getCircuitBreaker(): CircuitBreakerRecord;
   setCircuitBreaker(record: CircuitBreakerRecord): CircuitBreakerRecord;
 }

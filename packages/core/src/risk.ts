@@ -61,6 +61,17 @@ export type RiskDecision =
       readonly triggeredCircuitBreaker?: CircuitBreakerRecord | undefined;
     };
 
+export function getUtcDayStartMs(ts: number): number {
+  return Math.floor(ts / 86_400_000) * 86_400_000;
+}
+
+export function getUtcWeekStartMs(ts: number): number {
+  const d = new Date(ts);
+  const day = d.getUTCDay();
+  const diffDays = day === 0 ? -6 : 1 - day;
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + diffDays);
+}
+
 function pctToFractionDecimal(pct: number): ScaledDecimal {
   return ScaledDecimal.fromString((pct / 100).toFixed(8));
 }

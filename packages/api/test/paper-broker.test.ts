@@ -178,4 +178,66 @@ describe("PaperBroker (ADR-0006)", () => {
 
     store.close();
   });
+
+  it("persists day-start equity and HWM from ledger, tripping daily loss halt when intraday loss exceeds dailyLossStopPct (C2)", () => {
+    // UTC timestamp: 1700006400000 is 2023-11-14 24:00:00 (midnight UTC)
+    const midnightUtcMs = 1_700_006_400_000;
+    const clock = new ManualClock(midnightUtcMs + 3_600_000); // 01:00 UTC
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const config = createDefaultConfig();
+    // Daily loss stop = 3%
+    config.risk.portfolio.dailyLossStopPct = 5.0;
+    config.risk.strategy.dailyLossStopPct = 3.0;
+
+    const broker = new PaperBroker({
+      clock,
+      ledgerRepo: store.ledgerRepo,
+      paperAccountRepo: store.paperAccountRepo,
+      getRiskConfig: () => config.risk
+    });
+
+    const strategy = new DonchianTrendStrategy({ channelLength: 5 });
+
+    // 1. Initial ledger journal has 10,000 USDT at midnight
+    // Now simulate an intraday realized loss of 400 USDT (4% loss vs 10,000 day start)
+    store.ledgerRepo.recordJournal({
+      txGroupId: "tx-intraday-loss",
+      ts: clock.nowMs(),
+      strategyId: strategy.strategyId,
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "realized_pnl:usdt",
+      creditAccount: "cash:usdt",
+      amountUsdt: "400.00000000",
+      description: "Loss from closed trade"
+    });
+    const historyBars: ConfirmedBar[] = [];
+    for (let i = 0; i < 8; i++) {
+      historyBars.push(
+        makeBar({
+          openTs: clock.nowMs() - (8 - i) * 3600_000,
+          closeTs: clock.nowMs() - (7 - i) * 3600_000,
+          high: String(49000 + i * 200),
+          low: String(48500 + i * 200),
+          close: String(49100 + i * 200)
+        })
+      );
+    }
+    const currentBar = historyBars.at(-1);
+    expect(currentBar).toBeDefined();
+    if (!currentBar) throw new Error("Bar missing");
+
+    const result = broker.executeConfirmedBarTick({
+      bar: currentBar,
+      strategy,
+      featureBars: { "1H": historyBars }
+    });
+
+    // With persistent dayStartEquity = 10,000, 400 loss (4% > 3%) MUST trigger DAILY_LOSS_HALT veto!
+    expect(result.positionsOpened).toHaveLength(0);
+    expect(result.vetoedProposals.length).toBeGreaterThanOrEqual(1);
+    expect(result.vetoedProposals[0]?.reason).toContain("breached daily loss stop");
+    expect(broker.getCircuitBreaker().status).toBe("DAILY_LOSS_HALT");
+
+    store.close();
+  });
 });
