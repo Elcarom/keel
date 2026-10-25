@@ -109,7 +109,8 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
       promotion: { currentStage: string; eligibleNextStage: string };
     };
     expect(promoBody.promotion.currentStage).toBe("Demo");
-    expect(promoBody.promotion.eligibleNextStage).toBe("Live-Ramp");
+    // Once promoted to Demo, must remain ineligible for Live-Ramp until Demo criteria are evaluated and met (C9)
+    expect(promoBody.promotion.eligibleNextStage).toBeNull();
 
     await app.close();
   });
@@ -275,6 +276,182 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     expect(evalBody.promotion.paperDrawdownPct).toBeGreaterThanOrEqual(14.0);
     expect(evalBody.promotion.currentStage).toBe("Research");
     expect(evalBody.promotion.demotionReason).toContain("catastrophic drawdown");
+
+    await app.close();
+  });
+
+  it("evaluates calendar duration and trade count requirements from persistent ledger state before granting Demo eligibility (C9)", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    let bootstrapToken = "";
+    const app = await createKeelServer({
+      config,
+      clock,
+      dataStore,
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    const bootRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap",
+      headers: {
+        "cf-connecting-ip": "203.0.113.42",
+        "x-forwarded-proto": "https"
+      },
+      payload: {
+        bootstrapToken,
+        username: "captain",
+        password: "correct-horse-battery-staple"
+      }
+    });
+    const setCookie = String(bootRes.headers["set-cookie"] ?? "");
+    const cookieHeader = setCookie.split(";")[0] ?? "";
+
+    // 1. Seed a passing experiment
+    dataStore.experimentRepo.saveExperiment({
+      experimentId: "exp-pass-1",
+      strategyId: "donchian-trend",
+      strategyVersion: "1.0.0",
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      dataSnapshotId: "0".repeat(64),
+      configHash: "1".repeat(64),
+      fromTs: 1_700_000_000_000,
+      toTs: 1_710_000_000_000,
+      totalTrades: 200,
+      winRate: 0.55,
+      avgR: 0.35,
+      netPnlUsdt: "1250.00",
+      totalFeesUsdt: "45.00",
+      totalFundingUsdt: "-12.00",
+      sharpeRatio: 1.5,
+      deflatedSharpeRatio: 0.95,
+      maxDrawdownPct: 5.0,
+      stressNetExpectancyR: 0.45,
+      walkForwardOutOfSampleAvgR: 0.25,
+      replayGatePassed: true,
+      createdAtMs: clock.nowMs(),
+      buyAndHoldReturnPct: 5.0,
+      buyAndHoldSharpeRatio: 0.8,
+      randomEntryReturnPct: -2.0,
+      randomEntrySharpeRatio: -0.3
+    });
+
+    // 2. Strategy is in Paper mode, but only 5 days have elapsed with 10 trades
+    const startMs = clock.nowMs() - 5 * 86_400_000;
+    for (let i = 0; i < 10; i++) {
+      dataStore.paperAccountRepo.savePosition({
+        positionId: `pos-${i}`,
+        strategyId: "donchian-trend",
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        contracts: "1",
+        entryPrice: "50000.00",
+        protectiveStopPrice: "49000.00",
+        takeProfitPrice: null,
+        initialRiskUsdt: "10.00",
+        unrealizedPnlUsdt: "0.00",
+        realizedPnlUsdt: "5.00",
+        feesPaidUsdt: "0.50",
+        fundingPaidUsdt: "0.00",
+        openedAtMs: startMs + i * 3600_000,
+        lastFundingSettledTs: startMs + i * 3600_000,
+        status: "CLOSED",
+        closedAtMs: startMs + i * 3600_000 + 1800_000,
+        exitPrice: "50500.00",
+        exitReason: "take_profit"
+      });
+      dataStore.ledgerRepo.recordJournal({
+        txGroupId: `tx-${i}`,
+        ts: startMs + i * 3600_000,
+        strategyId: "donchian-trend",
+        instrumentId: "BTC-USDT-SWAP",
+        debitAccount: "cash:usdt",
+        creditAccount: "realized_pnl:usdt",
+        amountUsdt: "5.00000000",
+        description: `Trade ${i}`
+      });
+    }
+
+    dataStore.promotionRepo.upsertPromotion({
+      strategyId: "donchian-trend",
+      currentStage: "Paper",
+      latestExperimentId: "exp-pass-1",
+      replayGatePassed: true,
+      paperTradesCount: 10,
+      paperDrawdownPct: 0.0,
+      rampAllocationPct: 100,
+      eligibleNextStage: null,
+      demotionReason: null,
+      updatedAtMs: clock.nowMs()
+    });
+
+    // 3. Evaluate: 5 days (< 30) and 10 trades (< 50) MUST remain ineligible for Demo
+    const evalRes1 = await app.inject({
+      method: "POST",
+      url: "/api/v1/promotion/evaluate",
+      headers: { cookie: cookieHeader },
+      payload: { strategyId: "donchian-trend" }
+    });
+    expect(evalRes1.statusCode).toBe(200);
+    const body1 = evalRes1.json() as { promotion: { eligibleNextStage: string | null } };
+    expect(body1.promotion.eligibleNextStage).toBeNull();
+
+    // 4. Now add remaining trades and advance clock past 30 days (e.g. 35 days)
+    const thirtyFiveDaysAgo = clock.nowMs() - 35 * 86_400_000;
+    dataStore.ledgerRepo.recordJournal({
+      txGroupId: "tx-early",
+      ts: thirtyFiveDaysAgo,
+      strategyId: "donchian-trend",
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "cash:usdt",
+      creditAccount: "realized_pnl:usdt",
+      amountUsdt: "1.00000000",
+      description: "First trading activity 35 days ago"
+    });
+
+    for (let i = 10; i < 55; i++) {
+      dataStore.paperAccountRepo.savePosition({
+        positionId: `pos-${i}`,
+        strategyId: "donchian-trend",
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        contracts: "1",
+        entryPrice: "50000.00",
+        protectiveStopPrice: "49000.00",
+        takeProfitPrice: null,
+        initialRiskUsdt: "10.00",
+        unrealizedPnlUsdt: "0.00",
+        realizedPnlUsdt: "5.00",
+        feesPaidUsdt: "0.50",
+        fundingPaidUsdt: "0.00",
+        openedAtMs: thirtyFiveDaysAgo + i * 3600_000,
+        lastFundingSettledTs: thirtyFiveDaysAgo + i * 3600_000,
+        status: "CLOSED",
+        closedAtMs: thirtyFiveDaysAgo + i * 3600_000 + 1800_000,
+        exitPrice: "50500.00",
+        exitReason: "take_profit"
+      });
+    }
+
+    // 5. Evaluate again: 35 days (>= 30) and 55 trades (>= 50) -> becomes eligible for Demo!
+    const evalRes2 = await app.inject({
+      method: "POST",
+      url: "/api/v1/promotion/evaluate",
+      headers: { cookie: cookieHeader },
+      payload: { strategyId: "donchian-trend" }
+    });
+    expect(evalRes2.statusCode).toBe(200);
+    const body2 = evalRes2.json() as { promotion: { eligibleNextStage: string | null } };
+    expect(body2.promotion.eligibleNextStage).toBe("Demo");
 
     await app.close();
   });

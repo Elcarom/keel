@@ -59,7 +59,6 @@ export const PromotionLadderConfigSchema = z.object({
   replayMinWalkForwardFolds: z.number().int().min(3).max(20).default(5),
   replayMinSharpe: z.number().min(0.2).max(5.0).default(1.0),
   replayMinDeflatedSharpeConfidence: z.number().min(0.5).max(0.999).default(0.9),
-  replayMaxPbo: z.number().min(0.01).max(0.5).default(0.2),
   replayCostStressMultiplier: z.number().min(1.25).max(5.0).default(2.0),
   shadowMinDays: z.number().int().min(7).max(180).default(14),
   shadowMinTrades: z.number().int().min(10).max(500).default(30),
@@ -375,15 +374,6 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     min: 0.5,
     max: 0.999,
     defaultValue: 0.9,
-    riskClass: "confirm"
-  },
-  {
-    path: "promotionLadder.replayMaxPbo",
-    label: "Maximum Probability of Backtest Overfitting (PBO)",
-    helpText: "Upper bound on PBO allowed for Replay-Validated promotion.",
-    min: 0.01,
-    max: 0.5,
-    defaultValue: 0.2,
     riskClass: "confirm"
   },
   {

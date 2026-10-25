@@ -1228,13 +1228,32 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const actualPaperTradesCount = strategyPositions.length;
         const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
 
+        // Compute actual days in stage from persistent ledger / position timestamps (C9)
+        const nowMs = clock.nowMs();
+        const ledgerEntries = dataStore.ledgerRepo.listEntries();
+        const strategyEntries = ledgerEntries.filter((e) => e.strategyId === body.strategyId);
+        let daysInStage = 0;
+        if (strategyEntries.length > 0) {
+          const earliestMs = strategyEntries.reduce((min, e) => Math.min(min, e.ts), Infinity);
+          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
+        } else if (strategyPositions.length > 0) {
+          const earliestMs = strategyPositions.reduce(
+            (min, p) => Math.min(min, p.openedAtMs),
+            Infinity
+          );
+          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
+        }
+
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
           currentStage,
           latestExperiment: latestExp,
           paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct,
-          asOfMs: clock.nowMs()
+          paperDurationDays: daysInStage,
+          shadowDurationDays: daysInStage,
+          shadowTradesCount: actualPaperTradesCount,
+          asOfMs: nowMs
         });
 
         const saved = dataStore.promotionRepo.upsertPromotion(evaluated);
@@ -1359,26 +1378,56 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
                 : 10;
         }
 
-        let eligibleNextStage: PromotionStage | null = null;
-        if (body.targetStage === "Paper") {
-          eligibleNextStage = "Demo";
-        } else if (body.targetStage === "Demo") {
-          eligibleNextStage = "Live-Ramp";
-        } else if (body.targetStage === "Live-Ramp") {
-          eligibleNextStage = "Live";
+        // Re-evaluate eligibility for the newly assigned stage to prevent skipping gates (C9)
+        const active = getActiveSnapshot();
+        const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
+        const experiments = dataStore.experimentRepo.listExperiments(50);
+        const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
+        const allPositions = dataStore.paperAccountRepo.listAllPositions();
+        const strategyPositions = allPositions.filter(
+          (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
+        );
+        const actualPaperTradesCount = strategyPositions.length;
+        const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
+
+        const nowMs = clock.nowMs();
+        const ledgerEntries = dataStore.ledgerRepo.listEntries();
+        const strategyEntries = ledgerEntries.filter((e) => e.strategyId === body.strategyId);
+        let daysInStage = 0;
+        if (strategyEntries.length > 0) {
+          const earliestMs = strategyEntries.reduce((min, e) => Math.min(min, e.ts), Infinity);
+          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
+        } else if (strategyPositions.length > 0) {
+          const earliestMs = strategyPositions.reduce(
+            (min, p) => Math.min(min, p.openedAtMs),
+            Infinity
+          );
+          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
         }
+
+        const evaluated = evaluator.evaluate({
+          strategyId: body.strategyId,
+          currentStage: body.targetStage,
+          latestExperiment: latestExp,
+          paperTradesCount: actualPaperTradesCount,
+          paperDrawdownPct,
+          paperDurationDays: daysInStage,
+          shadowDurationDays: daysInStage,
+          shadowTradesCount: actualPaperTradesCount,
+          asOfMs: nowMs
+        });
 
         const updatedPromo = dataStore.promotionRepo.upsertPromotion({
           strategyId: body.strategyId,
           currentStage: body.targetStage,
           latestExperimentId: existingPromo.latestExperimentId,
           replayGatePassed: existingPromo.replayGatePassed,
-          paperTradesCount: existingPromo.paperTradesCount,
-          paperDrawdownPct: computeStrategyDrawdownPct(body.strategyId),
+          paperTradesCount: actualPaperTradesCount,
+          paperDrawdownPct,
           rampAllocationPct,
-          eligibleNextStage,
+          eligibleNextStage: evaluated.eligibleNextStage,
           demotionReason: null,
-          updatedAtMs: clock.nowMs()
+          updatedAtMs: nowMs
         });
 
         dataStore.auditRepo.append({
