@@ -8,6 +8,7 @@
     { "path": "./packages/ai" },
     { "path": "./packages/broker" },
     { "path": "./packages/api" },
+    { "path": "./packages/spec" },
     { "path": "./packages/web" }
   ]
 }

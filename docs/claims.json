@@ -256,5 +256,17 @@
     "claim": "README & Go-Live Checklist: Enforces bootstrap, session auth, step-up config mutation, rollback, vault, audit, and backup.",
     "testFile": "packages/api/test/server.test.ts",
     "testName": "enforces bootstrap -> session auth -> step-up config mutation -> rollback -> vault -> audit -> backup"
+  },
+  {
+    "id": "CLAIM-ADR-0020-SPEC-CANONICAL-HASH",
+    "claim": "ADR-0020 Strategy Spec V1: Produces deterministic canonical hash invariant to object key ordering.",
+    "testFile": "packages/spec/test/spec-engine.test.ts",
+    "testName": "produces deterministic canonical hash invariant to object key ordering"
+  },
+  {
+    "id": "CLAIM-ADR-0020-SPEC-GOLDEN-PARITY",
+    "claim": "ADR-0020 Strategy Spec V1: Pure causal SpecStrategy achieves proposal-by-proposal parity with DonchianTrendStrategy.",
+    "testFile": "packages/spec/test/spec-engine.test.ts",
+    "testName": "achieves proposal-by-proposal parity with DonchianTrendStrategy"
   }
 ]
