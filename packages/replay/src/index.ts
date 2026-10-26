@@ -19,7 +19,8 @@ import {
   type ExperimentRepository,
   type InstrumentSpec,
   type MarketDataRepository,
-  type Proposal
+  type Proposal,
+  type SettledFundingRate
 } from "@keel/core";
 import { BaselineChooser, type Strategy } from "@keel/strategy";
 
@@ -292,21 +293,47 @@ export function computeBuyAndHoldBaseline(params: {
   let prevEquityNum = initialEquityNum;
   const periodicReturns: number[] = [];
 
+  const lastBar = bars[bars.length - 1];
+  const allSettledFunding = lastBar
+    ? params.marketDataRepo.getSettledFundingInRange({
+        instrumentId: spec.instrumentId,
+        fromTs: firstBar.openTs,
+        toTs: lastBar.closeTs
+      })
+    : [];
+
+  const barFundingMap = new Map<number, SettledFundingRate[]>();
+  let fundingIdx = 0;
+  for (const bar of bars) {
+    const list: SettledFundingRate[] = [];
+    while (fundingIdx < allSettledFunding.length) {
+      const item = allSettledFunding[fundingIdx];
+      if (!item || item.fundingTs > bar.closeTs) {
+        break;
+      }
+      list.push(item);
+      fundingIdx += 1;
+    }
+    if (list.length > 0) {
+      barFundingMap.set(bar.closeTs, list);
+    }
+  }
+
   for (let i = 0; i < bars.length; i += 1) {
     const bar = bars[i];
     if (!bar) continue;
-    const settled = params.marketDataRepo.getSettledFundingInRange({
-      instrumentId: spec.instrumentId,
-      fromTs: lastFundingTs + 1,
-      toTs: bar.closeTs
-    });
-    for (const f of settled) {
-      const markClose = ScaledDecimal.fromString(bar.close);
-      const markNotional = markClose.mul(baseQty);
-      const rate = ScaledDecimal.fromString(f.fundingRate);
-      const rawPayment = markNotional.mul(rate);
-      fundingAccrued = fundingAccrued.sub(rawPayment);
-      lastFundingTs = f.fundingTs;
+    const settled = barFundingMap.get(bar.closeTs);
+    if (settled) {
+      for (const f of settled) {
+        if (f.fundingTs > lastFundingTs) {
+          const markClose = ScaledDecimal.fromString(bar.close);
+          const markNotional = markClose.mul(baseQty);
+          const rate = ScaledDecimal.fromString(f.fundingRate);
+          const rawPayment = markNotional.mul(rate);
+          fundingAccrued = fundingAccrued.sub(rawPayment);
+          lastFundingTs = f.fundingTs;
+        }
+      }
     }
 
     const closePrice = ScaledDecimal.fromString(bar.close);
@@ -356,6 +383,31 @@ export function computeBuyAndHoldBaseline(params: {
   };
 }
 
+function getMedian(sorted: number[]): number {
+  const n = sorted.length;
+  if (n === 0) return 0;
+  const mid = Math.floor(n / 2);
+  const midVal = sorted[mid] ?? 0;
+  if (n % 2 !== 0) {
+    return midVal;
+  }
+  const prevVal = sorted[mid - 1] ?? 0;
+  return (prevVal + midVal) / 2;
+}
+
+function getPercentile(sorted: number[], p: number): number {
+  const n = sorted.length;
+  if (n === 0) return 0;
+  if (n === 1) return sorted[0] ?? 0;
+  const rank = (p / 100) * (n - 1);
+  const low = Math.floor(rank);
+  const high = Math.ceil(rank);
+  const lowVal = sorted[low] ?? 0;
+  const highVal = sorted[high] ?? lowVal;
+  const weight = rank - low;
+  return lowVal * (1 - weight) + highVal * weight;
+}
+
 export function computeRandomEntryBaseline(params: {
   readonly bars: readonly ConfirmedBar[];
   readonly instrumentSpec: InstrumentSpec;
@@ -366,10 +418,20 @@ export function computeRandomEntryBaseline(params: {
   readonly riskFraction?: number | undefined;
   readonly maxLeverage?: number | undefined;
   readonly seed?: number | undefined;
+  readonly numPaths?: number | undefined;
+  readonly strategySharpe?: number | undefined;
 }): BenchmarkBaseline {
   const bars = params.bars;
+  const numPaths = Math.max(1, params.numPaths ?? 200);
   if (bars.length < 2) {
-    return { returnPct: 0, sharpeRatio: 0, maxDrawdownPct: 0 };
+    return {
+      returnPct: 0,
+      sharpeRatio: 0,
+      maxDrawdownPct: 0,
+      p75SharpeRatio: 0,
+      percentileRank: 0,
+      pathCount: 0
+    };
   }
   const spec = params.instrumentSpec;
   const costFraction = ScaledDecimal.fromString((params.totalOneWayCostBps / 10_000).toFixed(8));
@@ -377,19 +439,57 @@ export function computeRandomEntryBaseline(params: {
   const maxLeverage = params.maxLeverage ?? 2.0;
   const riskFractionDec = ScaledDecimal.fromString(riskFraction.toFixed(8));
   const maxLeverageDec = ScaledDecimal.fromString(maxLeverage.toFixed(8));
+  const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(params.timeframe));
+  const onePoint = ScaledDecimal.fromString("1.00000000");
+  const twoPercent = ScaledDecimal.fromString("0.02000000");
+  const twoPointFive = ScaledDecimal.fromString("2.50000000");
 
-  let prngState = (params.seed ?? 1337) >>> 0;
-  const prng = (): number => {
-    prngState = (1664525 * prngState + 1013904223) >>> 0;
-    return prngState / 4294967296;
-  };
+  interface PrecomputedBar {
+    readonly closeTs: number;
+    readonly low: ScaledDecimal;
+    readonly high: ScaledDecimal;
+    readonly close: ScaledDecimal;
+  }
+  const precomputedBars: PrecomputedBar[] = [];
+  for (let i = 0; i < bars.length; i += 1) {
+    const b = bars[i];
+    if (b) {
+      precomputedBars.push({
+        closeTs: b.closeTs,
+        low: ScaledDecimal.fromString(b.low),
+        high: ScaledDecimal.fromString(b.high),
+        close: ScaledDecimal.fromString(b.close)
+      });
+    }
+  }
 
-  let cashEquity = params.initialEquityUsdt;
-  const initialEquityNum = Number(cashEquity.toString());
-  let peakEquityNum = initialEquityNum;
-  let maxDrawdownPct = 0;
-  let prevEquityNum = initialEquityNum;
-  const periodicReturns: number[] = [];
+  const firstBar = bars[0];
+  const lastBar = bars[bars.length - 1];
+  const allSettledFunding =
+    firstBar && lastBar
+      ? params.marketDataRepo.getSettledFundingInRange({
+          instrumentId: spec.instrumentId,
+          fromTs: firstBar.openTs,
+          toTs: lastBar.closeTs
+        })
+      : [];
+
+  const barFundingMap = new Map<number, SettledFundingRate[]>();
+  let fundingIdx = 0;
+  for (const bar of precomputedBars) {
+    const list: SettledFundingRate[] = [];
+    while (fundingIdx < allSettledFunding.length) {
+      const item = allSettledFunding[fundingIdx];
+      if (!item || item.fundingTs > bar.closeTs) {
+        break;
+      }
+      list.push(item);
+      fundingIdx += 1;
+    }
+    if (list.length > 0) {
+      barFundingMap.set(bar.closeTs, list);
+    }
+  }
 
   interface RandomPosition {
     side: "long" | "short";
@@ -403,52 +503,177 @@ export function computeRandomEntryBaseline(params: {
     barsHeld: number;
   }
 
-  let active: RandomPosition | null = null;
+  const pathReturns: number[] = [];
+  const pathSharpes: number[] = [];
+  const pathMaxDrawdowns: number[] = [];
 
-  for (let i = 0; i < bars.length; i += 1) {
-    const bar = bars[i];
-    if (!bar) continue;
-    const barLow = ScaledDecimal.fromString(bar.low);
-    const barHigh = ScaledDecimal.fromString(bar.high);
-    const barClose = ScaledDecimal.fromString(bar.close);
+  for (let p = 0; p < numPaths; p += 1) {
+    let prngState = ((params.seed ?? 1337) + p * 7919) >>> 0 || 1;
+    const prng = (): number => {
+      prngState = (1664525 * prngState + 1013904223) >>> 0;
+      return prngState / 4294967296;
+    };
 
-    if (active) {
-      active.barsHeld += 1;
-      const settled = params.marketDataRepo.getSettledFundingInRange({
-        instrumentId: spec.instrumentId,
-        fromTs: active.lastFundingTs + 1,
-        toTs: bar.closeTs
-      });
-      for (const f of settled) {
+    let cashEquity = params.initialEquityUsdt;
+    const initialEquityNum = Number(cashEquity.toString());
+    let peakEquityNum = initialEquityNum;
+    let maxDrawdownPct = 0;
+    let prevEquityNum = initialEquityNum;
+    const periodicReturns: number[] = [];
+    let active: RandomPosition | null = null;
+
+    for (let i = 0; i < precomputedBars.length; i += 1) {
+      const bar = precomputedBars[i];
+      if (!bar) continue;
+      const barLow = bar.low;
+      const barHigh = bar.high;
+      const barClose = bar.close;
+
+      if (active) {
+        active.barsHeld += 1;
+        const settled = barFundingMap.get(bar.closeTs);
+        if (settled) {
+          for (const f of settled) {
+            if (f.fundingTs > active.lastFundingTs) {
+              const baseQty = active.contracts.mul(spec.contractValue);
+              const markNotional = barClose.mul(baseQty);
+              const rate = ScaledDecimal.fromString(f.fundingRate);
+              const rawPayment = markNotional.mul(rate);
+              const signed =
+                active.side === "long" ? ScaledDecimal.zero().sub(rawPayment) : rawPayment;
+              active.fundingAccrued = active.fundingAccrued.add(signed);
+              active.lastFundingTs = f.fundingTs;
+            }
+          }
+        }
+
+        let exitPrice: ScaledDecimal | null = null;
+        if (active.side === "long") {
+          if (barLow.lte(active.stopPrice)) {
+            exitPrice = active.stopPrice;
+          } else if (barHigh.gte(active.takeProfitPrice)) {
+            exitPrice = active.takeProfitPrice;
+          } else if (active.barsHeld >= 24) {
+            exitPrice = barClose;
+          }
+        } else {
+          if (barHigh.gte(active.stopPrice)) {
+            exitPrice = active.stopPrice;
+          } else if (barLow.lte(active.takeProfitPrice)) {
+            exitPrice = active.takeProfitPrice;
+          } else if (active.barsHeld >= 24) {
+            exitPrice = barClose;
+          }
+        }
+
+        if (exitPrice !== null) {
+          const baseQty = active.contracts.mul(spec.contractValue);
+          const priceDiff =
+            active.side === "long"
+              ? exitPrice.sub(active.entryPrice)
+              : active.entryPrice.sub(exitPrice);
+          const grossPnl = priceDiff.mul(baseQty);
+          const exitFee = exitPrice.mul(baseQty).mul(costFraction);
+          const netPnl = grossPnl.sub(active.entryFee).sub(exitFee).add(active.fundingAccrued);
+          cashEquity = cashEquity.add(netPnl);
+          active = null;
+        }
+      }
+
+      let barCloseEquity = cashEquity;
+      let worstIntraEquity = cashEquity;
+
+      if (active) {
         const baseQty = active.contracts.mul(spec.contractValue);
-        const markNotional = barClose.mul(baseQty);
-        const rate = ScaledDecimal.fromString(f.fundingRate);
-        const rawPayment = markNotional.mul(rate);
-        const signed = active.side === "long" ? ScaledDecimal.zero().sub(rawPayment) : rawPayment;
-        active.fundingAccrued = active.fundingAccrued.add(signed);
-        active.lastFundingTs = f.fundingTs;
+        const closeDiff =
+          active.side === "long"
+            ? barClose.sub(active.entryPrice)
+            : active.entryPrice.sub(barClose);
+        const closeGross = closeDiff.mul(baseQty);
+        const closeExitFee = barClose.mul(baseQty).mul(costFraction);
+        barCloseEquity = cashEquity
+          .add(closeGross)
+          .sub(active.entryFee)
+          .sub(closeExitFee)
+          .add(active.fundingAccrued);
+
+        const worstPrice = active.side === "long" ? barLow : barHigh;
+        const worstDiff =
+          active.side === "long"
+            ? worstPrice.sub(active.entryPrice)
+            : active.entryPrice.sub(worstPrice);
+        const worstGross = worstDiff.mul(baseQty);
+        const worstExitFee = worstPrice.mul(baseQty).mul(costFraction);
+        worstIntraEquity = cashEquity
+          .add(worstGross)
+          .sub(active.entryFee)
+          .sub(worstExitFee)
+          .add(active.fundingAccrued);
       }
 
-      let exitPrice: ScaledDecimal | null = null;
-      if (active.side === "long") {
-        if (barLow.lte(active.stopPrice)) {
-          exitPrice = active.stopPrice;
-        } else if (barHigh.gte(active.takeProfitPrice)) {
-          exitPrice = active.takeProfitPrice;
-        } else if (active.barsHeld >= 24) {
-          exitPrice = barClose;
-        }
-      } else {
-        if (barHigh.gte(active.stopPrice)) {
-          exitPrice = active.stopPrice;
-        } else if (barLow.lte(active.takeProfitPrice)) {
-          exitPrice = active.takeProfitPrice;
-        } else if (active.barsHeld >= 24) {
-          exitPrice = barClose;
+      const eqNum = Number(barCloseEquity.toString());
+      const worstEqNum = Number(worstIntraEquity.toString());
+
+      const dd = updateTrackedDrawdown({
+        peakEquityNum,
+        closeEquityNum: eqNum,
+        worstIntraEquityNum: worstEqNum,
+        currentMaxDrawdownPct: maxDrawdownPct
+      });
+      peakEquityNum = dd.newPeakEquityNum;
+      maxDrawdownPct = dd.newMaxDrawdownPct;
+
+      const r = prevEquityNum > 0 ? (eqNum - prevEquityNum) / prevEquityNum : 0;
+      periodicReturns.push(r);
+      prevEquityNum = eqNum;
+
+      if (!active && i < precomputedBars.length - 1) {
+        if (prng() < 0.15) {
+          const side: "long" | "short" = prng() < 0.5 ? "long" : "short";
+          const entryPrice = barClose;
+          const stopDistance = ScaledDecimal.max(onePoint, entryPrice.mul(twoPercent));
+          const stopPrice =
+            side === "long"
+              ? ScaledDecimal.max(onePoint, entryPrice.sub(stopDistance))
+              : entryPrice.add(stopDistance);
+          const tpDistance = stopDistance.mul(twoPointFive);
+          const tpPrice =
+            side === "long"
+              ? entryPrice.add(tpDistance)
+              : ScaledDecimal.max(onePoint, entryPrice.sub(tpDistance));
+
+          const sizing = sizeByStopRisk({
+            instrument: spec,
+            side,
+            strategyEquityQuote: cashEquity,
+            riskFraction: riskFractionDec,
+            entryPrice,
+            stopPrice,
+            maxGrossLeverage: maxLeverageDec
+          });
+
+          if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
+            const entryFee = sizing.notionalQuote.mul(costFraction);
+            active = {
+              side,
+              entryPrice,
+              stopPrice: sizing.effectiveStopPrice,
+              takeProfitPrice: tpPrice,
+              contracts: sizing.contracts,
+              entryFee,
+              fundingAccrued: ScaledDecimal.zero(),
+              lastFundingTs: bar.closeTs,
+              barsHeld: 0
+            };
+          }
         }
       }
+    }
 
-      if (exitPrice !== null) {
+    if (active && precomputedBars.length > 0) {
+      const lastBar = precomputedBars[precomputedBars.length - 1];
+      if (lastBar) {
+        const exitPrice = lastBar.close;
         const baseQty = active.contracts.mul(spec.contractValue);
         const priceDiff =
           active.side === "long"
@@ -462,126 +687,41 @@ export function computeRandomEntryBaseline(params: {
       }
     }
 
-    let barCloseEquity = cashEquity;
-    let worstIntraEquity = cashEquity;
+    const finalEquityNum = Number(cashEquity.toString());
+    const retPct = ((finalEquityNum - initialEquityNum) / initialEquityNum) * 100;
+    const pathSharpe = computeDeflatedSharpeRatio({
+      periodicReturns,
+      annualizationFactor: annualFactor
+    }).sharpeRatio;
 
-    if (active) {
-      const baseQty = active.contracts.mul(spec.contractValue);
-      const closeDiff =
-        active.side === "long" ? barClose.sub(active.entryPrice) : active.entryPrice.sub(barClose);
-      const closeGross = closeDiff.mul(baseQty);
-      const closeExitFee = barClose.mul(baseQty).mul(costFraction);
-      barCloseEquity = cashEquity
-        .add(closeGross)
-        .sub(active.entryFee)
-        .sub(closeExitFee)
-        .add(active.fundingAccrued);
-
-      const worstPrice = active.side === "long" ? barLow : barHigh;
-      const worstDiff =
-        active.side === "long"
-          ? worstPrice.sub(active.entryPrice)
-          : active.entryPrice.sub(worstPrice);
-      const worstGross = worstDiff.mul(baseQty);
-      const worstExitFee = worstPrice.mul(baseQty).mul(costFraction);
-      worstIntraEquity = cashEquity
-        .add(worstGross)
-        .sub(active.entryFee)
-        .sub(worstExitFee)
-        .add(active.fundingAccrued);
-    }
-
-    const eqNum = Number(barCloseEquity.toString());
-    const worstEqNum = Number(worstIntraEquity.toString());
-
-    const dd = updateTrackedDrawdown({
-      peakEquityNum,
-      closeEquityNum: eqNum,
-      worstIntraEquityNum: worstEqNum,
-      currentMaxDrawdownPct: maxDrawdownPct
-    });
-    peakEquityNum = dd.newPeakEquityNum;
-    maxDrawdownPct = dd.newMaxDrawdownPct;
-
-    const r = prevEquityNum > 0 ? (eqNum - prevEquityNum) / prevEquityNum : 0;
-    periodicReturns.push(r);
-    prevEquityNum = eqNum;
-
-    if (!active && i < bars.length - 1) {
-      if (prng() < 0.15) {
-        const side: "long" | "short" = prng() < 0.5 ? "long" : "short";
-        const entryPrice = barClose;
-        const onePoint = ScaledDecimal.fromString("1.00000000");
-        const twoPercent = ScaledDecimal.fromString("0.02000000");
-        const twoPointFive = ScaledDecimal.fromString("2.50000000");
-        const stopDistance = ScaledDecimal.max(onePoint, entryPrice.mul(twoPercent));
-        const stopPrice =
-          side === "long"
-            ? ScaledDecimal.max(onePoint, entryPrice.sub(stopDistance))
-            : entryPrice.add(stopDistance);
-        const tpDistance = stopDistance.mul(twoPointFive);
-        const tpPrice =
-          side === "long"
-            ? entryPrice.add(tpDistance)
-            : ScaledDecimal.max(onePoint, entryPrice.sub(tpDistance));
-
-        const sizing = sizeByStopRisk({
-          instrument: spec,
-          side,
-          strategyEquityQuote: cashEquity,
-          riskFraction: riskFractionDec,
-          entryPrice,
-          stopPrice,
-          maxGrossLeverage: maxLeverageDec
-        });
-
-        if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
-          const entryFee = sizing.notionalQuote.mul(costFraction);
-          active = {
-            side,
-            entryPrice,
-            stopPrice: sizing.effectiveStopPrice,
-            takeProfitPrice: tpPrice,
-            contracts: sizing.contracts,
-            entryFee,
-            fundingAccrued: ScaledDecimal.zero(),
-            lastFundingTs: bar.closeTs,
-            barsHeld: 0
-          };
-        }
-      }
-    }
+    pathReturns.push(retPct);
+    pathSharpes.push(pathSharpe);
+    pathMaxDrawdowns.push(maxDrawdownPct);
   }
 
-  if (active && bars.length > 0) {
-    const lastBar = bars[bars.length - 1];
-    if (lastBar) {
-      const exitPrice = ScaledDecimal.fromString(lastBar.close);
-      const baseQty = active.contracts.mul(spec.contractValue);
-      const priceDiff =
-        active.side === "long"
-          ? exitPrice.sub(active.entryPrice)
-          : active.entryPrice.sub(exitPrice);
-      const grossPnl = priceDiff.mul(baseQty);
-      const exitFee = exitPrice.mul(baseQty).mul(costFraction);
-      const netPnl = grossPnl.sub(active.entryFee).sub(exitFee).add(active.fundingAccrued);
-      cashEquity = cashEquity.add(netPnl);
-      active = null;
-    }
-  }
+  const sortedReturns = [...pathReturns].sort((a, b) => a - b);
+  const sortedSharpes = [...pathSharpes].sort((a, b) => a - b);
+  const sortedMaxDds = [...pathMaxDrawdowns].sort((a, b) => a - b);
 
-  const finalEquityNum = Number(cashEquity.toString());
-  const returnPct = ((finalEquityNum - initialEquityNum) / initialEquityNum) * 100;
-  const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(params.timeframe));
-  const sharpe = computeDeflatedSharpeRatio({
-    periodicReturns,
-    annualizationFactor: annualFactor
-  }).sharpeRatio;
+  const medianReturn = getMedian(sortedReturns);
+  const medianSharpe = getMedian(sortedSharpes);
+  const p75Sharpe = getPercentile(sortedSharpes, 75);
+  const medianMaxDd = getMedian(sortedMaxDds);
+
+  let percentileRank = 0;
+  const stratSharpe = params.strategySharpe;
+  if (stratSharpe !== undefined && pathSharpes.length > 0) {
+    const countBeatenOrTied = pathSharpes.filter((s) => s <= stratSharpe).length;
+    percentileRank = (countBeatenOrTied / pathSharpes.length) * 100;
+  }
 
   return {
-    returnPct: Number(returnPct.toFixed(4)),
-    sharpeRatio: Number(sharpe.toFixed(4)),
-    maxDrawdownPct: Number(maxDrawdownPct.toFixed(4))
+    returnPct: Number(medianReturn.toFixed(4)),
+    sharpeRatio: Number(medianSharpe.toFixed(4)),
+    maxDrawdownPct: Number(medianMaxDd.toFixed(4)),
+    p75SharpeRatio: Number(p75Sharpe.toFixed(4)),
+    percentileRank: Number(percentileRank.toFixed(2)),
+    pathCount: numPaths
   };
 }
 
@@ -744,16 +884,18 @@ export class ReplayEngine {
       timeframe: input.timeframe,
       marketDataRepo: this.marketDataRepo,
       riskFraction,
-      maxLeverage
+      maxLeverage,
+      strategySharpe: dsrMetrics.sharpeRatio
     });
 
     const winCount = simulation.trades.filter((t) => t.netR > 0).length;
     const winRate =
       simulation.trades.length > 0 ? Number((winCount / simulation.trades.length).toFixed(4)) : 0;
 
-    const minTrades = input.replayMinTrades ?? 5;
+    const minTrades = input.replayMinTrades ?? 100;
     const minSharpe = input.replayMinSharpe ?? 1.0;
-    const minDsr = input.replayMinDeflatedSharpeConfidence ?? 0.5;
+    const minDsr = input.replayMinDeflatedSharpeConfidence ?? 0.8;
+    const randomP75 = randomEntry.p75SharpeRatio ?? randomEntry.sharpeRatio;
 
     const replayGatePassed =
       oosResult.isSufficientData &&
@@ -763,7 +905,7 @@ export class ReplayEngine {
       dsrMetrics.sharpeRatio >= minSharpe &&
       dsrMetrics.deflatedSharpeRatio >= minDsr &&
       dsrMetrics.sharpeRatio > buyAndHold.sharpeRatio &&
-      dsrMetrics.sharpeRatio > randomEntry.sharpeRatio &&
+      dsrMetrics.sharpeRatio > randomP75 &&
       simulation.maxDrawdownPct <= 25;
 
     const configHash =
@@ -782,7 +924,7 @@ export class ReplayEngine {
     this.runSequence += 1;
     const createdAtMs = this.clock.nowMs();
     const experimentId = `${sha256Hex(
-      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}:${this.runSequence}:${numTrials}`
+      `${input.strategy.strategyId}:${input.strategy.parameterHash}:${snapshotMeta.snapshotId}:${input.fromTs}:${input.toTs}:${createdAtMs}:${this.runSequence}:${numTrials}`
     ).slice(0, 16)}-${this.runSequence.toString(36)}`;
 
     const record: ExperimentRecord = {
@@ -812,7 +954,9 @@ export class ReplayEngine {
       buyAndHoldReturnPct: buyAndHold.returnPct,
       buyAndHoldSharpeRatio: buyAndHold.sharpeRatio,
       randomEntryReturnPct: randomEntry.returnPct,
-      randomEntrySharpeRatio: randomEntry.sharpeRatio
+      randomEntrySharpeRatio: randomEntry.sharpeRatio,
+      randomEntryP75SharpeRatio: randomEntry.p75SharpeRatio,
+      randomEntryPercentile: randomEntry.percentileRank
     };
 
     if (this.experimentRepo) {
@@ -947,6 +1091,32 @@ export class ReplayEngine {
       });
     };
 
+    const windowEndBar = bars[bars.length - 1];
+    const allSettledFunding = windowEndBar
+      ? this.marketDataRepo.getSettledFundingInRange({
+          instrumentId: params.instrumentId,
+          fromTs: firstBar.openTs,
+          toTs: windowEndBar.closeTs
+        })
+      : [];
+
+    const barFundingMap = new Map<number, SettledFundingRate[]>();
+    let fundingIdx = 0;
+    for (const bar of bars) {
+      const list: SettledFundingRate[] = [];
+      while (fundingIdx < allSettledFunding.length) {
+        const item = allSettledFunding[fundingIdx];
+        if (!item || item.fundingTs > bar.closeTs) {
+          break;
+        }
+        list.push(item);
+        fundingIdx += 1;
+      }
+      if (list.length > 0) {
+        barFundingMap.set(bar.closeTs, list);
+      }
+    }
+
     for (let idx = 0; idx < bars.length; idx += 1) {
       const bar = bars[idx];
       if (!bar) continue;
@@ -1006,21 +1176,20 @@ export class ReplayEngine {
 
       if (active) {
         // 1. Apply any settled 8h funding events in (active.lastFundingTs, nowMs]
-        const settledFunding = this.marketDataRepo.getSettledFundingInRange({
-          instrumentId: params.instrumentId,
-          fromTs: active.lastFundingTs + 1,
-          toTs: nowMs
-        });
-
-        for (const f of settledFunding) {
-          const baseQty = active.contracts.mul(spec.contractValue);
-          const markNotionalUsdt = barClose.mul(baseQty);
-          const rateDec = ScaledDecimal.fromString(f.fundingRate);
-          const rawPayment = markNotionalUsdt.mul(rateDec);
-          const signedFunding =
-            active.proposal.side === "long" ? ScaledDecimal.zero().sub(rawPayment) : rawPayment;
-          active.fundingAccruedUsdt = active.fundingAccruedUsdt.add(signedFunding);
-          active.lastFundingTs = f.fundingTs;
+        const settledFunding = barFundingMap.get(bar.closeTs);
+        if (settledFunding) {
+          for (const f of settledFunding) {
+            if (f.fundingTs > active.lastFundingTs) {
+              const baseQty = active.contracts.mul(spec.contractValue);
+              const markNotionalUsdt = barClose.mul(baseQty);
+              const rateDec = ScaledDecimal.fromString(f.fundingRate);
+              const rawPayment = markNotionalUsdt.mul(rateDec);
+              const signedFunding =
+                active.proposal.side === "long" ? ScaledDecimal.zero().sub(rawPayment) : rawPayment;
+              active.fundingAccruedUsdt = active.fundingAccruedUsdt.add(signedFunding);
+              active.lastFundingTs = f.fundingTs;
+            }
+          }
         }
 
         // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2) and adverse exit slippage (R1)
@@ -1204,28 +1373,30 @@ export class ReplayEngine {
         continue;
       }
 
-      // Fit: select best candidate on purged training data
+      // Fit: select best candidate on purged training data (only when multiple candidates are provided)
       let bestCandidate = params.primaryStrategy;
       let bestInSampleScore = -Infinity;
-      for (const candidate of candidates) {
-        const trainSim = this.simulateWindow({
-          instrumentId: params.instrumentId,
-          instrumentSpec: params.instrumentSpec,
-          timeframe: params.timeframe,
-          strategy: candidate,
-          bars: purgedTrainBars,
-          initialEquityUsdt: params.initialEquityUsdt,
-          riskFraction: params.riskFraction,
-          maxLeverage: params.maxLeverage,
-          slippageBps: params.slippageBps,
-          oneWayFeeBps: params.oneWayFeeBps,
-          totalOneWayCostBps: params.totalOneWayCostBps,
-          costStressMultiplier: params.costStressMultiplier
-        });
-        const score = trainSim.stressNetExpectancyR;
-        if (score > bestInSampleScore) {
-          bestInSampleScore = score;
-          bestCandidate = candidate;
+      if (candidates.length > 1) {
+        for (const candidate of candidates) {
+          const trainSim = this.simulateWindow({
+            instrumentId: params.instrumentId,
+            instrumentSpec: params.instrumentSpec,
+            timeframe: params.timeframe,
+            strategy: candidate,
+            bars: purgedTrainBars,
+            initialEquityUsdt: params.initialEquityUsdt,
+            riskFraction: params.riskFraction,
+            maxLeverage: params.maxLeverage,
+            slippageBps: params.slippageBps,
+            oneWayFeeBps: params.oneWayFeeBps,
+            totalOneWayCostBps: params.totalOneWayCostBps,
+            costStressMultiplier: params.costStressMultiplier
+          });
+          const score = trainSim.stressNetExpectancyR;
+          if (score > bestInSampleScore) {
+            bestInSampleScore = score;
+            bestCandidate = candidate;
+          }
         }
       }
 

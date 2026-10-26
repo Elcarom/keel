@@ -375,7 +375,10 @@ export const SEALED_2026_HOLDOUT_END_TS = 1_782_863_999_000; // 2026-06-30 23:59
 export const BenchmarkBaselineSchema = z.object({
   returnPct: z.number(),
   sharpeRatio: z.number(),
-  maxDrawdownPct: z.number().nonnegative()
+  maxDrawdownPct: z.number().nonnegative(),
+  p75SharpeRatio: z.number().optional(),
+  percentileRank: z.number().optional(),
+  pathCount: z.number().int().optional()
 });
 export type BenchmarkBaseline = z.infer<typeof BenchmarkBaselineSchema>;
 
@@ -407,7 +410,9 @@ export const ExperimentRecordSchema = z.object({
   buyAndHoldReturnPct: z.number().default(0),
   buyAndHoldSharpeRatio: z.number().default(0),
   randomEntryReturnPct: z.number().default(0),
-  randomEntrySharpeRatio: z.number().default(0)
+  randomEntrySharpeRatio: z.number().default(0),
+  randomEntryP75SharpeRatio: z.number().optional(),
+  randomEntryPercentile: z.number().optional()
 });
 export type ExperimentRecord = z.infer<typeof ExperimentRecordSchema>;
 
