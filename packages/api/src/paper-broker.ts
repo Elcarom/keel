@@ -311,6 +311,7 @@ export class PaperBroker implements Broker {
     const openPositions = this.paperAccountRepo.listOpenPositions();
     for (const pos of openPositions) {
       if (pos.instrumentId !== bar.instrumentId) continue;
+      if (strategyId && pos.strategyId !== strategyId) continue;
       // N1: Evaluate exits only against bars that started on or after position openedAtMs.
       if (bar.openTs < pos.openedAtMs) continue;
 
@@ -607,7 +608,27 @@ export class PaperBroker implements Broker {
         strategyId,
         closeTs: bar.closeTs
       });
+
+      const strategyMetrics = this.ledgerRepo.getRiskMetrics({
+        asOfMs,
+        strategyId
+      });
+      this.ledgerRepo.recordEquitySnapshot({
+        ts: asOfMs,
+        strategyId,
+        equityUsdt: strategyMetrics.currentEquityUsdt
+      });
     }
+
+    const portfolioMetrics = this.ledgerRepo.getRiskMetrics({
+      asOfMs,
+      strategyId: null
+    });
+    this.ledgerRepo.recordEquitySnapshot({
+      ts: asOfMs,
+      strategyId: null,
+      equityUsdt: portfolioMetrics.currentEquityUsdt
+    });
 
     return {
       asOfMs,

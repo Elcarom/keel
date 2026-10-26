@@ -378,13 +378,6 @@ export function createLedgerRepository(
       const currentEquity = runningCash.add(unrealized);
       const snapshotStrategyKey = strategyId ?? "";
 
-      // Record/deduplicate snapshot of current equity to preserve intra-period mark-to-market state
-      db.prepare(
-        `INSERT INTO ledger_equity_snapshots (strategy_id, ts, equity_usdt)
-         VALUES (?, ?, ?)
-         ON CONFLICT(strategy_id, ts) DO UPDATE SET equity_usdt = excluded.equity_usdt`
-      ).run(snapshotStrategyKey, asOfMs, currentEquity.toFixed(8));
-
       // Query historical equity snapshots up to asOfMs strictly segregated by strategyKey
       const snapshotRows = db
         .prepare(
@@ -405,6 +398,29 @@ export function createLedgerRepository(
         hwm = currentEquity;
       }
 
+      // Check if snapshots exist for dayStart and weekStart to capture intra-period equity peaks
+      const dayStartSnapshot = db
+        .prepare(
+          `SELECT equity_usdt FROM ledger_equity_snapshots
+           WHERE strategy_id = ? AND ts <= ?
+           ORDER BY ts DESC LIMIT 1`
+        )
+        .get(snapshotStrategyKey, dayStartMs) as { equity_usdt: string } | undefined;
+      const effectiveDayStartEquity = dayStartSnapshot
+        ? ScaledDecimal.fromString(dayStartSnapshot.equity_usdt)
+        : dayStartCash;
+
+      const weekStartSnapshot = db
+        .prepare(
+          `SELECT equity_usdt FROM ledger_equity_snapshots
+           WHERE strategy_id = ? AND ts <= ?
+           ORDER BY ts DESC LIMIT 1`
+        )
+        .get(snapshotStrategyKey, weekStartMs) as { equity_usdt: string } | undefined;
+      const effectiveWeekStartEquity = weekStartSnapshot
+        ? ScaledDecimal.fromString(weekStartSnapshot.equity_usdt)
+        : weekStartCash;
+
       let drawdownPct = ScaledDecimal.zero();
       if (hwm.isPositive() && currentEquity.lt(hwm)) {
         const diff = hwm.sub(currentEquity);
@@ -413,12 +429,25 @@ export function createLedgerRepository(
 
       return {
         currentEquityUsdt: currentEquity,
-        dayStartEquityUsdt: dayStartCash,
-        weekStartEquityUsdt: weekStartCash,
+        dayStartEquityUsdt: effectiveDayStartEquity,
+        weekStartEquityUsdt: effectiveWeekStartEquity,
         highWaterMarkEquityUsdt: hwm,
         feesTodayUsdt: feesToday,
         drawdownPct
       };
+    },
+
+    recordEquitySnapshot(params: {
+      readonly ts: number;
+      readonly strategyId?: string | null | undefined;
+      readonly equityUsdt: ScaledDecimal;
+    }): void {
+      const snapshotStrategyKey = params.strategyId ?? "";
+      db.prepare(
+        `INSERT INTO ledger_equity_snapshots (strategy_id, ts, equity_usdt)
+         VALUES (?, ?, ?)
+         ON CONFLICT(strategy_id, ts) DO UPDATE SET equity_usdt = excluded.equity_usdt`
+      ).run(snapshotStrategyKey, params.ts, params.equityUsdt.toFixed(8));
     }
   };
 }
