@@ -35,7 +35,8 @@ import {
   type SaveConfigSnapshotInput,
   type SecretKeyName,
   type SecretVaultRepository,
-  type ShadowRepository
+  type ShadowRepository,
+  type StrategySpecRepository
 } from "@keel/core";
 import {
   MARKET_SCHEMA_SQL,
@@ -54,6 +55,7 @@ import {
   createPromotionRepository,
   createShadowRepository
 } from "./paper.js";
+import { SPEC_SCHEMA_SQL, createStrategySpecRepository } from "./spec-repository.js";
 
 export {
   OkxPublicIngestor,
@@ -61,6 +63,8 @@ export {
   createPaperAccountRepository,
   createPromotionRepository,
   createShadowRepository,
+  createStrategySpecRepository,
+  SPEC_SCHEMA_SQL,
   seedSyntheticMarketSeries,
   type FetchOkxHistoryCandlesFn,
   type FetchOkxHistoryFundingFn,
@@ -98,6 +102,7 @@ export interface SqliteDataStore extends BackupService {
   readonly paperAccountRepo: PaperAccountRepository;
   readonly promotionRepo: PromotionRepository;
   readonly shadowRepo: ShadowRepository;
+  readonly strategySpecRepo: StrategySpecRepository;
   readonly backupService: BackupService;
   readonly rawDb: DatabaseSyncType;
   getPragmaStatus(): SqlitePragmaStatus;
@@ -238,6 +243,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     // Column already exists
   }
   db.exec(PAPER_SCHEMA_SQL);
+  db.exec(SPEC_SCHEMA_SQL);
   try {
     db.exec("ALTER TABLE strategy_promotions ADD COLUMN promoted_at_ms INTEGER");
   } catch {
@@ -246,6 +252,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
 
   const marketDataRepo = createMarketDataRepository(db);
   const experimentRepo = createExperimentRepository(db);
+  const strategySpecRepo = createStrategySpecRepository(db, experimentRepo);
   const ledgerRepo = createLedgerRepository(
     db,
     options.initialPaperCapitalUsdt ?? "10000.00000000"
@@ -655,6 +662,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     paperAccountRepo,
     promotionRepo,
     shadowRepo,
+    strategySpecRepo,
     backupService,
     rawDb: db,
 

@@ -41,6 +41,7 @@ import {
 } from "@keel/ai";
 import { OkxBroker } from "@keel/broker";
 import { ReplayEngine } from "@keel/replay";
+import { StrategySpecV1Schema, computeSpecHash, describeSpec } from "@keel/spec";
 import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
@@ -1522,6 +1523,25 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           };
         }
 
+        // Quarantine check (ADR-0021): Synthetic specs can NEVER be promoted to Demo, Live-Ramp, or Live
+        if (
+          body.targetStage === "Demo" ||
+          body.targetStage === "Live-Ramp" ||
+          body.targetStage === "Live"
+        ) {
+          const specRecord =
+            dataStore.strategySpecRepo.getSpecByName(body.strategyId) ??
+            dataStore.strategySpecRepo.getSpecByHash(body.strategyId);
+          if (specRecord?.isSynthetic || body.strategyId.startsWith("synthetic-")) {
+            return {
+              status: 403,
+              body: {
+                error: `Strategy ${body.strategyId} is synthetic/quarantined and cannot be promoted to ${body.targetStage}.`
+              }
+            };
+          }
+        }
+
         const active = getActiveSnapshot();
         const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
         const experiments = dataStore.experimentRepo.listExperiments(50);
@@ -2290,6 +2310,115 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           body: {
             flattenedCount: flattened.length,
             positions: flattened.map((p) => ({ ...p }))
+          }
+        };
+      }
+    },
+
+    specs: {
+      register: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const parseResult = StrategySpecV1Schema.safeParse(body);
+        if (!parseResult.success) {
+          return {
+            status: 400,
+            body: { error: `Invalid StrategySpecV1: ${parseResult.error.message}` }
+          };
+        }
+
+        const spec = parseResult.data;
+        const specHash = computeSpecHash(spec);
+        const isSynthetic = Boolean(spec.synthetic);
+
+        const record = dataStore.strategySpecRepo.saveSpec({
+          specHash,
+          name: spec.name,
+          version: spec.version,
+          specJson: JSON.stringify(spec),
+          isSynthetic,
+          createdAtMs: clock.nowMs()
+        });
+
+        dataStore.auditRepo.append({
+          ts: clock.nowMs(),
+          actor: ingress.session.username ?? "system",
+          clientIp: ingress.clientIp,
+          action: "specs.register",
+          riskClass: "safe",
+          configHash: getActiveSnapshot().configHash,
+          details: {
+            name: record.name,
+            specHash: record.specHash,
+            isSynthetic: record.isSynthetic
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            specHash: record.specHash,
+            name: record.name,
+            version: record.version,
+            isSynthetic: record.isSynthetic,
+            description: spec.description
+          }
+        };
+      },
+
+      list: async ({ request }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const specs = dataStore.strategySpecRepo.listSpecs();
+        return {
+          status: 200,
+          body: {
+            specs: specs.map((s) => ({ ...s }))
+          }
+        };
+      },
+
+      getByHash: async ({ request, params }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+
+        const record = dataStore.strategySpecRepo.getSpecByHash(params.hash);
+        if (!record) {
+          return {
+            status: 404,
+            body: { error: `Strategy spec with hash ${params.hash} not found` }
+          };
+        }
+
+        let parsedSpec: Record<string, unknown> = {};
+        let descriptionText = "Strategy Specification";
+        try {
+          const rawParsed = JSON.parse(record.specJson);
+          const parsed = StrategySpecV1Schema.parse(rawParsed);
+          parsedSpec = rawParsed as Record<string, unknown>;
+          descriptionText = describeSpec(parsed);
+        } catch {
+          descriptionText = `Unparseable spec: ${record.name}`;
+        }
+
+        return {
+          status: 200,
+          body: {
+            specHash: record.specHash,
+            name: record.name,
+            version: record.version,
+            isSynthetic: record.isSynthetic,
+            createdAtMs: record.createdAtMs,
+            spec: parsedSpec,
+            descriptionText
           }
         };
       }

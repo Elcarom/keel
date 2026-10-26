@@ -68,6 +68,9 @@ importers:
       '@keel/replay':
         specifier: workspace:*
         version: link:../replay
+      '@keel/spec':
+        specifier: workspace:*
+        version: link:../spec
       '@keel/strategy':
         specifier: workspace:*
         version: link:../strategy

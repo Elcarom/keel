@@ -25,7 +25,8 @@ import {
   ReconciliationResultSchema,
   SecretKeyNameSchema,
   SecretMetadataRecordSchema,
-  StrategyPromotionRecordSchema
+  StrategyPromotionRecordSchema,
+  StrategySpecRecordSchema
 } from "./ports.js";
 
 const c = initContract();
@@ -768,6 +769,58 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary: "Emergency flatten all exchange positions via market orders (ADR-0006)"
+    }
+  },
+
+  specs: {
+    register: {
+      method: "POST",
+      path: "/api/v1/specs",
+      body: z.record(z.string(), z.unknown()),
+      responses: {
+        200: z.object({
+          specHash: z.string(),
+          name: z.string(),
+          version: z.number(),
+          isSynthetic: z.boolean(),
+          description: z.string()
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Register and validate a new Strategy Spec V1, recording a research trial"
+    },
+    list: {
+      method: "GET",
+      path: "/api/v1/specs",
+      responses: {
+        200: z.object({
+          specs: z.array(StrategySpecRecordSchema)
+        }),
+        401: ApiErrorSchema
+      },
+      summary: "List all registered strategy specs"
+    },
+    getByHash: {
+      method: "GET",
+      path: "/api/v1/specs/:hash",
+      pathParams: z.object({
+        hash: z.string()
+      }),
+      responses: {
+        200: z.object({
+          specHash: z.string(),
+          name: z.string(),
+          version: z.number(),
+          isSynthetic: z.boolean(),
+          createdAtMs: z.number(),
+          spec: z.record(z.string(), z.unknown()),
+          descriptionText: z.string()
+        }),
+        404: ApiErrorSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Retrieve spec JSON and deterministic plain-English description by canonical hash"
     }
   }
 });
