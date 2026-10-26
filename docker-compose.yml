@@ -16,6 +16,7 @@ services:
       - DATA_DIR=/data
       - BACKUPS_DIR=/backups
       - LOG_LEVEL=info
+      - KEEL_MASTER_KEY=${KEEL_MASTER_KEY:?KEEL_MASTER_KEY must be set (min 32 characters)}
     ports:
       - "8080:8080"
     volumes:

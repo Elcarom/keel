@@ -128,6 +128,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       clock,
       dbPath,
       backupsDir,
+      masterKeyMaterial: "a-secure-master-key-with-at-least-32-chars!",
       onBootstrapToken: (t) => {
         bootstrapToken = t;
       }

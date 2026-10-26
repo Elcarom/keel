@@ -99,6 +99,7 @@ export {
   TIMEFRAME_DURATION_MS,
   type AdminSessionRecord,
   type AdminUserRecord,
+  type AuthRateLimitRecord,
   type AuditEventRecord,
   type AuditRepository,
   type AuthRepository,

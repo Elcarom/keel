@@ -1,7 +1,8 @@
-import { createHmac } from "node:crypto";
+import { createCipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { argon2id } from "@noble/hashes/argon2";
 import { ManualClock, createDefaultConfig } from "@keel/core";
 import { createSqliteDataStore, type SqliteDataStore } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -241,6 +242,262 @@ describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-25
     const keyMeta = meta.find((m) => m.keyName === "okxApiKey");
     expect(keyMeta?.isConfigured).toBe(true);
     expect(keyMeta?.maskedPreview).toContain("...");
+
+    store.close();
+  });
+
+  it("S1: SecretVault strictly refuses vault operations if KEEL_MASTER_KEY is unset, < 32 chars, or default string", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const store = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock
+    });
+
+    const oldEnv = process.env["KEEL_MASTER_KEY"];
+    delete process.env["KEEL_MASTER_KEY"];
+
+    try {
+      // 1. Unset master key -> must throw
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock
+          })
+      ).toThrow(/KEEL_MASTER_KEY.*must be set/i);
+
+      // 2. Too short (< 32 chars) -> must throw
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock,
+            masterKeyMaterial: "short-key-16-bytes"
+          })
+      ).toThrow(/at least 32 characters/i);
+
+      // 3. Old default string -> must throw
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock,
+            masterKeyMaterial: "keel-default-local-dev-master-key-change-in-prod"
+          })
+      ).toThrow(/default.*prohibited/i);
+    } finally {
+      if (oldEnv !== undefined) {
+        process.env["KEEL_MASTER_KEY"] = oldEnv;
+      }
+      store.close();
+    }
+  });
+
+  it("S2: AuthManager enforces persistent SQLite rate limiting with exponential backoff on login failures", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const dbPath = join(tempDir, "throttle.sqlite");
+    let store1: SqliteDataStore | null = null;
+    let store2: SqliteDataStore | null = null;
+
+    try {
+      store1 = createSqliteDataStore({ dbPath, clock });
+
+      let emittedToken = "";
+      const auth1 = new AuthManager({
+        authRepo: store1.authRepo,
+        clock,
+        onBootstrapToken: (t) => {
+          emittedToken = t;
+        }
+      });
+
+      auth1.bootstrapAdmin({
+        bootstrapToken: emittedToken,
+        username: "admin",
+        password: "correct-horse-battery-staple"
+      });
+
+      // 5 consecutive failed login attempts
+      for (let i = 0; i < 5; i++) {
+        expect(() =>
+          auth1.login({
+            username: "admin",
+            password: "wrong-password",
+            clientIp: "198.51.100.10"
+          })
+        ).toThrow(/Invalid username or password/i);
+      }
+
+      // 6th attempt must trigger 429 rate limit lockout
+      let caughtError: unknown = null;
+      try {
+        auth1.login({
+          username: "admin",
+          password: "wrong-password",
+          clientIp: "198.51.100.10"
+        });
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect((caughtError as { isRateLimited?: boolean }).isRateLimited).toBe(true);
+      expect((caughtError as { retryAfterSeconds?: number }).retryAfterSeconds).toBeGreaterThan(0);
+
+      // Persistence check: simulate server restart by closing and re-opening SQLite store
+      store1.close();
+      store1 = null;
+
+      store2 = createSqliteDataStore({ dbPath, clock });
+      const auth2 = new AuthManager({
+        authRepo: store2.authRepo,
+        clock
+      });
+
+      // Attempt immediately after restart: must STILL be locked in SQLite
+      let restartLocked: unknown = null;
+      try {
+        auth2.login({
+          username: "admin",
+          password: "correct-horse-battery-staple",
+          clientIp: "198.51.100.10"
+        });
+      } catch (err) {
+        restartLocked = err;
+      }
+      expect(restartLocked).toBeDefined();
+      expect((restartLocked as { isRateLimited?: boolean }).isRateLimited).toBe(true);
+
+      // Advance clock past lockout period
+      clock.advanceMs(16 * 60 * 1000);
+
+      // Now valid login succeeds and clears the throttle
+      const loginOk = auth2.login({
+        username: "admin",
+        password: "correct-horse-battery-staple",
+        clientIp: "198.51.100.10"
+      });
+      expect(loginOk.sessionToken).toBeDefined();
+    } finally {
+      store1?.close();
+      store2?.close();
+    }
+  });
+
+  it("Formats: supports versioned Argon2id hashes and transparently upgrades legacy m=4096 hashes", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+
+    let emittedToken = "";
+    const auth = new AuthManager({
+      authRepo: store.authRepo,
+      clock,
+      onBootstrapToken: (t) => {
+        emittedToken = t;
+      }
+    });
+
+    // Bootstrap creates versioned hash
+    auth.bootstrapAdmin({
+      bootstrapToken: emittedToken,
+      username: "admin",
+      password: "my-secure-password"
+    });
+
+    const user = store.authRepo.getAdminUser();
+    expect(user).not.toBeNull();
+    // Must be in versioned format: argon2id$v=1$m=19456,t=2,p=1$...
+    expect(user?.passwordHashHex).toMatch(/^argon2id\$v=1\$m=19456,t=2,p=1\$/);
+
+    // Now simulate legacy user with m=4096 raw hex hash
+    const legacySalt = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const legacyDigest = argon2id("legacy-password", Buffer.from(legacySalt, "hex"), {
+      t: 2,
+      m: 4096,
+      p: 1,
+      dkLen: 32
+    });
+    const legacyHashHex = Buffer.from(legacyDigest).toString("hex");
+
+    store.authRepo.upsertAdminUser({
+      username: "admin",
+      passwordHashHex: legacyHashHex,
+      passwordSaltHex: legacySalt,
+      totpSecretBase32: null,
+      totpEnabled: false,
+      createdAtMs: clock.nowMs(),
+      updatedAtMs: clock.nowMs()
+    });
+
+    // Login with legacy password: must verify successfully!
+    const loginRes = auth.login({
+      username: "admin",
+      password: "legacy-password",
+      clientIp: "127.0.0.1"
+    });
+    expect(loginRes.sessionToken).toBeDefined();
+
+    // Check that hash was upgraded to versioned v=1 in the database!
+    const upgradedUser = store.authRepo.getAdminUser();
+    expect(upgradedUser?.passwordHashHex).toMatch(/^argon2id\$v=1\$m=19456,t=2,p=1\$/);
+
+    store.close();
+  });
+
+  it("Formats: supports versioned vault ciphertexts (v1:) and transparently decrypts legacy unversioned ciphertexts", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const masterKey = "secure-random-master-key-that-is-at-least-32-chars-long";
+
+    const vault = new SecretVault({
+      repo: store.secretVaultRepo,
+      clock,
+      masterKeyMaterial: masterKey
+    });
+
+    // 1. Modern write creates v1: prefix
+    vault.upsertSecret({
+      keyName: "okxApiKey",
+      plaintextValue: "new-api-key-value",
+      actor: "admin"
+    });
+
+    const storedModern = store.secretVaultRepo.getSecret("okxApiKey");
+    expect(storedModern).not.toBeNull();
+    expect(storedModern?.ciphertextBase64.startsWith("v1:")).toBe(true);
+    expect(vault.getDecryptedSecret("okxApiKey")).toBe("new-api-key-value");
+
+    // 2. Legacy secret encrypted with SHA-256 derived key and NO v1: prefix
+    const legacyKey = createHash("sha256").update(`keel-aes-256-gcm-v1:${masterKey}`).digest();
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", legacyKey, iv);
+    cipher.setAAD(Buffer.from("okxPassphrase", "utf8"));
+    const enc = Buffer.concat([cipher.update("legacy-passphrase", "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+
+    store.secretVaultRepo.upsertSecret({
+      keyName: "okxPassphrase",
+      ciphertextBase64: enc.toString("base64"), // No v1: prefix
+      ivBase64: iv.toString("base64"),
+      authTagBase64: tag.toString("base64"),
+      maskedPreview: "lega...rase",
+      updatedAtMs: clock.nowMs(),
+      updatedBy: "legacy-admin"
+    });
+
+    // Vault decrypts legacy secret cleanly!
+    const decryptedLegacy = vault.getDecryptedSecret("okxPassphrase");
+    expect(decryptedLegacy).toBe("legacy-passphrase");
+
+    // Re-encrypting on next write writes modern v1: format
+    vault.upsertSecret({
+      keyName: "okxPassphrase",
+      plaintextValue: decryptedLegacy ?? "",
+      actor: "admin"
+    });
+    const reEncrypted = store.secretVaultRepo.getSecret("okxPassphrase");
+    expect(reEncrypted?.ciphertextBase64.startsWith("v1:")).toBe(true);
+    expect(vault.getDecryptedSecret("okxPassphrase")).toBe("legacy-passphrase");
 
     store.close();
   });
