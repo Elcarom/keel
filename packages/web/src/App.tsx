@@ -24,6 +24,7 @@ import {
   type SecretKeyName,
   type SecretMetadataRecord,
   type StrategyPromotionRecord,
+  type StrategySpecRecord,
   type SystemStatusResponse
 } from "@keel/core";
 import { initClient } from "@ts-rest/core";
@@ -88,6 +89,14 @@ export function App() {
   const [selectedStrategyId, setSelectedStrategyId] = useState("donchian-trend-v1");
   const [selectedInstrumentId, setSelectedInstrumentId] = useState("BTC-USDT-SWAP");
   const [replayRunning, setReplayRunning] = useState(false);
+
+  // Strategy Specs & AST Registry state (ADR-0020, ADR-0021)
+  const [specs, setSpecs] = useState<readonly StrategySpecRecord[]>([]);
+  const [selectedSpecHash, setSelectedSpecHash] = useState<string | null>(null);
+  const [selectedSpecDetail, setSelectedSpecDetail] = useState<{
+    spec: Record<string, unknown>;
+    descriptionText: string;
+  } | null>(null);
 
   // M3 Risk Guardian, Paper Execution, Double-Entry Ledger, & Promotion state
   const [paperCircuitBreaker, setPaperCircuitBreaker] = useState<CircuitBreakerRecord | null>(null);
@@ -171,7 +180,7 @@ export function App() {
   }, []);
 
   const refreshGovernanceData = useCallback(async () => {
-    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes, aiRes, brkRes] =
+    const [cfgRes, histRes, secRes, audRes, mktRes, expRes, paperRes, aiRes, brkRes, specsRes] =
       await Promise.all([
         apiClient.config.getActive(),
         apiClient.config.getHistory(),
@@ -181,7 +190,8 @@ export function App() {
         apiClient.replay.listExperiments(),
         apiClient.paper.getStatus(),
         apiClient.ai.getStatus(),
-        apiClient.broker.getStatus()
+        apiClient.broker.getStatus(),
+        apiClient.specs.list()
       ]);
     if (cfgRes.status === 200) {
       setActiveSnapshot(cfgRes.body.active);
@@ -216,7 +226,21 @@ export function App() {
     if (brkRes.status === 200) {
       setBrokerStatus(brkRes.body);
     }
+    if (specsRes.status === 200) {
+      setSpecs(specsRes.body.specs);
+    }
   }, []);
+
+  const handleSelectSpec = async (hash: string) => {
+    setSelectedSpecHash(hash);
+    const res = await apiClient.specs.getByHash({ params: { hash } });
+    if (res.status === 200) {
+      setSelectedSpecDetail({
+        spec: res.body.spec,
+        descriptionText: res.body.descriptionText
+      });
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1109,6 +1133,114 @@ export function App() {
                   </tbody>
                 </table>
               </div>
+            </section>
+
+            {/* Strategy Specs & AST Registry (ADR-0020, ADR-0021) */}
+            <section data-testid="strategy-specs-panel" className={cardClass}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold">Strategy Specifications &amp; AST Registry</h3>
+                  <p className="text-xs opacity-70">
+                    ADR-0020 Strategy Spec V1 AST &bull; ADR-0021 Spec Registry &amp; Promotion
+                    Quarantine
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    data-testid="registered-specs-count-badge"
+                    className="rounded border border-sky-500/40 bg-sky-500/15 px-2 py-0.5 text-xs font-semibold text-sky-400"
+                  >
+                    SPECS: {specs.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* Specs Table */}
+              <div className="mt-3 overflow-x-auto">
+                <table data-testid="specs-table" className="w-full text-left text-xs">
+                  <thead className="border-b border-slate-700/40 text-[11px] opacity-70">
+                    <tr>
+                      <th className="pb-1.5 pr-2">Strategy Name</th>
+                      <th className="pb-1.5 pr-2">Ver</th>
+                      <th className="pb-1.5 pr-2">Canonical Hash</th>
+                      <th className="pb-1.5 pr-2">Quarantine Status</th>
+                      <th className="pb-1.5 pr-2">Created</th>
+                      <th className="pb-1.5">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono-tabular">
+                    {specs.map((s) => (
+                      <tr
+                        key={s.specHash}
+                        className={`border-b border-slate-800/60 hover:bg-slate-800/30 ${
+                          selectedSpecHash === s.specHash ? "bg-slate-800/50" : ""
+                        }`}
+                      >
+                        <td className="py-2 pr-2 font-semibold text-teal-400">{s.name}</td>
+                        <td className="py-2 pr-2">v{s.version}</td>
+                        <td className="py-2 pr-2 text-sky-400" title={s.specHash}>
+                          {s.specHash.slice(0, 16)}...
+                        </td>
+                        <td className="py-2 pr-2">
+                          <span
+                            data-testid={`quarantine-status-${s.name}`}
+                            className={`rounded border px-2 py-0.5 text-[10px] font-semibold ${
+                              s.isSynthetic
+                                ? "border-amber-500/40 bg-amber-500/15 text-amber-400"
+                                : "border-emerald-500/40 bg-emerald-500/15 text-emerald-400"
+                            }`}
+                          >
+                            {s.isSynthetic ? "SYNTHETIC / QUARANTINED" : "PRODUCTION CANDIDATE"}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-2 opacity-70">
+                          {new Date(s.createdAtMs).toISOString().slice(0, 19).replace("T", " ")}
+                        </td>
+                        <td className="py-2">
+                          <button
+                            type="button"
+                            data-testid={`view-spec-${s.name}`}
+                            onClick={() => handleSelectSpec(s.specHash)}
+                            className="rounded border border-slate-600 px-2 py-0.5 text-[11px] hover:border-slate-400"
+                          >
+                            Inspect AST
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {specs.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="py-3 text-center opacity-60">
+                          No strategy specifications registered yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Spec Detail & Plain-English Description */}
+              {selectedSpecDetail && (
+                <div
+                  data-testid="spec-description-panel"
+                  className="mt-4 rounded border border-slate-700/40 bg-slate-800/30 p-3"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-700/40">
+                    <h4 className="text-xs font-bold text-teal-400">
+                      Plain-English AST Audit Description
+                    </h4>
+                    <span className="text-[11px] font-mono text-sky-400">
+                      {selectedSpecHash?.slice(0, 16)}...
+                    </span>
+                  </div>
+                  <pre
+                    data-testid="spec-description-text"
+                    className="mt-2 whitespace-pre-wrap font-mono text-xs opacity-90 leading-relaxed"
+                  >
+                    {selectedSpecDetail.descriptionText}
+                  </pre>
+                </div>
+              )}
             </section>
 
             {/* M3 Paper Execution Cockpit & Double-Entry Ledger */}

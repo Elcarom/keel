@@ -103,6 +103,8 @@ export {
   ShadowDecisionRecordSchema,
   ShadowStatsSchema,
   StrategyPromotionRecordSchema,
+  StrategySpecRecordSchema,
+  StrategySpecNameRecordSchema,
   TIMEFRAME_DURATION_MS,
   type AdminSessionRecord,
   type AdminUserRecord,
@@ -179,7 +181,11 @@ export {
   type ShadowStats,
   type ShadowRepository,
   type RecordShadowDecisionInput,
-  type StrategyPromotionRecord
+  type SaveStrategySpecInput,
+  type StrategyPromotionRecord,
+  type StrategySpecNameRecord,
+  type StrategySpecRecord,
+  type StrategySpecRepository
 } from "./ports.js";
 export {
   PromotionLadderEvaluator,

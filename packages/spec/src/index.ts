@@ -438,7 +438,9 @@ function evaluateNumExpr(
       if (expr.shift && expr.shift > 0) {
         if (bars.length <= expr.shift) return 0;
         const shiftedBars = bars.slice(0, -expr.shift);
-        targetIndicators = indicatorDefs ? computeIndicators(indicatorDefs, shiftedBars) : indicators;
+        targetIndicators = indicatorDefs
+          ? computeIndicators(indicatorDefs, shiftedBars)
+          : indicators;
       }
       const ind = targetIndicators[expr.id];
       if (!ind) return 0;
@@ -492,7 +494,9 @@ function evaluateCondition(
     case "logical_op": {
       switch (cond.op) {
         case "and":
-          return cond.operands.every((op) => evaluateCondition(op, bars, indicators, indicatorDefs));
+          return cond.operands.every((op) =>
+            evaluateCondition(op, bars, indicators, indicatorDefs)
+          );
         case "or":
           return cond.operands.some((op) => evaluateCondition(op, bars, indicators, indicatorDefs));
         case "not":
@@ -863,4 +867,10 @@ export const VOL_MOMENTUM_V1_SPEC: StrategySpecV1 = {
       rewardMultiple: 2.2
     }
   }
+};
+
+export const SYNTHETIC_DONCHIAN_FIXTURE_SPEC: StrategySpecV1 = {
+  ...DONCHIAN_TREND_V1_SPEC,
+  name: "synthetic-donchian-fixture",
+  synthetic: true
 };

@@ -452,6 +452,40 @@ export interface ExperimentRepository {
   hasUnusedHoldoutToken(partition: string): boolean;
 }
 
+export const StrategySpecRecordSchema = z.object({
+  specHash: z.string().regex(/^[a-f0-9]{64}$/),
+  name: z.string().min(1),
+  version: z.number().int().positive(),
+  specJson: z.string().min(1),
+  isSynthetic: z.boolean().default(false),
+  createdAtMs: z.number().int().nonnegative()
+});
+export type StrategySpecRecord = z.infer<typeof StrategySpecRecordSchema>;
+
+export const StrategySpecNameRecordSchema = z.object({
+  name: z.string().min(1),
+  activeSpecHash: z.string().regex(/^[a-f0-9]{64}$/),
+  updatedAtMs: z.number().int().nonnegative()
+});
+export type StrategySpecNameRecord = z.infer<typeof StrategySpecNameRecordSchema>;
+
+export interface SaveStrategySpecInput {
+  readonly specHash: string;
+  readonly name: string;
+  readonly version: number;
+  readonly specJson: string;
+  readonly isSynthetic?: boolean | undefined;
+  readonly createdAtMs?: number | undefined;
+}
+
+export interface StrategySpecRepository {
+  saveSpec(input: SaveStrategySpecInput): StrategySpecRecord;
+  getSpecByHash(specHash: string): StrategySpecRecord | null;
+  getSpecByName(name: string): StrategySpecRecord | null;
+  listSpecs(limit?: number): readonly StrategySpecRecord[];
+  setActiveSpec(name: string, specHash: string, updatedAtMs?: number): StrategySpecNameRecord;
+}
+
 export const CircuitBreakerStatusSchema = z.enum([
   "NORMAL",
   "DAILY_LOSS_HALT",
