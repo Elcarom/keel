@@ -86,18 +86,22 @@ This investigation resolves critical ambiguities in OKX V5 API execution semanti
 
 ### Schema & Valid Fields
 
-| Field               | Type             | Description                                                                          |
-| :------------------ | :--------------- | :----------------------------------------------------------------------------------- |
-| `attachAlgoClOrdId` | String           | Client-defined order ID for the attached algo order (1-32 chars).                    |
-| `tpTriggerPx`       | String           | Take-profit trigger price.                                                           |
-| `tpOrdPx`           | String           | Take-profit order price. Set to `"-1"` for market order execution.                   |
-| `tpTriggerPxType`   | String           | Trigger price type: `"mark"` (recommended to prevent wicks), `"last"`, or `"index"`. |
-| `slTriggerPx`       | String           | Stop-loss trigger price.                                                             |
-| `slOrdPx`           | String           | Stop-loss order price. Set to `"-1"` for market order execution.                     |
-| `slTriggerPxType`   | String           | Trigger price type: `"mark"` (recommended to prevent wicks), `"last"`, or `"index"`. |
-| `reduceOnly`        | Boolean / String | `true` or `"true"`. Ensures the algo order only reduces position size.               |
-| `closeFraction`     | String           | Fraction of position to close upon trigger. `"1"` for 100% position close.           |
-| `sz`                | String           | Exact lot/contract size to close (mutually exclusive with `closeFraction`).          |
+| Field               | Type   | Status         | Description                                                                            |
+| :------------------ | :----- | :------------- | :------------------------------------------------------------------------------------- |
+| `attachAlgoClOrdId` | String | **CONFIRMED**  | Client-defined order ID for the attached algo order (1-32 chars).                      |
+| `slTriggerPx`       | String | **CONFIRMED**  | Stop-loss trigger price.                                                               |
+| `slOrdPx`           | String | **CONFIRMED**  | Stop-loss order price. Set to `"-1"` for market order execution.                       |
+| `slTriggerPxType`   | String | **CONFIRMED**  | Trigger price type: `"mark"` (recommended to prevent wicks), `"last"`, or `"index"`.   |
+| `tpTriggerPx`       | String | **CONFIRMED**  | Take-profit trigger price.                                                             |
+| `tpOrdPx`           | String | **CONFIRMED**  | Take-profit order price. Set to `"-1"` for market order execution.                     |
+| `tpTriggerPxType`   | String | **CONFIRMED**  | Trigger price type: `"mark"` (recommended to prevent wicks), `"last"`, or `"index"`.   |
+| `sz`                | String | **CONFIRMED**  | Exact lot/contract size to close (optional; defaults to entire filled parent size).    |
+| `reduceOnly`        | Bool   | **UNVERIFIED** | Present on parent order payload. Not a valid OKX V5 sub-field inside `attachAlgoOrds`. |
+| `closeFraction`     | String | **UNVERIFIED** | Not a recognized OKX V5 sub-field inside `attachAlgoOrds`; dropped to prevent error.   |
+
+> [!IMPORTANT]
+> **Defect Remediation (M-E / ADR-0018)**:
+> In the official OKX V5 REST API documentation, `reduceOnly` is a root-level order property, not an inner property of elements in `attachAlgoOrds`. Passing `reduceOnly` or `closeFraction` within `attachAlgoOrds` causes API schema rejections (`code: "51000"`). These unverified properties have been removed from the broker payload.
 
 ### Canonical Request Payload Example (Isolated SWAP Long Entry with Protective Stop & TP)
 
@@ -118,9 +122,7 @@ This investigation resolves critical ambiguities in OKX V5 API execution semanti
       "slTriggerPxType": "mark",
       "tpTriggerPx": "68000.00",
       "tpOrdPx": "-1",
-      "tpTriggerPxType": "mark",
-      "reduceOnly": true,
-      "closeFraction": "1"
+      "tpTriggerPxType": "mark"
     }
   ]
 }
