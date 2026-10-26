@@ -95,6 +95,7 @@ export interface SqliteDataStore extends BackupService {
   readonly paperAccountRepo: PaperAccountRepository;
   readonly promotionRepo: PromotionRepository;
   readonly backupService: BackupService;
+  readonly rawDb: DatabaseSyncType;
   getPragmaStatus(): SqlitePragmaStatus;
   checkpointWal(): { busy: number; log: number; checkpointed: number };
   close(): void;
@@ -649,6 +650,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     paperAccountRepo,
     promotionRepo,
     backupService,
+    rawDb: db,
 
     getPragmaStatus(): SqlitePragmaStatus {
       const jm = db.prepare("PRAGMA journal_mode").get();

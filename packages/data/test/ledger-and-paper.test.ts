@@ -333,6 +333,13 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
     expect(m1.highWaterMarkEquityUsdt.toFixed(2)).toBe("12000.00");
     expect(m1.drawdownPct.toFixed(2)).toBe("0.00");
 
+    // Explicitly record peak equity snapshot
+    store.ledgerRepo.recordEquitySnapshot({
+      ts: t1,
+      strategyId: "donchian-trend",
+      equityUsdt: m1.currentEquityUsdt
+    });
+
     // At t2, market pulls back and unrealized PnL drops to +500 -> MTM Equity = 10,500
     const t2 = mondayMidnightMs + 2000;
     const m2 = store.ledgerRepo.getRiskMetrics({
@@ -366,6 +373,11 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
     });
     expect(portfolioMetrics.currentEquityUsdt.toFixed(2)).toBe("100000.00");
     expect(portfolioMetrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("100000.00");
+    store.ledgerRepo.recordEquitySnapshot({
+      ts: t1,
+      strategyId: null,
+      equityUsdt: portfolioMetrics.currentEquityUsdt
+    });
 
     // Strategy A has 1,000 unrealized PnL
     const stratMetrics = store.ledgerRepo.getRiskMetrics({
@@ -374,6 +386,11 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
       openUnrealizedPnlUsdt: ScaledDecimal.fromString("1000.00")
     });
     expect(stratMetrics.currentEquityUsdt.toFixed(2)).toBe("101000.00");
+    store.ledgerRepo.recordEquitySnapshot({
+      ts: t1 + 500,
+      strategyId: "strategy-A",
+      equityUsdt: stratMetrics.currentEquityUsdt
+    });
 
     // Strategy A equity is 101,000 (100k cash + 1k upl), but if strategyId is specified,
     // its snapshots must NOT pull portfolio snapshots and vice versa.
@@ -388,6 +405,50 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
     expect(stratPullback.currentEquityUsdt.toFixed(2)).toBe("100000.00");
     // Drawdown = (101000 - 100000) / 101000 = 0.99% (NOT ~90%!)
     expect(stratPullback.drawdownPct.toFixed(2)).toBe("0.99");
+
+    store.close();
+  });
+
+  it("R6 / Pre-made decision: getRiskMetrics is strictly read-only and requires explicit recordEquitySnapshot", () => {
+    const mondayMidnightMs = 1_700_438_400_000;
+    const clock = new ManualClock(mondayMidnightMs);
+    const store = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialPaperCapitalUsdt: "10000.00000000"
+    });
+
+    const getSnapshotCount = () => {
+      const row = store.rawDb
+        .prepare("SELECT COUNT(*) AS cnt FROM ledger_equity_snapshots")
+        .get() as { cnt: number };
+      return Number(row.cnt);
+    };
+
+    expect(getSnapshotCount()).toBe(0);
+
+    // Calling getRiskMetrics must be strictly read-only and NOT create any snapshot rows!
+    const m1 = store.ledgerRepo.getRiskMetrics({
+      asOfMs: mondayMidnightMs + 1000,
+      strategyId: "strategy-A"
+    });
+    expect(m1.currentEquityUsdt.toFixed(2)).toBe("10000.00");
+    expect(getSnapshotCount()).toBe(0);
+
+    // Explicit recordEquitySnapshot creates the snapshot
+    store.ledgerRepo.recordEquitySnapshot({
+      ts: mondayMidnightMs + 1000,
+      strategyId: "strategy-A",
+      equityUsdt: ScaledDecimal.fromString("12000.00")
+    });
+    expect(getSnapshotCount()).toBe(1);
+
+    // Now getRiskMetrics reflects the explicitly recorded peak HWM
+    const m2 = store.ledgerRepo.getRiskMetrics({
+      asOfMs: mondayMidnightMs + 2000,
+      strategyId: "strategy-A"
+    });
+    expect(m2.highWaterMarkEquityUsdt.toFixed(2)).toBe("12000.00");
 
     store.close();
   });

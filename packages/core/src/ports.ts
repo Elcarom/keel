@@ -529,6 +529,11 @@ export interface LedgerRepository {
     readonly strategyId?: string | null | undefined;
     readonly openUnrealizedPnlUsdt?: ScaledDecimal | undefined;
   }): LedgerRiskMetrics;
+  recordEquitySnapshot(params: {
+    readonly ts: number;
+    readonly strategyId?: string | null | undefined;
+    readonly equityUsdt: ScaledDecimal;
+  }): void;
 }
 
 export const PaperPositionRecordSchema = z.object({

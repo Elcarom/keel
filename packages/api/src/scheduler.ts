@@ -62,7 +62,7 @@ export class UnattendedScheduler {
     this.getSystemConfig = options.getSystemConfig;
     this.notificationChannel = options.notificationChannel ?? null;
     this.instruments = options.instruments ?? ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
-    this.strategies = options.strategies ?? ["donchian-trend-v1"];
+    this.strategies = options.strategies ?? [];
     this.intervalMs = options.intervalMs ?? 60_000;
   }
 
@@ -133,34 +133,43 @@ export class UnattendedScheduler {
           }
         }
 
-        // 2. Step strategy evaluation on the latest confirmed bar
-        const latestBars = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
-          instrumentId: instId,
-          timeframe: "1H",
-          asOfMs: nowMs,
-          limit: 1
-        });
-        const latestBar = latestBars[0] ?? null;
+        // 2. Step strategy evaluation on all unprocessed confirmed bars in chronological order (capped at 500 per step) (R6)
+        for (const stratId of this.strategies) {
+          try {
+            const strategy = resolveStrategyById(stratId);
+            const lastProcessedCloseTs = this.dataStore.paperAccountRepo.getLastProcessedBarCloseTs(
+              {
+                instrumentId: instId,
+                strategyId: stratId
+              }
+            );
 
-        if (latestBar) {
-          const featureBars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
-            instrumentId: instId,
-            timeframe: "1H",
-            fromOpenTs: latestBar.openTs - 100 * 3600_000,
-            toCloseTs: latestBar.closeTs
-          });
+            const fromOpenTs = lastProcessedCloseTs !== null ? lastProcessedCloseTs : 0;
+            const unprocessedBars = this.dataStore.marketDataRepo
+              .getConfirmedBarsInRange({
+                instrumentId: instId,
+                timeframe: "1H",
+                fromOpenTs,
+                toCloseTs: nowMs
+              })
+              .slice(0, 500);
 
-          const fundingRates = this.dataStore.marketDataRepo.getSettledFundingInRange({
-            instrumentId: instId,
-            fromTs: 0,
-            toTs: nowMs
-          });
+            for (const bar of unprocessedBars) {
+              const featureBars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
+                instrumentId: instId,
+                timeframe: "1H",
+                fromOpenTs: bar.openTs - 100 * 3600_000,
+                toCloseTs: bar.closeTs
+              });
 
-          for (const stratId of this.strategies) {
-            try {
-              const strategy = resolveStrategyById(stratId);
+              const fundingRates = this.dataStore.marketDataRepo.getSettledFundingInRange({
+                instrumentId: instId,
+                fromTs: 0,
+                toTs: bar.closeTs
+              });
+
               const tickResult = this.paperBroker.executeConfirmedBarTick({
-                bar: latestBar,
+                bar,
                 strategy,
                 featureBars: { "1H": featureBars },
                 settledFundingRates: fundingRates
@@ -179,19 +188,74 @@ export class UnattendedScheduler {
                   details: {
                     instrumentId: instId,
                     strategyId: stratId,
-                    barOpenTs: latestBar.openTs,
-                    barClosePrice: latestBar.close,
+                    barOpenTs: bar.openTs,
+                    barClosePrice: bar.close,
                     positionsOpened: tickResult.positionsOpened.length,
                     positionsClosed: tickResult.positionsClosed.length,
                     vetoedCount: tickResult.vetoedProposals.length
                   }
                 });
               }
-            } catch (err) {
-              errors.push(`Strategy tick failed for ${stratId} on ${instId}: ${String(err)}`);
+            }
+
+            if (unprocessedBars.length > 0) {
+              const strategyMetrics = this.dataStore.ledgerRepo.getRiskMetrics({
+                asOfMs: nowMs,
+                strategyId: stratId
+              });
+              this.dataStore.ledgerRepo.recordEquitySnapshot({
+                ts: nowMs,
+                strategyId: stratId,
+                equityUsdt: strategyMetrics.currentEquityUsdt
+              });
+            }
+          } catch (err) {
+            errors.push(`Strategy tick failed for ${stratId} on ${instId}: ${String(err)}`);
+          }
+        }
+
+        // If no strategies are configured but open paper positions exist, evaluate exits & funding across unprocessed bars
+        if (this.strategies.length === 0) {
+          const openPositions = this.dataStore.paperAccountRepo
+            .listOpenPositions()
+            .filter((p) => p.instrumentId === instId);
+
+          if (openPositions.length > 0) {
+            const earliestPending = Math.min(...openPositions.map((p) => p.lastFundingSettledTs));
+            const unprocessedBars = this.dataStore.marketDataRepo
+              .getConfirmedBarsInRange({
+                instrumentId: instId,
+                timeframe: "1H",
+                fromOpenTs: earliestPending + 1,
+                toCloseTs: nowMs
+              })
+              .slice(0, 500);
+
+            for (const bar of unprocessedBars) {
+              const fundingRates = this.dataStore.marketDataRepo.getSettledFundingInRange({
+                instrumentId: instId,
+                fromTs: 0,
+                toTs: bar.closeTs
+              });
+
+              this.paperBroker.executeConfirmedBarTick({
+                bar,
+                settledFundingRates: fundingRates
+              });
             }
           }
         }
+
+        // Record portfolio equity snapshot after instrument step
+        const portfolioMetrics = this.dataStore.ledgerRepo.getRiskMetrics({
+          asOfMs: nowMs,
+          strategyId: null
+        });
+        this.dataStore.ledgerRepo.recordEquitySnapshot({
+          ts: nowMs,
+          strategyId: null,
+          equityUsdt: portfolioMetrics.currentEquityUsdt
+        });
       }
 
       // 3. In Demo and Live modes, maintain honest DMS heartbeat and position reconciliation

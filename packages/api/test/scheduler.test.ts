@@ -266,4 +266,209 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     expect(step3.ok).toBe(true);
     expect(step3.ticksExecuted).toBe(0);
   });
+
+  it("R6: default scheduler strategy list is empty (explicit opt-in)", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    const confirmedOpenTs = Math.floor(clock.nowMs() / 3600_000) * 3600_000 - 3600_000;
+    dataStore.marketDataRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles: [
+        {
+          openTs: confirmedOpenTs,
+          open: "50000.00",
+          high: "51000.00",
+          low: "49000.00",
+          close: "50500.00",
+          volumeContracts: "10",
+          volumeQuote: "505000.00",
+          confirm: "1"
+        }
+      ]
+    });
+
+    // Do NOT specify strategies; default must be empty []
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"]
+    });
+
+    const res = await scheduler.stepOnce();
+    expect(res.ok).toBe(true);
+    // Explicit opt-in required: zero strategy ticks executed when strategies list is omitted
+    expect(res.ticksExecuted).toBe(0);
+  });
+
+  it("R6: processes all unprocessed confirmed bars chronologically capped at 500 per step spanning missing bars", async () => {
+    const startTs = 1_700_000_000_000;
+    const clock = new ManualClock(startTs);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    // Seed 10 consecutive confirmed 1H bars
+    const candles = [];
+    for (let i = 0; i < 10; i++) {
+      const openTs = startTs + i * 3600_000;
+      candles.push({
+        openTs,
+        open: "50000.00",
+        high: "51000.00",
+        low: "49000.00",
+        close: "50500.00",
+        volumeContracts: "10",
+        volumeQuote: "505000.00",
+        confirm: "1" as const
+      });
+    }
+    dataStore.marketDataRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    // Advance clock past all 10 bars
+    clock.advanceMs(15 * 3600_000);
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // Step once: must process all 10 missing/unprocessed bars in chronological order!
+    const step1 = await scheduler.stepOnce();
+    expect(step1.ok).toBe(true);
+    expect(step1.ticksExecuted).toBe(10);
+
+    // Verify last processed bar is the 10th bar's closeTs
+    const lastCloseTs = dataStore.paperAccountRepo.getLastProcessedBarCloseTs({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1"
+    });
+    const lastCandle = candles[9];
+    expect(lastCandle).toBeDefined();
+    expect(lastCloseTs).toBe(lastCandle ? lastCandle.openTs + 3600_000 : -1);
+
+    // Subsequent step with no new bars executed must execute 0 ticks
+    const step2 = await scheduler.stepOnce();
+    expect(step2.ok).toBe(true);
+    expect(step2.ticksExecuted).toBe(0);
+  });
+
+  it("R6: caps processing at 500 unprocessed bars per step and resumes on subsequent step", async () => {
+    const startTs = 1_700_000_000_000;
+    const clock = new ManualClock(startTs);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    // Seed 505 consecutive confirmed 1H bars
+    const totalBars = 505;
+    const candles = [];
+    for (let i = 0; i < totalBars; i++) {
+      const openTs = startTs + i * 3600_000;
+      candles.push({
+        openTs,
+        open: "50000.00",
+        high: "51000.00",
+        low: "49000.00",
+        close: "50500.00",
+        volumeContracts: "10",
+        volumeQuote: "505000.00",
+        confirm: "1" as const
+      });
+    }
+    dataStore.marketDataRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles
+    });
+
+    clock.advanceMs((totalBars + 5) * 3600_000);
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // Step 1: Must process exactly 500 bars (capped at 500)
+    const step1 = await scheduler.stepOnce();
+    expect(step1.ok).toBe(true);
+    expect(step1.ticksExecuted).toBe(500);
+
+    const midCloseTs = dataStore.paperAccountRepo.getLastProcessedBarCloseTs({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1"
+    });
+    const midCandle = candles[499];
+    expect(midCandle).toBeDefined();
+    expect(midCloseTs).toBe(midCandle ? midCandle.openTs + 3600_000 : -1);
+
+    // Step 2: Must process the remaining 5 bars (501 to 505)
+    const step2 = await scheduler.stepOnce();
+    expect(step2.ok).toBe(true);
+    expect(step2.ticksExecuted).toBe(5);
+
+    const finalCloseTs = dataStore.paperAccountRepo.getLastProcessedBarCloseTs({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1"
+    });
+    const finalCandle = candles[504];
+    expect(finalCandle).toBeDefined();
+    expect(finalCloseTs).toBe(finalCandle ? finalCandle.openTs + 3600_000 : -1);
+  });
 });
