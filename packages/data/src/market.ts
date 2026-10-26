@@ -14,6 +14,7 @@ import {
   type FeatureSnapshot,
   type HoldoutTokenInput,
   type ConsumeHoldoutTokenInput,
+  type SaveExperimentOptions,
   type ResearchTrialInput,
   type LookbackDeficit,
   type LookbackValidationResult,
@@ -592,53 +593,97 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
 
 export function createExperimentRepository(db: DatabaseSync): ExperimentRepository {
   return {
-    saveExperiment(record: ExperimentRecord): ExperimentRecord {
+    saveExperiment(record: ExperimentRecord, options?: SaveExperimentOptions): ExperimentRecord {
       const validated = ExperimentRecordSchema.parse(record);
-      const stmt = db.prepare(
-        `INSERT INTO experiments (
-          experiment_id, strategy_id, strategy_version, instrument_id, timeframe,
-          data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
-          avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
-          sharpe_ratio, deflated_sharpe_ratio, stress_net_expectancy_r,
-          walk_forward_oos_avg_r, replay_gate_passed, created_at_ms, num_trials,
-          buy_and_hold_return_pct, buy_and_hold_sharpe_ratio,
-          random_entry_return_pct, random_entry_sharpe_ratio
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      const res = stmt.run(
-        validated.experimentId,
-        validated.strategyId,
-        validated.strategyVersion,
-        validated.instrumentId,
-        validated.timeframe,
-        validated.dataSnapshotId,
-        validated.configHash,
-        validated.fromTs,
-        validated.toTs,
-        validated.totalTrades,
-        validated.winRate,
-        validated.avgR,
-        validated.netPnlUsdt,
-        validated.totalFeesUsdt,
-        validated.totalFundingUsdt,
-        validated.maxDrawdownPct,
-        validated.sharpeRatio,
-        validated.deflatedSharpeRatio,
-        validated.stressNetExpectancyR,
-        validated.walkForwardOutOfSampleAvgR,
-        validated.replayGatePassed ? 1 : 0,
-        validated.createdAtMs,
-        validated.numTrials ?? 1,
-        validated.buyAndHoldReturnPct,
-        validated.buyAndHoldSharpeRatio,
-        validated.randomEntryReturnPct,
-        validated.randomEntrySharpeRatio
-      );
-      const seq = Number(res.lastInsertRowid);
-      return {
-        ...validated,
-        sequence: seq > 0 ? seq : undefined
+
+      const doSave = () => {
+        if (options?.consumeHoldoutPartition) {
+          const selectStmt = db.prepare(
+            `SELECT token FROM holdout_tokens
+             WHERE partition = ? AND consumed_at_ms IS NULL
+             ORDER BY created_at_ms ASC LIMIT 1`
+          );
+          const row = selectStmt.get(options.consumeHoldoutPartition) as
+            { token: string } | undefined;
+          if (!row) {
+            throw new Error(
+              `Sealed 2026 holdout violation: No unused single-use authorization token found for partition '${options.consumeHoldoutPartition}'. Access denied (ADR-0011).`
+            );
+          }
+          const updateStmt = db.prepare(
+            `UPDATE holdout_tokens
+             SET consumed_at_ms = ?
+             WHERE partition = ? AND token = ? AND consumed_at_ms IS NULL`
+          );
+          const nowMs = options.nowMs ?? Date.now();
+          const res = updateStmt.run(nowMs, options.consumeHoldoutPartition, row.token);
+          if (res.changes === 0) {
+            throw new Error(
+              `Sealed 2026 holdout violation: Failed to consume token for partition '${options.consumeHoldoutPartition}'.`
+            );
+          }
+        }
+
+        const stmt = db.prepare(
+          `INSERT INTO experiments (
+            experiment_id, strategy_id, strategy_version, instrument_id, timeframe,
+            data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
+            avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
+            sharpe_ratio, deflated_sharpe_ratio, stress_net_expectancy_r,
+            walk_forward_oos_avg_r, replay_gate_passed, created_at_ms, num_trials,
+            buy_and_hold_return_pct, buy_and_hold_sharpe_ratio,
+            random_entry_return_pct, random_entry_sharpe_ratio
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        );
+        const res = stmt.run(
+          validated.experimentId,
+          validated.strategyId,
+          validated.strategyVersion,
+          validated.instrumentId,
+          validated.timeframe,
+          validated.dataSnapshotId,
+          validated.configHash,
+          validated.fromTs,
+          validated.toTs,
+          validated.totalTrades,
+          validated.winRate,
+          validated.avgR,
+          validated.netPnlUsdt,
+          validated.totalFeesUsdt,
+          validated.totalFundingUsdt,
+          validated.maxDrawdownPct,
+          validated.sharpeRatio,
+          validated.deflatedSharpeRatio,
+          validated.stressNetExpectancyR,
+          validated.walkForwardOutOfSampleAvgR,
+          validated.replayGatePassed ? 1 : 0,
+          validated.createdAtMs,
+          validated.numTrials ?? 1,
+          validated.buyAndHoldReturnPct,
+          validated.buyAndHoldSharpeRatio,
+          validated.randomEntryReturnPct,
+          validated.randomEntrySharpeRatio
+        );
+        const seq = Number(res.lastInsertRowid);
+        return {
+          ...validated,
+          sequence: seq > 0 ? seq : undefined
+        };
       };
+
+      if (options?.consumeHoldoutPartition) {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const result = doSave();
+          db.exec("COMMIT");
+          return result;
+        } catch (err) {
+          db.exec("ROLLBACK");
+          throw err;
+        }
+      }
+
+      return doSave();
     },
 
     listExperiments(limit = 50): readonly ExperimentRecord[] {

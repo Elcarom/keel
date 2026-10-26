@@ -436,8 +436,13 @@ export interface ConsumeHoldoutTokenInput {
   readonly nowMs: number;
 }
 
+export interface SaveExperimentOptions {
+  readonly consumeHoldoutPartition?: string | undefined;
+  readonly nowMs?: number | undefined;
+}
+
 export interface ExperimentRepository {
-  saveExperiment(record: ExperimentRecord): ExperimentRecord;
+  saveExperiment(record: ExperimentRecord, options?: SaveExperimentOptions): ExperimentRecord;
   listExperiments(limit?: number): readonly ExperimentRecord[];
   getExperiment(experimentId: string): ExperimentRecord | null;
   recordTrial(trial: ResearchTrialInput): number;

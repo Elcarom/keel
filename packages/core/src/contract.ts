@@ -414,7 +414,10 @@ export const keelApiContract = c.router({
       body: z.object({
         strategyId: z.string().min(1),
         instrumentId: z.string().default("BTC-USDT-SWAP"),
-        timeframe: BarTimeframeSchema.default("1H")
+        timeframe: BarTimeframeSchema.default("1H"),
+        fromTs: z.number().int().positive().optional(),
+        toTs: z.number().int().positive().optional(),
+        allowHoldoutAccess: z.boolean().default(false).optional()
       }),
       responses: {
         200: z.object({
