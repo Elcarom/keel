@@ -128,6 +128,7 @@ export const LEGACY_DEFAULT_MASTER_KEY = "keel-default-local-dev-master-key-chan
 
 export class RateLimitError extends Error {
   public readonly isRateLimited = true;
+  public readonly statusCode = 429;
   public readonly retryAfterSeconds: number;
 
   public constructor(message: string, retryAfterSeconds: number) {

@@ -252,8 +252,8 @@ describe("PaperBroker (ADR-0006)", () => {
     const closed = tick3.positionsClosed[0];
     if (!closed) throw new Error("Expected closed position");
 
-    // Exit price must be the gapped open price (48000), not the exact stop price
-    expect(Number(closed.exitPrice)).toBe(48000);
+    // Exit price must be the gapped open price with adverse slippage (48000 - 48 = 47952)
+    expect(Number(closed.exitPrice)).toBe(47952);
     expect(closed.exitReason).toBe("protective_stop");
 
     store.close();
@@ -428,7 +428,7 @@ describe("PaperBroker (ADR-0006)", () => {
     if (!closed) throw new Error("Expected closed position");
     expect(closed.status).toBe("CLOSED");
     expect(closed.exitReason).toBe("protective_stop");
-    expect(closed.exitPrice).toBe("49000.00000000");
+    expect(closed.exitPrice).toBe("48985.30000000");
 
     const tb = store.ledgerRepo.getTrialBalance();
     expect(tb.isBalanced).toBe(true);

@@ -1,6 +1,7 @@
 import {
   RiskGuardian,
   ScaledDecimal,
+  computeMarketExitPrice,
   computeNextBarOpenEntry,
   defaultInstrumentSpec,
   evaluateIntrabarExit,
@@ -372,14 +373,15 @@ export class PaperBroker implements Broker {
         }
       }
 
-      // Shared gap-aware exit evaluation (M-A / ADR-0009)
+      // Shared gap-aware exit evaluation with adverse stop slippage (M-A / ADR-0009 / ADR-0014)
       const exitRes = evaluateIntrabarExit({
         side: pos.side,
         barOpen,
         barHigh,
         barLow,
         stopPrice,
-        tpPrice
+        tpPrice,
+        slippageBps: this.slippageBps
       });
 
       if (exitRes.closed && exitRes.exitPrice !== null && exitRes.exitReason !== null) {
@@ -626,8 +628,13 @@ export class PaperBroker implements Broker {
       const entryPrice = ScaledDecimal.fromString(pos.entryPrice);
       const contracts = ScaledDecimal.fromString(pos.contracts);
       const spec = defaultInstrumentSpec(pos.instrumentId);
-      // Flat at entry price for simulated emergency exit
-      const exitPrice = entryPrice;
+      // Flat with market exit adverse slippage (ADR-0014)
+      const exitMarket = computeMarketExitPrice({
+        side: pos.side,
+        marketPrice: entryPrice,
+        slippageBps: this.slippageBps
+      });
+      const exitPrice = exitMarket.exitPrice;
       const notional = contracts.mul(spec.contractValue).mul(exitPrice);
       const exitFee = notional.mul(
         ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))

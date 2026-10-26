@@ -3,7 +3,9 @@ import {
   ManualClock,
   SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
+  computeMarketExitPrice,
   computeNextBarOpenEntry,
+  computeTradePnL,
   defaultInstrumentSpec,
   evaluateIntrabarExit,
   sha256Hex,
@@ -591,6 +593,7 @@ interface ActivePosition {
   readonly contracts: ScaledDecimal;
   readonly initialRiskUsdt: ScaledDecimal;
   readonly entryFeeUsdt: ScaledDecimal;
+  readonly entrySlippageUsdt: ScaledDecimal;
   fundingAccruedUsdt: ScaledDecimal;
   lastFundingTs: number;
 }
@@ -864,9 +867,6 @@ export class ReplayEngine {
         ? params.oneWayFeeBps
         : Math.max(0, params.totalOneWayCostBps - params.slippageBps);
     const feeFraction = ScaledDecimal.fromString((effectiveFeeBps / 10_000).toFixed(8));
-    const extraStressMultiplierDec = ScaledDecimal.fromString(
-      Math.max(0, params.costStressMultiplier - 1).toFixed(8)
-    );
     const riskFractionDec = ScaledDecimal.fromString(params.riskFraction.toFixed(8));
     const maxLeverageDec = ScaledDecimal.fromString(params.maxLeverage.toFixed(8));
 
@@ -874,28 +874,30 @@ export class ReplayEngine {
       pos: ActivePosition,
       exitTs: number,
       exitPrice: ScaledDecimal,
+      exitSlippageUsdt: ScaledDecimal,
       exitReason: "stop" | "take-profit" | "end-of-replay"
     ) => {
-      const priceDiff =
-        pos.proposal.side === "long"
-          ? exitPrice.sub(pos.entryPrice)
-          : pos.entryPrice.sub(exitPrice);
       const baseQty = pos.contracts.mul(spec.contractValue);
-      const grossPnlUsdt = priceDiff.mul(baseQty);
       const exitNotionalUsdt = exitPrice.mul(baseQty);
       const exitFeeUsdt = exitNotionalUsdt.mul(feeFraction);
-      const tradeFeesUsdt = pos.entryFeeUsdt.add(exitFeeUsdt);
-      const netPnlUsdt = grossPnlUsdt.sub(tradeFeesUsdt).add(pos.fundingAccruedUsdt);
 
-      // Cost stress deducts (costStressMultiplier - 1) * tradeFeesUsdt
-      const stressNetPnlUsdt = netPnlUsdt.sub(tradeFeesUsdt.mul(extraStressMultiplierDec));
+      const pnl = computeTradePnL({
+        side: pos.proposal.side,
+        entryPrice: pos.entryPrice,
+        exitPrice,
+        contracts: pos.contracts,
+        contractValue: spec.contractValue,
+        entryFeeUsdt: pos.entryFeeUsdt,
+        exitFeeUsdt,
+        entrySlippageUsdt: pos.entrySlippageUsdt,
+        exitSlippageUsdt,
+        fundingAccruedUsdt: pos.fundingAccruedUsdt,
+        initialRiskUsdt: pos.initialRiskUsdt,
+        costStressMultiplier: params.costStressMultiplier
+      });
 
-      const riskNum = Math.max(0.01, Number(pos.initialRiskUsdt.toString()));
-      const netR = Number((Number(netPnlUsdt.toString()) / riskNum).toFixed(6));
-      const stressNetR = Number((Number(stressNetPnlUsdt.toString()) / riskNum).toFixed(6));
-
-      equityUsdt = equityUsdt.add(netPnlUsdt);
-      totalFeesUsdt = totalFeesUsdt.add(tradeFeesUsdt);
+      equityUsdt = equityUsdt.add(pnl.netPnlUsdt);
+      totalFeesUsdt = totalFeesUsdt.add(pnl.totalFeesUsdt);
       totalFundingUsdt = totalFundingUsdt.add(pos.fundingAccruedUsdt);
 
       trades.push({
@@ -909,12 +911,12 @@ export class ReplayEngine {
         protectiveStopPrice: pos.protectiveStopPrice,
         contracts: pos.contracts,
         initialRiskUsdt: pos.initialRiskUsdt,
-        grossPnlUsdt,
-        feesUsdt: tradeFeesUsdt,
+        grossPnlUsdt: pnl.grossPnlUsdt,
+        feesUsdt: pnl.totalFeesUsdt,
         fundingUsdt: pos.fundingAccruedUsdt,
-        netPnlUsdt,
-        netR,
-        stressNetR,
+        netPnlUsdt: pnl.netPnlUsdt,
+        netR: pnl.netR,
+        stressNetR: pnl.stressNetR,
         exitReason
       });
     };
@@ -957,6 +959,8 @@ export class ReplayEngine {
 
         if (sizing.ok && Number(sizing.contracts.toString()) > 0) {
           const entryFeeUsdt = sizing.notionalQuote.mul(feeFraction);
+          const baseQty = sizing.contracts.mul(spec.contractValue);
+          const entrySlippageUsdt = exec.slippageAmount.mul(baseQty);
           active = {
             proposal: pendingProposal,
             entryTs: bar.openTs,
@@ -966,6 +970,7 @@ export class ReplayEngine {
             contracts: sizing.contracts,
             initialRiskUsdt: sizing.sizedRiskQuote,
             entryFeeUsdt,
+            entrySlippageUsdt,
             fundingAccruedUsdt: ScaledDecimal.zero(),
             lastFundingTs: bar.openTs
           };
@@ -992,19 +997,22 @@ export class ReplayEngine {
           active.lastFundingTs = f.fundingTs;
         }
 
-        // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2)
+        // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2) and adverse exit slippage (R1)
         const exitRes = evaluateIntrabarExit({
           side: active.proposal.side,
           barOpen,
           barHigh,
           barLow,
           stopPrice: active.protectiveStopPrice,
-          tpPrice: active.takeProfitPrice
+          tpPrice: active.takeProfitPrice,
+          slippageBps: params.slippageBps
         });
 
         if (exitRes.closed && exitRes.exitPrice && exitRes.exitReason) {
           const reason = exitRes.exitReason === "protective_stop" ? "stop" : "take-profit";
-          closePosition(active, nowMs, exitRes.exitPrice, reason);
+          const baseQty = active.contracts.mul(spec.contractValue);
+          const exitSlippageUsdt = exitRes.slippageAmount.mul(baseQty);
+          closePosition(active, nowMs, exitRes.exitPrice, exitSlippageUsdt, reason);
           active = null;
         }
       }
@@ -1081,10 +1089,18 @@ export class ReplayEngine {
 
     const lastBar = bars[bars.length - 1];
     if (active && lastBar) {
+      const exitMarket = computeMarketExitPrice({
+        side: active.proposal.side,
+        marketPrice: ScaledDecimal.fromString(lastBar.close),
+        slippageBps: params.slippageBps
+      });
+      const baseQty = active.contracts.mul(spec.contractValue);
+      const exitSlippageUsdt = exitMarket.slippageAmount.mul(baseQty);
       closePosition(
         active,
         lastBar.closeTs,
-        ScaledDecimal.fromString(lastBar.close),
+        exitMarket.exitPrice,
+        exitSlippageUsdt,
         "end-of-replay"
       );
       active = null;
