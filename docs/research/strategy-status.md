@@ -7,21 +7,21 @@
 
 ## 1. Summary
 
-In accordance with Keel research governance, ADR-0009, and ADR-0012, all three candidate strategies have been evaluated against historical data (2023-01-01 to 2024-12-31 UTC in-sample with settled 8H funding rates, next-bar open execution, gap slippage, and 2x cost stress):
+In accordance with Keel research governance, ADR-0009, ADR-0012, ADR-0014, and ADR-0016, all three candidate strategies have been evaluated against historical data (2023-01-01 to 2024-12-31 UTC in-sample with settled 8H funding rates, next-bar open execution, gap slippage, 200-path random entry baseline distribution, and 2x cost stress):
 
 1. **`donchian-trend-v1`** (Donchian Breakout Trend Following)
-   - In-Sample Net PnL (BTC): -$556.62 USDT (Sharpe: -0.06, DSR: 0.175, WF OOS Avg R: -0.02)
-   - In-Sample Net PnL (ETH): -$5,093.46 USDT (Sharpe: -1.77, DSR: 0.000, WF OOS Avg R: -0.17)
+   - In-Sample Net PnL (BTC): -$1,133.22 USDT (Sharpe: -0.22, DSR: 0.122, WF OOS Avg R: -0.03)
+   - In-Sample Net PnL (ETH): -$5,392.32 USDT (Sharpe: -1.92, DSR: 0.000, WF OOS Avg R: -0.19)
    - Replay Gate: **FAILED** (Underperforms Buy & Hold and fails minimum Sharpe/expectancy thresholds)
 
 2. **`vol-mean-reversion-v1`** (Volatility Normalized Mean Reversion)
-   - In-Sample Net PnL (BTC): -$7,948.31 USDT (Sharpe: -3.57, DSR: 0.000, WF OOS Avg R: -0.19)
-   - In-Sample Net PnL (ETH): -$7,130.99 USDT (Sharpe: -2.79, DSR: 0.000, WF OOS Avg R: -0.14)
+   - In-Sample Net PnL (BTC): -$8,204.64 USDT (Sharpe: -3.85, DSR: 0.000, WF OOS Avg R: -0.20)
+   - In-Sample Net PnL (ETH): -$7,437.89 USDT (Sharpe: -3.03, DSR: 0.000, WF OOS Avg R: -0.16)
    - Replay Gate: **FAILED** (Severe trend break drawdown and negative expectancy)
 
 3. **`vol-momentum-v1`** (Volatility Normalized Momentum)
-   - In-Sample Net PnL (BTC): -$1,242.29 USDT (Sharpe: -0.33, DSR: 0.094, WF OOS Avg R: -0.04)
-   - In-Sample Net PnL (ETH): -$1,378.93 USDT (Sharpe: -0.41, DSR: 0.077, WF OOS Avg R: -0.01)
+   - In-Sample Net PnL (BTC): -$1,620.87 USDT (Sharpe: -0.47, DSR: 0.066, WF OOS Avg R: -0.06)
+   - In-Sample Net PnL (ETH): -$1,681.44 USDT (Sharpe: -0.52, DSR: 0.057, WF OOS Avg R: -0.02)
    - Replay Gate: **FAILED** (Negative expectancy after trading costs and funding drag)
 
 ---
