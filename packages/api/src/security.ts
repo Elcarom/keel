@@ -3,6 +3,7 @@ import {
   createDecipheriv,
   createHash,
   createHmac,
+  hkdfSync,
   randomBytes,
   timingSafeEqual
 } from "node:crypto";
@@ -144,7 +145,10 @@ export class SecretVault {
       options.masterKeyMaterial ??
       process.env["KEEL_MASTER_KEY"] ??
       "keel-default-local-dev-master-key-change-in-prod";
-    this.derivedKey = createHash("sha256").update(`keel-aes-256-gcm-v1:${rawMaterial}`).digest();
+    // RFC 5869 HKDF standard key derivation for AES-256-GCM
+    this.derivedKey = Buffer.from(
+      hkdfSync("sha256", rawMaterial, "keel-vault-salt-v1", "keel-aes-256-gcm-v1", 32)
+    );
   }
 
   public upsertSecret(input: {
@@ -229,7 +233,8 @@ function hashSessionToken(token: string): string {
  */
 function hashPasswordArgon2id(password: string, saltHex: string): string {
   const salt = Buffer.from(saltHex, "hex");
-  const digest = argon2id(password, salt, { t: 2, m: 4096, p: 1, dkLen: 32 });
+  // OWASP Password Storage Guidelines (RFC 9106 Argon2id): m=19456 KiB (19 MiB), t=2, p=1, dkLen=32
+  const digest = argon2id(password, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
   return Buffer.from(digest).toString("hex");
 }
 

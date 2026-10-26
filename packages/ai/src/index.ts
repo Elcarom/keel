@@ -39,6 +39,7 @@ export interface GeminiGatewayOptions {
   readonly fetchFn?: GeminiFetchFn | undefined;
   readonly mockAdapter?:
     (<T>(request: LlmCompletionRequest, schema: z.ZodType<T>) => T) | undefined;
+  readonly simulateResponses?: boolean | undefined;
 }
 
 /**
@@ -175,6 +176,7 @@ export class GeminiLlmGateway implements LlmGateway {
   private readonly getApiKey: () => string | null;
   private readonly fetchFn: GeminiFetchFn;
   private readonly customFetchProvided: boolean;
+  private readonly simulateResponses?: boolean | undefined;
   private readonly mockAdapter?:
     (<T>(request: LlmCompletionRequest, schema: z.ZodType<T>) => T) | undefined;
   private dailySpendUsd = 0;
@@ -187,6 +189,7 @@ export class GeminiLlmGateway implements LlmGateway {
     this.getConfig = options.getConfig;
     this.getApiKey = options.getApiKey;
     this.customFetchProvided = options.fetchFn !== undefined;
+    this.simulateResponses = options.simulateResponses;
     this.mockAdapter = options.mockAdapter;
     this.fetchFn =
       options.fetchFn ??
@@ -260,15 +263,9 @@ export class GeminiLlmGateway implements LlmGateway {
       );
     }
 
-    const apiKey = this.getApiKey();
-    const isSimulatedKey =
-      !this.customFetchProvided &&
-      (!apiKey ||
-        apiKey.includes("e2e") ||
-        apiKey.includes("test") ||
-        apiKey.includes("simulated"));
+    const shouldSimulate = this.simulateResponses ?? config.simulateResponses ?? false;
 
-    if (isSimulatedKey) {
+    if (shouldSimulate) {
       const resolver = this.mockAdapter ?? defaultSimulatedResolver;
       const parsed = resolver(request, schema);
       const actualCostUsd = 0.0005;
@@ -284,8 +281,14 @@ export class GeminiLlmGateway implements LlmGateway {
       };
     }
 
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      throw new Error("Gemini API key is required when simulateResponses is false");
+    }
+
     const model = config.fastModel;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    // Gemini API: pass key via x-goog-api-key header, not URL query parameter
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
     const promptText = `${request.systemPrompt}\n\nUser:\n${request.userPrompt}\n\nRespond with valid JSON matching schema.`;
     const payload = {
@@ -297,7 +300,10 @@ export class GeminiLlmGateway implements LlmGateway {
 
     const response = await this.fetchFn(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
       body: JSON.stringify(payload)
     });
 

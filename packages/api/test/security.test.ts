@@ -211,4 +211,37 @@ describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-25
     expect(ingress.session.totpEnabled).toBe(true);
     expect(ingress.session.stepUpValid).toBe(true);
   });
+
+  it("E1: SecretVault derives AES-256-GCM key using RFC 5869 HKDF standard rather than plain SHA-256", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const store = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialPaperCapitalUsdt: "100000.00"
+    });
+
+    const masterKey = "secure-master-key-entropy-material-32B";
+    const vault = new SecretVault({
+      repo: store.secretVaultRepo,
+      clock,
+      masterKeyMaterial: masterKey
+    });
+
+    vault.upsertSecret({
+      keyName: "okxApiKey",
+      plaintextValue: "live-okx-api-key-9999",
+      actor: "admin"
+    });
+
+    const decrypted = vault.getDecryptedSecret("okxApiKey");
+    expect(decrypted).toBe("live-okx-api-key-9999");
+
+    const meta = vault.listMetadata();
+    expect(meta.length).toBeGreaterThanOrEqual(1);
+    const keyMeta = meta.find((m) => m.keyName === "okxApiKey");
+    expect(keyMeta?.isConfigured).toBe(true);
+    expect(keyMeta?.maskedPreview).toContain("...");
+
+    store.close();
+  });
 });

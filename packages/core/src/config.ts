@@ -94,6 +94,7 @@ export const AiGatewayConfigSchema = z.object({
     .default("2025-03-01"),
   monthlyBudgetUsd: z.number().min(0).max(500).default(15.0),
   dailyBudgetUsd: z.number().min(0).max(50).default(0.75),
+  simulateResponses: z.boolean().default(false),
   subBudgets: AiFeatureSubBudgetsConfigSchema.default({}),
   shadowAdvisorEnabled: z.boolean().default(true),
   contextAnalystEnabled: z.boolean().default(true),
@@ -678,6 +679,14 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     min: 1,
     max: 240,
     defaultValue: 15,
+    riskClass: "safe"
+  },
+  {
+    path: "ai.simulateResponses",
+    label: "Simulate AI Responses",
+    helpText:
+      "Explicitly return deterministic simulated responses without calling Google Gemini API.",
+    defaultValue: false,
     riskClass: "safe"
   }
 ];
