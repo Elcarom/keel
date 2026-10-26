@@ -390,13 +390,28 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
     });
     expect(ineligibleShadow.eligibleNextStage).toBeNull();
 
-    // After 15 days and 32 trades in Shadow, it becomes eligible for Paper
+    // After 15 days and 32 trades in Shadow, but negative resolved expectancy (e.g. -0.20 R), it MUST remain ineligible
+    const negativeExpectancyShadow = evaluator.evaluate({
+      strategyId: "donchian-trend",
+      currentStage: "Shadow",
+      latestExperiment: passingExperiment,
+      shadowTradesCount: 32,
+      shadowDurationDays: 15,
+      shadowExpectancyR: -0.2,
+      paperTradesCount: 0,
+      paperDrawdownPct: 0,
+      asOfMs: 1_702_600_000_000 + 15 * 86_400_000
+    });
+    expect(negativeExpectancyShadow.eligibleNextStage).toBeNull();
+
+    // After 15 days, 32 trades, and non-negative expectancy (+0.25 R) in Shadow, it becomes eligible for Paper
     const eligibleShadow = evaluator.evaluate({
       strategyId: "donchian-trend",
       currentStage: "Shadow",
       latestExperiment: passingExperiment,
       shadowTradesCount: 32,
       shadowDurationDays: 15,
+      shadowExpectancyR: 0.25,
       paperTradesCount: 0,
       paperDrawdownPct: 0,
       asOfMs: 1_702_600_000_000 + 15 * 86_400_000

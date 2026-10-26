@@ -844,3 +844,59 @@ export const MarkoutForensicReportSchema = z.object({
   trainingContaminated: z.boolean().default(false)
 });
 export type MarkoutForensicReport = z.infer<typeof MarkoutForensicReportSchema>;
+
+export const ShadowDecisionRecordSchema = z.object({
+  decisionId: z.string().min(1),
+  strategyId: z.string().min(1),
+  instrumentId: z.string().min(1),
+  signalBarOpenTs: z.number().int().nonnegative(),
+  signalBarCloseTs: z.number().int().nonnegative(),
+  proposalId: z.string().min(1),
+  side: z.enum(["long", "short"]),
+  entryPrice: z.string(),
+  protectiveStopPrice: z.string(),
+  takeProfitPrice: z.string().nullable(),
+  status: z.enum(["PENDING", "RESOLVED"]),
+  resolvedR: z.number().nullable(),
+  resolvedAtMs: z.number().int().nullable(),
+  createdAtMs: z.number().int().nonnegative()
+});
+export type ShadowDecisionRecord = z.infer<typeof ShadowDecisionRecordSchema>;
+
+export const ShadowStatsSchema = z.object({
+  resolvedCount: z.number().int().nonnegative(),
+  pendingCount: z.number().int().nonnegative(),
+  totalDecisions: z.number().int().nonnegative(),
+  expectancyR: z.number(),
+  winRate: z.number().min(0).max(1)
+});
+export type ShadowStats = z.infer<typeof ShadowStatsSchema>;
+
+export interface RecordShadowDecisionInput {
+  readonly strategyId: string;
+  readonly instrumentId: string;
+  readonly signalBarOpenTs: number;
+  readonly signalBarCloseTs: number;
+  readonly proposalId: string;
+  readonly side: "long" | "short";
+  readonly entryPrice: string;
+  readonly protectiveStopPrice: string;
+  readonly takeProfitPrice?: string | null | undefined;
+  readonly createdAtMs: number;
+}
+
+export interface ShadowRepository {
+  recordDecision(input: RecordShadowDecisionInput): boolean;
+  getPendingDecisions(strategyId?: string): readonly ShadowDecisionRecord[];
+  resolveDecision(input: {
+    readonly decisionId: string;
+    readonly resolvedR: number;
+    readonly resolvedAtMs: number;
+  }): void;
+  resolvePendingDecisions(params: {
+    readonly marketDataRepo: MarketDataRepository;
+    readonly slippageBps?: number | undefined;
+  }): number;
+  getShadowStats(strategyId: string): ShadowStats;
+  listDecisions(strategyId?: string, limit?: number): readonly ShadowDecisionRecord[];
+}

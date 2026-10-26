@@ -9,7 +9,10 @@ import {
   PromotionStageSchema,
   ProposalSchema,
   ScaledDecimal,
+  ShadowDecisionRecordSchema,
   StrategyPromotionRecordSchema,
+  computeNextBarOpenEntry,
+  evaluateIntrabarExit,
   getUtcDayStartMs,
   getUtcWeekStartMs,
   type CircuitBreakerRecord,
@@ -17,12 +20,17 @@ import {
   type LedgerRepository,
   type LedgerRiskMetrics,
   type LedgerTrialBalance,
+  type MarketDataRepository,
   type NewLedgerJournalInput,
   type PaperAccountRepository,
   type PaperOrderRecord,
   type PaperPositionRecord,
   type PromotionRepository,
   type Proposal,
+  type RecordShadowDecisionInput,
+  type ShadowDecisionRecord,
+  type ShadowRepository,
+  type ShadowStats,
   type StrategyPromotionRecord
 } from "@keel/core";
 
@@ -127,6 +135,25 @@ CREATE TABLE IF NOT EXISTS ledger_equity_snapshots (
   PRIMARY KEY (strategy_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_equity_snapshots ON ledger_equity_snapshots(strategy_id, ts ASC);
+
+CREATE TABLE IF NOT EXISTS shadow_decisions (
+  decision_id TEXT PRIMARY KEY,
+  strategy_id TEXT NOT NULL,
+  instrument_id TEXT NOT NULL,
+  signal_bar_open_ts INTEGER NOT NULL,
+  signal_bar_close_ts INTEGER NOT NULL,
+  proposal_id TEXT NOT NULL,
+  side TEXT NOT NULL,
+  entry_price TEXT NOT NULL,
+  protective_stop_price TEXT NOT NULL,
+  take_profit_price TEXT,
+  status TEXT NOT NULL,
+  resolved_r REAL,
+  resolved_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE (strategy_id, instrument_id, signal_bar_close_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_decisions_lookup ON shadow_decisions(strategy_id, status);
 `;
 
 function mapLedgerRow(row: Record<string, unknown>): LedgerEntryRecord {
@@ -750,6 +777,208 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
           updatedAtMs: Number(row["updated_at_ms"])
         })
       );
+    }
+  };
+}
+
+function mapShadowRow(row: Record<string, unknown>): ShadowDecisionRecord {
+  return ShadowDecisionRecordSchema.parse({
+    decisionId: String(row["decision_id"]),
+    strategyId: String(row["strategy_id"]),
+    instrumentId: String(row["instrument_id"]),
+    signalBarOpenTs: Number(row["signal_bar_open_ts"]),
+    signalBarCloseTs: Number(row["signal_bar_close_ts"]),
+    proposalId: String(row["proposal_id"]),
+    side: row["side"] === "short" ? "short" : "long",
+    entryPrice: String(row["entry_price"]),
+    protectiveStopPrice: String(row["protective_stop_price"]),
+    takeProfitPrice: row["take_profit_price"] === null ? null : String(row["take_profit_price"]),
+    status: row["status"] === "RESOLVED" ? "RESOLVED" : "PENDING",
+    resolvedR:
+      row["resolved_r"] === null || row["resolved_r"] === undefined
+        ? null
+        : Number(row["resolved_r"]),
+    resolvedAtMs:
+      row["resolved_at_ms"] === null || row["resolved_at_ms"] === undefined
+        ? null
+        : Number(row["resolved_at_ms"]),
+    createdAtMs: Number(row["created_at_ms"])
+  });
+}
+
+export function createShadowRepository(db: DatabaseSync): ShadowRepository {
+  return {
+    recordDecision(input: RecordShadowDecisionInput): boolean {
+      const decisionId = `shadow-${input.strategyId}-${input.instrumentId}-${input.signalBarCloseTs}`;
+      const res = db
+        .prepare(
+          `INSERT INTO shadow_decisions (
+            decision_id, strategy_id, instrument_id, signal_bar_open_ts, signal_bar_close_ts,
+            proposal_id, side, entry_price, protective_stop_price, take_profit_price,
+            status, resolved_r, resolved_at_ms, created_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?)
+          ON CONFLICT(strategy_id, instrument_id, signal_bar_close_ts) DO NOTHING`
+        )
+        .run(
+          decisionId,
+          input.strategyId,
+          input.instrumentId,
+          input.signalBarOpenTs,
+          input.signalBarCloseTs,
+          input.proposalId,
+          input.side,
+          input.entryPrice,
+          input.protectiveStopPrice,
+          input.takeProfitPrice ?? null,
+          input.createdAtMs
+        );
+      return Number(res.changes) > 0;
+    },
+
+    getPendingDecisions(strategyId?: string): readonly ShadowDecisionRecord[] {
+      const sql = strategyId
+        ? `SELECT * FROM shadow_decisions WHERE status = 'PENDING' AND strategy_id = ? ORDER BY signal_bar_close_ts ASC`
+        : `SELECT * FROM shadow_decisions WHERE status = 'PENDING' ORDER BY signal_bar_close_ts ASC`;
+      const rows = (strategyId ? db.prepare(sql).all(strategyId) : db.prepare(sql).all()) as Record<
+        string,
+        unknown
+      >[];
+      return rows.map(mapShadowRow);
+    },
+
+    resolveDecision(input: {
+      readonly decisionId: string;
+      readonly resolvedR: number;
+      readonly resolvedAtMs: number;
+    }): void {
+      db.prepare(
+        `UPDATE shadow_decisions
+         SET status = 'RESOLVED', resolved_r = ?, resolved_at_ms = ?
+         WHERE decision_id = ?`
+      ).run(input.resolvedR, input.resolvedAtMs, input.decisionId);
+    },
+
+    resolvePendingDecisions(params: {
+      readonly marketDataRepo: MarketDataRepository;
+      readonly slippageBps?: number | undefined;
+    }): number {
+      const pending = this.getPendingDecisions();
+      if (pending.length === 0) return 0;
+
+      let resolvedCount = 0;
+      const slippageBps = params.slippageBps ?? 0;
+
+      for (const dec of pending) {
+        const subsequentBars = params.marketDataRepo.getConfirmedBarsInRange({
+          instrumentId: dec.instrumentId,
+          timeframe: "1H",
+          fromOpenTs: dec.signalBarCloseTs,
+          toCloseTs: Number.MAX_SAFE_INTEGER
+        });
+
+        if (subsequentBars.length === 0) continue;
+
+        const entryBar = subsequentBars[0];
+        if (!entryBar) continue;
+
+        const proposedEntry = ScaledDecimal.fromString(dec.entryPrice);
+        const proposedStop = ScaledDecimal.fromString(dec.protectiveStopPrice);
+        const proposedTp = dec.takeProfitPrice
+          ? ScaledDecimal.fromString(dec.takeProfitPrice)
+          : null;
+
+        const entryExec = computeNextBarOpenEntry({
+          side: dec.side,
+          barOpen: ScaledDecimal.fromString(entryBar.open),
+          slippageBps,
+          proposedEntryPrice: proposedEntry,
+          proposedStopPrice: proposedStop,
+          proposedTpPrice: proposedTp
+        });
+
+        const entryPrice = entryExec.entryPrice;
+        const effectiveStopPrice = entryExec.effectiveStopPrice;
+        const effectiveTpPrice = entryExec.effectiveTpPrice;
+
+        const initialRisk =
+          dec.side === "long"
+            ? entryPrice.sub(effectiveStopPrice)
+            : effectiveStopPrice.sub(entryPrice);
+
+        for (const bar of subsequentBars) {
+          const exitRes = evaluateIntrabarExit({
+            side: dec.side,
+            barOpen: ScaledDecimal.fromString(bar.open),
+            barHigh: ScaledDecimal.fromString(bar.high),
+            barLow: ScaledDecimal.fromString(bar.low),
+            stopPrice: effectiveStopPrice,
+            tpPrice: effectiveTpPrice,
+            slippageBps
+          });
+
+          if (exitRes.closed && exitRes.exitPrice) {
+            const pnl =
+              dec.side === "long"
+                ? exitRes.exitPrice.sub(entryPrice)
+                : entryPrice.sub(exitRes.exitPrice);
+
+            const resolvedR = initialRisk.isPositive()
+              ? Number(pnl.toScaledBigInt()) / Number(initialRisk.toScaledBigInt())
+              : 0;
+
+            this.resolveDecision({
+              decisionId: dec.decisionId,
+              resolvedR: Number(resolvedR.toFixed(4)),
+              resolvedAtMs: bar.closeTs
+            });
+            resolvedCount++;
+            break;
+          }
+        }
+      }
+
+      return resolvedCount;
+    },
+
+    getShadowStats(strategyId: string): ShadowStats {
+      const row = db
+        .prepare(
+          `SELECT
+             COUNT(CASE WHEN status = 'RESOLVED' THEN 1 END) AS resolved_cnt,
+             COUNT(CASE WHEN status = 'PENDING' THEN 1 END) AS pending_cnt,
+             COUNT(*) AS total_cnt,
+             AVG(CASE WHEN status = 'RESOLVED' THEN resolved_r END) AS avg_r,
+             COUNT(CASE WHEN status = 'RESOLVED' AND resolved_r > 0 THEN 1 END) AS win_cnt
+           FROM shadow_decisions
+           WHERE strategy_id = ?`
+        )
+        .get(strategyId) as Record<string, unknown> | undefined;
+
+      const resolvedCount = Number(row?.["resolved_cnt"] ?? 0);
+      const pendingCount = Number(row?.["pending_cnt"] ?? 0);
+      const totalDecisions = Number(row?.["total_cnt"] ?? 0);
+      const expectancyR =
+        row?.["avg_r"] !== null && row?.["avg_r"] !== undefined ? Number(row["avg_r"]) : 0;
+      const winCount = Number(row?.["win_cnt"] ?? 0);
+      const winRate = resolvedCount > 0 ? winCount / resolvedCount : 0;
+
+      return {
+        resolvedCount,
+        pendingCount,
+        totalDecisions,
+        expectancyR,
+        winRate
+      };
+    },
+
+    listDecisions(strategyId?: string, limit = 100): readonly ShadowDecisionRecord[] {
+      const sql = strategyId
+        ? `SELECT * FROM shadow_decisions WHERE strategy_id = ? ORDER BY signal_bar_close_ts DESC LIMIT ?`
+        : `SELECT * FROM shadow_decisions ORDER BY signal_bar_close_ts DESC LIMIT ?`;
+      const rows = (
+        strategyId ? db.prepare(sql).all(strategyId, limit) : db.prepare(sql).all(limit)
+      ) as Record<string, unknown>[];
+      return rows.map(mapShadowRow);
     }
   };
 }

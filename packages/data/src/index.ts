@@ -34,7 +34,8 @@ import {
   type RollbackConfigInput,
   type SaveConfigSnapshotInput,
   type SecretKeyName,
-  type SecretVaultRepository
+  type SecretVaultRepository,
+  type ShadowRepository
 } from "@keel/core";
 import {
   MARKET_SCHEMA_SQL,
@@ -50,7 +51,8 @@ import {
   PAPER_SCHEMA_SQL,
   createLedgerRepository,
   createPaperAccountRepository,
-  createPromotionRepository
+  createPromotionRepository,
+  createShadowRepository
 } from "./paper.js";
 
 export {
@@ -58,6 +60,7 @@ export {
   createLedgerRepository,
   createPaperAccountRepository,
   createPromotionRepository,
+  createShadowRepository,
   seedSyntheticMarketSeries,
   type FetchOkxHistoryCandlesFn,
   type FetchOkxHistoryFundingFn,
@@ -94,6 +97,7 @@ export interface SqliteDataStore extends BackupService {
   readonly ledgerRepo: LedgerRepository;
   readonly paperAccountRepo: PaperAccountRepository;
   readonly promotionRepo: PromotionRepository;
+  readonly shadowRepo: ShadowRepository;
   readonly backupService: BackupService;
   readonly rawDb: DatabaseSyncType;
   getPragmaStatus(): SqlitePragmaStatus;
@@ -248,6 +252,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   );
   const paperAccountRepo = createPaperAccountRepository(db);
   const promotionRepo = createPromotionRepository(db);
+  const shadowRepo = createShadowRepository(db);
 
   // Seed default version 1 config if empty
   const existingCountRow = db.prepare("SELECT COUNT(*) AS cnt FROM config_snapshots").get();
@@ -649,6 +654,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     ledgerRepo,
     paperAccountRepo,
     promotionRepo,
+    shadowRepo,
     backupService,
     rawDb: db,
 
