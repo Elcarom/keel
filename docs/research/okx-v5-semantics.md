@@ -214,3 +214,32 @@ _Note_: `data[0]` provides `ordId` and status codes `sCode` / `sMsg`. It does **
      - Fetch real exchange positions (`GET /api/v5/account/positions`) to identify foreign/untracked positions and flatten them with reduceOnly market orders.
      - Never fabricate 0-PnL closes at entry price. Calculate realized PnL and journal fills to the ledger.
      - Do not rely on `timeOut: "0"` to cancel resting orders. Explicitly cancel pending orders via `POST /api/v5/trade/cancel-batch-orders` or `POST /api/v5/trade/cancel-algo-orders`.
+
+---
+
+## 6. Broker Truthfulness Remainder Audit Resolution (C3a–d)
+
+### C3a: Stop Confirmation Matching & Algo Types
+
+- **Defect**: `submitOrder` queried only `ordType=conditional` and matched any algo on the account if `algoData.data?.length === 1`.
+- **Resolution**: Queries both `conditional` and `oco` pending algos. Matches strictly by ID equality: `algoClOrdId === target || attachAlgoClOrdId === target || algoId === target`. The `length === 1` shortcut is permanently eliminated.
+
+### C3b: History Polling on Missing Exchange Positions
+
+- **Defect**: `reconcilePositions` immediately declared a position "missing on exchange" as drift and triggered emergency flattening of all positions, even when the position simply exited normally via an exchange-side stop or take-profit fill.
+- **Resolution**: When a local position is absent from exchange positions, the broker polls `/api/v5/trade/fills?instType=SWAP&instId=...`. If an exit fill matching the position side and lot size exists, the broker closes the position locally at the real fill price and exit fee, records real realized PnL and exit fee to `LedgerRepository`, updates `AccountRepository`, and does NOT declare drift.
+
+### C3c: Flatten Fill Confirmation & Real Exit PnL
+
+- **Defect**: `flattenAllPositions` previously posted PnL using the last 1H bar close (or entry price), fabricating PnL and fees.
+- **Resolution**: `flattenAllPositions` queries `GET /api/v5/trade/order` for the close order fill details (`avgPx`, `fee`). Only when the fill is confirmed does it post realized PnL and exit fees to the ledger and mark the position `CLOSED`. If unconfirmed, the position remains `OPEN`, zero fictional PnL is posted, and a `CRITICAL` alert is emitted.
+
+### C3d: Fill-Query Failure on Submit
+
+- **Defect**: If `GET /api/v5/trade/order` failed to confirm a fill upon `submitOrder`, the order status was set to `SUBMITTED` and execution proceeded with an unconfirmed position.
+- **Resolution**: Unconfirmed fill on submit indicates unknown position state. The broker immediately raises a `CRITICAL` alert, executes an emergency flatten to close any possible partial fill or clear resting risk, and throws an explicit error.
+
+### Margin Mode (`tdMode`) and Position Side (`posSide`) Semantics
+
+- `tdMode`: Defaults to `"isolated"`. When flattening foreign exchange positions, inherits `mgnMode` from the exchange position.
+- `posSide`: In net mode (single-currency accounts), omitted or `"net"`. In long/short mode, passed as `"long"` or `"short"`. When flattening foreign positions, inherits exchange `posSide`.
