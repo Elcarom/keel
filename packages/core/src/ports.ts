@@ -668,7 +668,11 @@ export type ReconciliationResult = z.infer<typeof ReconciliationResultSchema>;
 
 export interface ExchangeBroker extends Broker {
   submitOrder(input: ExchangeOrderInput): Promise<ExchangeOrderResult>;
-  sendDmsHeartbeat(): Promise<{ ok: boolean; countdownSeconds: number }>;
+  sendDmsHeartbeat(): Promise<{
+    ok: boolean;
+    countdownSeconds: number;
+    status?: "ok" | "not_configured" | "failed";
+  }>;
   reconcilePositions(): Promise<ReconciliationResult>;
   getDmsStatus(): DmsStatus;
   amendAlgoOrder(params: {

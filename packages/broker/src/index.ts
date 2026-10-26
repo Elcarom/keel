@@ -228,6 +228,8 @@ export class OkxBroker implements ExchangeBroker {
 
   public getDmsStatus(): DmsStatus {
     const now = this.clock.nowMs();
+    const creds = this.getCredentials();
+    const hasCreds = Boolean(creds && creds.apiKey);
     const last = this.dmsLastHeartbeatAtMs;
     const timeoutSeconds = 60;
     const nextHeartbeatDueMs = last !== null ? last + 15_000 : null;
@@ -238,15 +240,24 @@ export class OkxBroker implements ExchangeBroker {
       timeoutSeconds,
       lastHeartbeatAtMs: last,
       nextHeartbeatDueMs,
-      healthy: last !== null && !isExpired
+      healthy: hasCreds && last !== null && !isExpired
     };
   }
 
-  public async sendDmsHeartbeat(): Promise<{ ok: boolean; countdownSeconds: number }> {
+  public async sendDmsHeartbeat(): Promise<{
+    ok: boolean;
+    countdownSeconds: number;
+    status?: "ok" | "not_configured" | "failed";
+  }> {
     const creds = this.getCredentials();
+    const nowMs = this.clock.nowMs();
+
+    if (!creds || !creds.apiKey) {
+      return { ok: false, countdownSeconds: 0, status: "not_configured" };
+    }
+
     const path = "/api/v5/trade/cancel-all-after";
     const body = JSON.stringify({ timeOut: "60" });
-    const nowMs = this.clock.nowMs();
 
     if (creds && creds.apiKey) {
       const headers = buildOkxHeaders({
@@ -315,7 +326,7 @@ export class OkxBroker implements ExchangeBroker {
     }
 
     this.dmsLastHeartbeatAtMs = nowMs;
-    return { ok: true, countdownSeconds: 60 };
+    return { ok: true, countdownSeconds: 60, status: "ok" };
   }
 
   public async submitOrder(input: ExchangeOrderInput): Promise<ExchangeOrderResult> {
@@ -402,6 +413,9 @@ export class OkxBroker implements ExchangeBroker {
 
     let orderId = `ord${clOrdId}`;
     let algoOrderId = `algo${algoClOrdId}`;
+    let fillPriceStr = input.entryPrice;
+    let actualSizeLots = input.sizeLots;
+    let feeUsdtOverride: ScaledDecimal | null = null;
 
     if (creds && creds.apiKey) {
       const headers = buildOkxHeaders({
@@ -457,8 +471,62 @@ export class OkxBroker implements ExchangeBroker {
         orderId = item.ordId;
       }
 
-      // Query OKX to confirm attached protective stop algo order
-      const algoPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(input.instrumentId)}&ordType=conditional&algoClOrdId=${encodeURIComponent(algoClOrdId)}`;
+      // 1. Query true execution fill details (price, executed quantity, fee) from OKX execution report
+      const orderQueryPath = `/api/v5/trade/order?instId=${encodeURIComponent(input.instrumentId)}&ordId=${encodeURIComponent(orderId)}`;
+      const orderQueryHeaders = buildOkxHeaders({
+        method: "GET",
+        path: orderQueryPath,
+        credentials: creds,
+        timestampIso: new Date(nowMs).toISOString(),
+        isDemo: this.isDemo
+      });
+
+      try {
+        const orderRes = await this.fetchFn(`https://www.okx.com${orderQueryPath}`, {
+          method: "GET",
+          headers: orderQueryHeaders
+        });
+
+        if (orderRes.ok) {
+          const orderData = (await orderRes.json()) as {
+            code?: string;
+            data?: Array<{
+              avgPx?: string;
+              accFillSz?: string;
+              fillPx?: string;
+              fee?: string;
+              feeCcy?: string;
+              state?: string;
+            }>;
+          };
+          const fillItem = orderData.data?.[0];
+          if (fillItem) {
+            if (fillItem.avgPx && fillItem.avgPx.trim() !== "" && fillItem.avgPx !== "0") {
+              fillPriceStr = fillItem.avgPx;
+            } else if (
+              fillItem.fillPx &&
+              fillItem.fillPx.trim() !== "" &&
+              fillItem.fillPx !== "0"
+            ) {
+              fillPriceStr = fillItem.fillPx;
+            }
+            if (fillItem.accFillSz && fillItem.accFillSz.trim() !== "") {
+              const parsedSz = Number(fillItem.accFillSz);
+              if (!Number.isNaN(parsedSz) && parsedSz > 0) {
+                actualSizeLots = parsedSz;
+              }
+            }
+            if (fillItem.fee && fillItem.fee.trim() !== "") {
+              feeUsdtOverride = ScaledDecimal.fromString(fillItem.fee).abs();
+            }
+          }
+        }
+      } catch {
+        // Fallback to entryPrice if order fill query times out
+      }
+
+      // 2. Query OKX to confirm attached protective stop algo order
+      const algoPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(input.instrumentId)}&ordType=conditional`;
       const algoHeaders = buildOkxHeaders({
         method: "GET",
         path: algoPath,
@@ -467,26 +535,63 @@ export class OkxBroker implements ExchangeBroker {
         isDemo: this.isDemo
       });
 
-      const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
-        method: "GET",
-        headers: algoHeaders
-      });
+      let confirmedAlgoId: string | null = null;
+      try {
+        const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+          method: "GET",
+          headers: algoHeaders
+        });
 
-      if (algoRes.ok) {
-        const algoData = (await algoRes.json()) as {
-          code?: string;
-          data?: Array<{
-            algoId?: string;
-            algoClOrdId?: string;
-            state?: string;
-          }>;
-        };
-        const algoItem = algoData.data?.[0];
-        if (algoItem?.algoId) {
-          algoOrderId = algoItem.algoId;
+        if (algoRes.ok) {
+          const algoData = (await algoRes.json()) as {
+            code?: string;
+            data?: Array<{
+              algoId?: string;
+              algoClOrdId?: string;
+              attachAlgoClOrdId?: string;
+              state?: string;
+            }>;
+          };
+          const matches = algoData.data?.filter(
+            (a) =>
+              (a.algoClOrdId && (a.algoClOrdId === algoClOrdId || a.algoClOrdId === clOrdId)) ||
+              (a.attachAlgoClOrdId && a.attachAlgoClOrdId === algoClOrdId) ||
+              Boolean(a.algoId && (a.algoId === algoOrderId || algoData.data?.length === 1))
+          );
+          if (matches && matches.length > 0 && matches[0]?.algoId) {
+            confirmedAlgoId = matches[0].algoId;
+          }
         }
+      } catch {
+        // Query error
       }
+
+      if (!confirmedAlgoId) {
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "CRITICAL: UNCONFIRMED PROTECTIVE STOP",
+            body: `Order ${orderId} was placed on exchange but protective stop algo order (${algoClOrdId}) could not be confirmed on OKX. Executing emergency flatten.`,
+            dedupKey: `unconfirmed-stop-${orderId}`
+          });
+        }
+
+        // Emergency flatten on exchange
+        await this.flattenAllPositions(
+          `Unconfirmed protective stop algo order for order ${orderId}`
+        );
+
+        throw new Error(
+          `Protective stop algo order (${algoClOrdId}) could not be confirmed on OKX. Emergency position flatten executed (ADR-0006).`
+        );
+      }
+
+      algoOrderId = confirmedAlgoId;
     }
+
+    const fillPxDec = ScaledDecimal.fromString(fillPriceStr);
+    const contractsDec = ScaledDecimal.fromString(String(actualSizeLots));
+    const spec = defaultInstrumentSpec(input.instrumentId);
 
     const orderResult: ExchangeOrderResult = {
       orderId,
@@ -494,8 +599,8 @@ export class OkxBroker implements ExchangeBroker {
       algoOrderId,
       instrumentId: input.instrumentId,
       side: input.side,
-      fillPrice: input.entryPrice,
-      sizeLots: input.sizeLots,
+      fillPrice: fillPriceStr,
+      sizeLots: actualSizeLots,
       protectiveStopPrice: input.protectiveStopPrice,
       status: "FILLED",
       submittedAtMs: nowMs
@@ -504,18 +609,16 @@ export class OkxBroker implements ExchangeBroker {
     // Update local state
     const posId = `pos_${clOrdId}`;
     const effectiveStrategyId = input.strategyId ?? "manual-execution";
-    const contractsDec = ScaledDecimal.fromString(String(input.sizeLots));
-    const spec = defaultInstrumentSpec(input.instrumentId);
     const initialRisk =
       input.initialRiskUsdt ??
-      (input.side === "long" ? entryPx.sub(stopPx) : stopPx.sub(entryPx))
+      (input.side === "long" ? fillPxDec.sub(stopPx) : stopPx.sub(fillPxDec))
         .mul(contractsDec)
         .mul(spec.contractValue)
         .toFixed(2);
 
-    const notional = contractsDec.mul(spec.contractValue).mul(entryPx);
+    const notional = contractsDec.mul(spec.contractValue).mul(fillPxDec);
     const feeRate = ScaledDecimal.fromString("0.0006");
-    const entryFee = notional.mul(feeRate);
+    const entryFee = feeUsdtOverride ?? notional.mul(feeRate);
 
     if (this.ledgerRepo && entryFee.isPositive()) {
       this.ledgerRepo.recordJournal({
@@ -535,8 +638,8 @@ export class OkxBroker implements ExchangeBroker {
       strategyId: effectiveStrategyId,
       instrumentId: input.instrumentId,
       side: input.side,
-      contracts: String(input.sizeLots),
-      entryPrice: input.entryPrice,
+      contracts: String(actualSizeLots),
+      entryPrice: fillPriceStr,
       protectiveStopPrice: input.protectiveStopPrice,
       takeProfitPrice: input.takeProfitPrice ?? null,
       initialRiskUsdt: initialRisk,
