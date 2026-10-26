@@ -2,6 +2,7 @@ import {
   ALL_BAR_TIMEFRAMES,
   ManualClock,
   SEALED_HOLDOUT_START_TS,
+  SEALED_2026_HOLDOUT_START_TS,
   ScaledDecimal,
   computeMarketExitPrice,
   computeNextBarOpenEntry,
@@ -618,7 +619,30 @@ export class ReplayEngine {
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
-    if (input.toTs > SEALED_HOLDOUT_START_TS && !input.allowHoldoutAccess) {
+    if (
+      input.toTs >= SEALED_2026_HOLDOUT_START_TS ||
+      input.fromTs >= SEALED_2026_HOLDOUT_START_TS
+    ) {
+      if (!input.allowHoldoutAccess) {
+        throw new Error(
+          `Sealed 2026 holdout violation: Replay access at or after ${SEALED_2026_HOLDOUT_START_TS} requires explicit allowHoldoutAccess authorization (ADR-0011).`
+        );
+      }
+      if (!this.experimentRepo) {
+        throw new Error(
+          `Sealed 2026 holdout violation: Cannot verify single-use holdout authorization token without ExperimentRepository (ADR-0011).`
+        );
+      }
+      const tokenConsumed = this.experimentRepo.consumeHoldoutToken({
+        partition: "2026_holdout",
+        nowMs: this.clock.nowMs()
+      });
+      if (!tokenConsumed) {
+        throw new Error(
+          `Sealed 2026 holdout violation: No unused single-use authorization token found for partition '2026_holdout'. Access denied (ADR-0011).`
+        );
+      }
+    } else if (input.toTs > SEALED_HOLDOUT_START_TS && !input.allowHoldoutAccess) {
       throw new Error(
         `Sealed holdout violation: Replay toTs (${input.toTs}) extends into sealed 2025 holdout (${SEALED_HOLDOUT_START_TS}) without explicit allowHoldoutAccess authorization (ADR-0009).`
       );
@@ -689,9 +713,11 @@ export class ReplayEngine {
     const numTrials =
       input.numTrials ??
       input.numTrialsForDsr ??
-      (input.candidateStrategies && input.candidateStrategies.length > 0
-        ? input.candidateStrategies.length
-        : 1);
+      (this.experimentRepo && this.experimentRepo.getTrialCount() > 0
+        ? this.experimentRepo.getTrialCount()
+        : input.candidateStrategies && input.candidateStrategies.length > 0
+          ? input.candidateStrategies.length
+          : 1);
 
     const annualFactor = Math.sqrt(getTimeframeAnnualizationPeriods(input.timeframe));
 
@@ -1151,6 +1177,13 @@ export class ReplayEngine {
     readonly isSufficientData: boolean;
   } {
     const total = params.bars.length;
+    for (const b of params.bars) {
+      if (b.openTs >= SEALED_2026_HOLDOUT_START_TS) {
+        throw new Error(
+          `Sealed 2026 holdout violation: Walk-forward fold contains bars at or after ${SEALED_2026_HOLDOUT_START_TS} (ADR-0011).`
+        );
+      }
+    }
     const folds = Math.max(2, params.walkForwardFolds);
     const embargo = Math.max(1, params.embargoBars);
     if (total < embargo * folds + 30) {

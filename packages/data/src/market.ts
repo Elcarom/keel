@@ -12,6 +12,9 @@ import {
   type ExperimentRecord,
   type ExperimentRepository,
   type FeatureSnapshot,
+  type HoldoutTokenInput,
+  type ConsumeHoldoutTokenInput,
+  type ResearchTrialInput,
   type LookbackDeficit,
   type LookbackValidationResult,
   type MarketDataRepository,
@@ -50,7 +53,8 @@ CREATE INDEX IF NOT EXISTS idx_settled_funding_ts
   ON settled_funding_rates(instrument_id, funding_ts ASC);
 
 CREATE TABLE IF NOT EXISTS experiments (
-  experiment_id TEXT PRIMARY KEY,
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  experiment_id TEXT UNIQUE NOT NULL,
   strategy_id TEXT NOT NULL,
   strategy_version TEXT NOT NULL,
   instrument_id TEXT NOT NULL,
@@ -81,6 +85,26 @@ CREATE TABLE IF NOT EXISTS experiments (
 
 CREATE INDEX IF NOT EXISTS idx_experiments_created
   ON experiments(created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS research_trials (
+  strategy_id TEXT NOT NULL,
+  parameter_hash TEXT NOT NULL,
+  instrument_id TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  first_recorded_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (strategy_id, parameter_hash, instrument_id, timeframe)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS holdout_tokens (
+  token TEXT NOT NULL,
+  partition TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  consumed_at_ms INTEGER,
+  PRIMARY KEY (partition, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdout_tokens_unused
+  ON holdout_tokens(partition, consumed_at_ms);
 `;
 
 function mapConfirmedBarRow(row: Record<string, unknown>): ConfirmedBar {
@@ -110,6 +134,7 @@ function mapFundingRow(row: Record<string, unknown>): SettledFundingRate {
 
 function mapExperimentRow(row: Record<string, unknown>): ExperimentRecord {
   return ExperimentRecordSchema.parse({
+    sequence: row["sequence"] != null ? Number(row["sequence"]) : undefined,
     experimentId: String(row["experiment_id"]),
     strategyId: String(row["strategy_id"]),
     strategyVersion: String(row["strategy_version"]),
@@ -569,8 +594,8 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
   return {
     saveExperiment(record: ExperimentRecord): ExperimentRecord {
       const validated = ExperimentRecordSchema.parse(record);
-      db.prepare(
-        `INSERT OR REPLACE INTO experiments (
+      const stmt = db.prepare(
+        `INSERT INTO experiments (
           experiment_id, strategy_id, strategy_version, instrument_id, timeframe,
           data_snapshot_id, config_hash, from_ts, to_ts, total_trades, win_rate,
           avg_r, net_pnl_usdt, total_fees_usdt, total_funding_usdt, max_drawdown_pct,
@@ -579,7 +604,8 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
           buy_and_hold_return_pct, buy_and_hold_sharpe_ratio,
           random_entry_return_pct, random_entry_sharpe_ratio
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
+      );
+      const res = stmt.run(
         validated.experimentId,
         validated.strategyId,
         validated.strategyVersion,
@@ -608,19 +634,88 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
         validated.randomEntryReturnPct,
         validated.randomEntrySharpeRatio
       );
-      return validated;
+      const seq = Number(res.lastInsertRowid);
+      return {
+        ...validated,
+        sequence: seq > 0 ? seq : undefined
+      };
     },
 
     listExperiments(limit = 50): readonly ExperimentRecord[] {
       const rows = db
         .prepare("SELECT * FROM experiments ORDER BY created_at_ms DESC LIMIT ?")
         .all(limit);
-      return rows.map(mapExperimentRow);
+      return rows.map((r) => mapExperimentRow(r as Record<string, unknown>));
     },
 
     getExperiment(experimentId: string): ExperimentRecord | null {
       const row = db.prepare("SELECT * FROM experiments WHERE experiment_id = ?").get(experimentId);
-      return row ? mapExperimentRow(row) : null;
+      return row ? mapExperimentRow(row as Record<string, unknown>) : null;
+    },
+
+    recordTrial(trial: ResearchTrialInput): number {
+      const nowMs = trial.recordedAtMs ?? Date.now();
+      db.prepare(
+        `INSERT OR IGNORE INTO research_trials (
+          strategy_id, parameter_hash, instrument_id, timeframe, first_recorded_at_ms
+        ) VALUES (?, ?, ?, ?, ?)`
+      ).run(trial.strategyId, trial.parameterHash, trial.instrumentId, trial.timeframe, nowMs);
+      const row = db.prepare("SELECT COUNT(*) AS cnt FROM research_trials").get() as {
+        cnt: number;
+      };
+      return Number(row?.cnt ?? 0);
+    },
+
+    getTrialCount(): number {
+      const row = db.prepare("SELECT COUNT(*) AS cnt FROM research_trials").get() as {
+        cnt: number;
+      };
+      return Number(row?.cnt ?? 0);
+    },
+
+    createHoldoutToken(input: HoldoutTokenInput): void {
+      const nowMs = input.createdAtMs ?? Date.now();
+      db.prepare(
+        `INSERT INTO holdout_tokens (token, partition, created_at_ms, consumed_at_ms)
+         VALUES (?, ?, ?, NULL)`
+      ).run(input.token, input.partition, nowMs);
+    },
+
+    consumeHoldoutToken(input: ConsumeHoldoutTokenInput): boolean {
+      if (input.token) {
+        const stmt = db.prepare(
+          `UPDATE holdout_tokens
+           SET consumed_at_ms = ?
+           WHERE partition = ? AND token = ? AND consumed_at_ms IS NULL`
+        );
+        const res = stmt.run(input.nowMs, input.partition, input.token);
+        return res.changes > 0;
+      }
+      const selectStmt = db.prepare(
+        `SELECT token FROM holdout_tokens
+         WHERE partition = ? AND consumed_at_ms IS NULL
+         ORDER BY created_at_ms ASC LIMIT 1`
+      );
+      const row = selectStmt.get(input.partition) as { token: string } | undefined;
+      if (!row) return false;
+      const updateStmt = db.prepare(
+        `UPDATE holdout_tokens
+         SET consumed_at_ms = ?
+         WHERE partition = ? AND token = ? AND consumed_at_ms IS NULL`
+      );
+      const res = updateStmt.run(input.nowMs, input.partition, row.token);
+      return res.changes > 0;
+    },
+
+    hasUnusedHoldoutToken(partition: string): boolean {
+      const row = db
+        .prepare(
+          `SELECT 1 FROM holdout_tokens
+         WHERE partition = ? AND consumed_at_ms IS NULL
+         LIMIT 1`
+        )
+        .get(partition);
+      return row != null;
     }
   };
 }

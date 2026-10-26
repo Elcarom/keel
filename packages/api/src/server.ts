@@ -7,6 +7,7 @@ import {
   RiskGuardian,
   ScaledDecimal,
   SEALED_HOLDOUT_START_TS,
+  SEALED_2026_HOLDOUT_START_TS,
   SystemClock,
   createDefaultConfig,
   defaultInstrumentSpec,
@@ -1099,7 +1100,33 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           coverage.earliestOpenTs < SEALED_HOLDOUT_START_TS
             ? Math.min(coverage.latestCloseTs, SEALED_HOLDOUT_START_TS)
             : coverage.latestCloseTs;
-        const allowHoldoutAccess = coverage.earliestOpenTs >= SEALED_HOLDOUT_START_TS;
+
+        const reaches2026Holdout =
+          coverage.earliestOpenTs >= SEALED_2026_HOLDOUT_START_TS ||
+          coverage.latestCloseTs >= SEALED_2026_HOLDOUT_START_TS;
+
+        if (reaches2026Holdout) {
+          const hasToken = dataStore.experimentRepo.hasUnusedHoldoutToken("2026_holdout");
+          if (!hasToken) {
+            return {
+              status: 400,
+              body: {
+                error: `Sealed 2026 holdout violation: Access to data at or after ${SEALED_2026_HOLDOUT_START_TS} requires explicit authorization and an unused holdout token (ADR-0011).`
+              }
+            };
+          }
+        }
+
+        const trialCount = dataStore.experimentRepo.recordTrial({
+          strategyId: strategy.strategyId,
+          parameterHash: strategy.parameterHash,
+          instrumentId: body.instrumentId,
+          timeframe: body.timeframe,
+          recordedAtMs: clock.nowMs()
+        });
+
+        const allowHoldoutAccess =
+          reaches2026Holdout || coverage.earliestOpenTs >= SEALED_HOLDOUT_START_TS;
 
         const experiment = replayEngine.run({
           instrumentId: body.instrumentId,
@@ -1108,6 +1135,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           fromTs: coverage.earliestOpenTs,
           toTs: effectiveToTs,
           allowHoldoutAccess,
+          numTrials: trialCount,
           configHash: active.configHash,
           initialEquityUsdt: ScaledDecimal.fromString(
             active.config.risk.paperPortfolioEquityUsdt.toFixed(2)
