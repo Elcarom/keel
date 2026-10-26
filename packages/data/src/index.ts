@@ -220,6 +220,11 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     // Column already exists
   }
   db.exec(PAPER_SCHEMA_SQL);
+  try {
+    db.exec("ALTER TABLE strategy_promotions ADD COLUMN promoted_at_ms INTEGER");
+  } catch {
+    // Column already exists
+  }
 
   const marketDataRepo = createMarketDataRepository(db);
   const experimentRepo = createExperimentRepository(db);
@@ -348,6 +353,18 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
         )
         .all(limit);
       return rows.map(mapAuditRow);
+    },
+
+    countShadowEvaluations(strategyId: string): number {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS cnt FROM audit_events
+           WHERE action = 'ai.shadow_evaluate'
+             AND json_extract(details_json, '$.strategyId') = ?
+             AND json_extract(details_json, '$.shadowPick') IS NOT NULL`
+        )
+        .get(strategyId);
+      return Number((row as Record<string, unknown> | undefined)?.["cnt"] ?? 0);
     }
   };
 

@@ -69,6 +69,7 @@ export type NewAuditEventInput = Omit<AuditEventRecord, "id">;
 export interface AuditRepository {
   append(event: NewAuditEventInput): AuditEventRecord;
   listRecent(limit?: number): readonly AuditEventRecord[];
+  countShadowEvaluations(strategyId: string): number;
 }
 
 export interface EncryptedSecretRecord {
@@ -580,6 +581,7 @@ export const StrategyPromotionRecordSchema = z.object({
   rampAllocationPct: z.number().nonnegative().default(100),
   eligibleNextStage: PromotionStageSchema.nullable(),
   demotionReason: z.string().nullable(),
+  promotedAtMs: z.number().int().nonnegative().optional(),
   updatedAtMs: z.number().int().nonnegative()
 });
 export type StrategyPromotionRecord = z.infer<typeof StrategyPromotionRecordSchema>;

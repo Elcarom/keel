@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS strategy_promotions (
   paper_drawdown_pct REAL NOT NULL,
   eligible_next_stage TEXT,
   demotion_reason TEXT,
+  promoted_at_ms INTEGER,
   updated_at_ms INTEGER NOT NULL
 );
 
@@ -118,6 +119,14 @@ CREATE TABLE IF NOT EXISTS paper_pending_proposals (
   proposal_json TEXT NOT NULL,
   PRIMARY KEY (strategy_id, instrument_id)
 );
+
+CREATE TABLE IF NOT EXISTS ledger_equity_snapshots (
+  strategy_id TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  equity_usdt TEXT NOT NULL,
+  PRIMARY KEY (strategy_id, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_equity_snapshots ON ledger_equity_snapshots(strategy_id, ts ASC);
 `;
 
 function mapLedgerRow(row: Record<string, unknown>): LedgerEntryRecord {
@@ -367,6 +376,31 @@ export function createLedgerRepository(
       }
 
       const currentEquity = runningCash.add(unrealized);
+      const snapshotStrategyKey = strategyId ?? "";
+
+      // Record/deduplicate snapshot of current equity to preserve intra-period mark-to-market state
+      db.prepare(
+        `INSERT INTO ledger_equity_snapshots (strategy_id, ts, equity_usdt)
+         VALUES (?, ?, ?)
+         ON CONFLICT(strategy_id, ts) DO UPDATE SET equity_usdt = excluded.equity_usdt`
+      ).run(snapshotStrategyKey, asOfMs, currentEquity.toFixed(8));
+
+      // Query historical equity snapshots up to asOfMs strictly segregated by strategyKey
+      const snapshotRows = db
+        .prepare(
+          `SELECT equity_usdt FROM ledger_equity_snapshots
+           WHERE strategy_id = ? AND ts <= ?`
+        )
+        .all(snapshotStrategyKey, asOfMs) as {
+        equity_usdt: string;
+      }[];
+      for (const sRow of snapshotRows) {
+        const sEquity = ScaledDecimal.fromString(sRow.equity_usdt);
+        if (sEquity.gt(hwm)) {
+          hwm = sEquity;
+        }
+      }
+
       if (currentEquity.gt(hwm)) {
         hwm = currentEquity;
       }
@@ -605,11 +639,12 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
 export function createPromotionRepository(db: DatabaseSync): PromotionRepository {
   return {
     upsertPromotion(record: StrategyPromotionRecord): StrategyPromotionRecord {
+      const promotedAt = record.promotedAtMs ?? record.updatedAtMs;
       db.prepare(
         `INSERT INTO strategy_promotions (
           strategy_id, current_stage, latest_experiment_id, replay_gate_passed,
-          paper_trades_count, paper_drawdown_pct, eligible_next_stage, demotion_reason, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          paper_trades_count, paper_drawdown_pct, eligible_next_stage, demotion_reason, promoted_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(strategy_id) DO UPDATE SET
           current_stage = excluded.current_stage,
           latest_experiment_id = excluded.latest_experiment_id,
@@ -618,6 +653,7 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
           paper_drawdown_pct = excluded.paper_drawdown_pct,
           eligible_next_stage = excluded.eligible_next_stage,
           demotion_reason = excluded.demotion_reason,
+          promoted_at_ms = excluded.promoted_at_ms,
           updated_at_ms = excluded.updated_at_ms`
       ).run(
         record.strategyId,
@@ -628,9 +664,10 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
         record.paperDrawdownPct,
         record.eligibleNextStage,
         record.demotionReason,
+        promotedAt,
         record.updatedAtMs
       );
-      return record;
+      return { ...record, promotedAtMs: promotedAt };
     },
 
     getPromotion(strategyId: string): StrategyPromotionRecord | null {
@@ -651,6 +688,10 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
             ? null
             : PromotionStageSchema.parse(String(row["eligible_next_stage"])),
         demotionReason: row["demotion_reason"] === null ? null : String(row["demotion_reason"]),
+        promotedAtMs:
+          row["promoted_at_ms"] !== null && row["promoted_at_ms"] !== undefined
+            ? Number(row["promoted_at_ms"])
+            : Number(row["updated_at_ms"]),
         updatedAtMs: Number(row["updated_at_ms"])
       });
     },
@@ -673,6 +714,10 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
               ? null
               : PromotionStageSchema.parse(String(row["eligible_next_stage"])),
           demotionReason: row["demotion_reason"] === null ? null : String(row["demotion_reason"]),
+          promotedAtMs:
+            row["promoted_at_ms"] !== null && row["promoted_at_ms"] !== undefined
+              ? Number(row["promoted_at_ms"])
+              : Number(row["updated_at_ms"]),
           updatedAtMs: Number(row["updated_at_ms"])
         })
       );

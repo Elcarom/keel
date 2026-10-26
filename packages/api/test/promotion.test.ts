@@ -391,7 +391,8 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
       rampAllocationPct: 100,
       eligibleNextStage: null,
       demotionReason: null,
-      updatedAtMs: clock.nowMs()
+      promotedAtMs: startMs,
+      updatedAtMs: startMs
     });
 
     // 3. Evaluate: 5 days (< 30) and 10 trades (< 50) MUST remain ineligible for Demo
@@ -417,6 +418,15 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
       amountUsdt: "1.00000000",
       description: "First trading activity 35 days ago"
     });
+
+    const currentPromo = dataStore.promotionRepo.getPromotion("donchian-trend");
+    if (currentPromo) {
+      dataStore.promotionRepo.upsertPromotion({
+        ...currentPromo,
+        promotedAtMs: thirtyFiveDaysAgo,
+        updatedAtMs: thirtyFiveDaysAgo
+      });
+    }
 
     for (let i = 10; i < 55; i++) {
       dataStore.paperAccountRepo.savePosition({
@@ -452,6 +462,135 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     expect(evalRes2.statusCode).toBe(200);
     const body2 = evalRes2.json() as { promotion: { eligibleNextStage: string | null } };
     expect(body2.promotion.eligibleNextStage).toBe("Demo");
+
+    await app.close();
+  });
+
+  it("remediates M-H: measures daysInStage from promotedAtMs and isolates shadow stats from paper ledger", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    let bootstrapToken = "";
+    const app = await createKeelServer({
+      config,
+      clock,
+      dataStore,
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    const bootRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap",
+      headers: { "cf-connecting-ip": "203.0.113.42", "x-forwarded-proto": "https" },
+      payload: {
+        bootstrapToken,
+        username: "captain",
+        password: "correct-horse-battery-staple"
+      }
+    });
+    const cookieHeader = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
+
+    // Old ledger entry 100 days ago
+    const hundredDaysAgo = clock.nowMs() - 100 * 86_400_000;
+    dataStore.ledgerRepo.recordJournal({
+      txGroupId: "tx-ancient",
+      ts: hundredDaysAgo,
+      strategyId: "donchian-trend",
+      instrumentId: "BTC-USDT-SWAP",
+      debitAccount: "cash:usdt",
+      creditAccount: "realized_pnl:usdt",
+      amountUsdt: "100.00000000",
+      description: "Old trade 100 days ago"
+    });
+
+    // Seed passing experiment for replay gate
+    dataStore.experimentRepo.saveExperiment({
+      experimentId: "exp-pass",
+      strategyId: "donchian-trend",
+      strategyVersion: "1.0.0",
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      dataSnapshotId: "0".repeat(64),
+      configHash: "1".repeat(64),
+      fromTs: 1_700_000_000_000,
+      toTs: 1_710_000_000_000,
+      totalTrades: 200,
+      winRate: 0.55,
+      avgR: 0.35,
+      netPnlUsdt: "1250.00",
+      totalFeesUsdt: "45.00",
+      totalFundingUsdt: "-12.00",
+      sharpeRatio: 1.5,
+      deflatedSharpeRatio: 0.95,
+      maxDrawdownPct: 5.0,
+      stressNetExpectancyR: 0.45,
+      walkForwardOutOfSampleAvgR: 0.25,
+      replayGatePassed: true,
+      createdAtMs: clock.nowMs()
+    });
+
+    // Strategy was promoted to Shadow stage yesterday (1 day ago)
+    const yesterdayMs = clock.nowMs() - 86_400_000;
+    dataStore.promotionRepo.upsertPromotion({
+      strategyId: "donchian-trend",
+      currentStage: "Shadow",
+      latestExperimentId: "exp-pass",
+      replayGatePassed: true,
+      paperTradesCount: 0,
+      paperDrawdownPct: 0.0,
+      rampAllocationPct: 100,
+      eligibleNextStage: null,
+      demotionReason: null,
+      promotedAtMs: yesterdayMs,
+      updatedAtMs: yesterdayMs
+    });
+
+    // Record 50 paper positions in paperAccountRepo (paper closed positions should NOT count as shadow evaluations!)
+    for (let i = 0; i < 50; i++) {
+      dataStore.paperAccountRepo.savePosition({
+        positionId: `paper-pos-${i}`,
+        strategyId: "donchian-trend",
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        contracts: "1",
+        entryPrice: "50000.00",
+        protectiveStopPrice: "49000.00",
+        takeProfitPrice: null,
+        initialRiskUsdt: "10.00",
+        unrealizedPnlUsdt: "0.00",
+        realizedPnlUsdt: "5.00",
+        feesPaidUsdt: "0.50",
+        fundingPaidUsdt: "0.00",
+        openedAtMs: yesterdayMs + i * 1000,
+        lastFundingSettledTs: yesterdayMs + i * 1000,
+        status: "CLOSED",
+        closedAtMs: yesterdayMs + i * 1000 + 500,
+        exitPrice: "50500.00",
+        exitReason: "take_profit"
+      });
+    }
+
+    // Evaluate promotion:
+    // Shadow requires shadowMinDays (14) and shadowMinTrades (30).
+    // Even though there is a 100-day-old ledger entry and 50 paper positions,
+    // daysInStage is 1 day (< 14), and shadowTradesCount is 0 (< 30).
+    // Thus it MUST NOT be eligible for Paper!
+    const evalRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/promotion/evaluate",
+      headers: { cookie: cookieHeader },
+      payload: { strategyId: "donchian-trend" }
+    });
+    expect(evalRes.statusCode).toBe(200);
+    const evalBody = evalRes.json() as { promotion: { eligibleNextStage: string | null } };
+    expect(evalBody.promotion.eligibleNextStage).toBeNull();
 
     await app.close();
   });

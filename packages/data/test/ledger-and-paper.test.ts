@@ -315,4 +315,80 @@ describe("Double-Entry LedgerRepository, PaperAccountRepository, & PromotionRepo
 
     store.close();
   });
+
+  it("remediates HWM minor: captures intra-period mark-to-market peaks in highWaterMarkEquityUsdt across evaluations", () => {
+    const mondayMidnightMs = 1_700_438_400_000;
+    const clock = new ManualClock(mondayMidnightMs);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+
+    // Initial equity = 10,000 cash
+    const t1 = mondayMidnightMs + 1000;
+    // At t1, open position has +2000 MTM unrealized PnL -> MTM Equity = 12,000
+    const m1 = store.ledgerRepo.getRiskMetrics({
+      asOfMs: t1,
+      strategyId: "donchian-trend",
+      openUnrealizedPnlUsdt: ScaledDecimal.fromString("2000.00")
+    });
+    expect(m1.currentEquityUsdt.toFixed(2)).toBe("12000.00");
+    expect(m1.highWaterMarkEquityUsdt.toFixed(2)).toBe("12000.00");
+    expect(m1.drawdownPct.toFixed(2)).toBe("0.00");
+
+    // At t2, market pulls back and unrealized PnL drops to +500 -> MTM Equity = 10,500
+    const t2 = mondayMidnightMs + 2000;
+    const m2 = store.ledgerRepo.getRiskMetrics({
+      asOfMs: t2,
+      strategyId: "donchian-trend",
+      openUnrealizedPnlUsdt: ScaledDecimal.fromString("500.00")
+    });
+    expect(m2.currentEquityUsdt.toFixed(2)).toBe("10500.00");
+    // HWM must NOT be reset to current equity 10,500; it must preserve the intra-period peak of 12,000!
+    expect(m2.highWaterMarkEquityUsdt.toFixed(2)).toBe("12000.00");
+    // Drawdown = (12000 - 10500) / 12000 = 12.50%
+    expect(m2.drawdownPct.toFixed(2)).toBe("12.50");
+
+    store.close();
+  });
+
+  it("strictly segregates strategy-level and portfolio-level HWM snapshots without cross-contamination", () => {
+    const mondayMidnightMs = 1_700_438_400_000;
+    const clock = new ManualClock(mondayMidnightMs);
+    const store = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialPaperCapitalUsdt: "100000.00000000"
+    });
+
+    // Portfolio level has 100,000 cash
+    const t1 = mondayMidnightMs + 1000;
+    const portfolioMetrics = store.ledgerRepo.getRiskMetrics({
+      asOfMs: t1,
+      strategyId: null
+    });
+    expect(portfolioMetrics.currentEquityUsdt.toFixed(2)).toBe("100000.00");
+    expect(portfolioMetrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("100000.00");
+
+    // Strategy A has 1,000 unrealized PnL
+    const stratMetrics = store.ledgerRepo.getRiskMetrics({
+      asOfMs: t1 + 500,
+      strategyId: "strategy-A",
+      openUnrealizedPnlUsdt: ScaledDecimal.fromString("1000.00")
+    });
+    expect(stratMetrics.currentEquityUsdt.toFixed(2)).toBe("101000.00");
+
+    // Strategy A equity is 101,000 (100k cash + 1k upl), but if strategyId is specified,
+    // its snapshots must NOT pull portfolio snapshots and vice versa.
+    // Specifically, if Strategy A's own equity pulls back:
+    const stratPullback = store.ledgerRepo.getRiskMetrics({
+      asOfMs: t1 + 1000,
+      strategyId: "strategy-A",
+      openUnrealizedPnlUsdt: ScaledDecimal.zero()
+    });
+    // Strategy A HWM is 101,000 (its own peak at t1+500), NOT portfolio's snapshot
+    expect(stratPullback.highWaterMarkEquityUsdt.toFixed(2)).toBe("101000.00");
+    expect(stratPullback.currentEquityUsdt.toFixed(2)).toBe("100000.00");
+    // Drawdown = (101000 - 100000) / 101000 = 0.99% (NOT ~90%!)
+    expect(stratPullback.drawdownPct.toFixed(2)).toBe("0.99");
+
+    store.close();
+  });
 });
