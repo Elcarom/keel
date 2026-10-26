@@ -961,9 +961,10 @@ export class OkxBroker implements ExchangeBroker {
   public async flattenAllPositions(reason: string): Promise<readonly PaperPositionRecord[]> {
     const creds = this.getCredentials();
     const nowMs = this.clock.nowMs();
+    const failedPositionIds = new Set<string>();
 
     if (creds && creds.apiKey) {
-      // 1. Send cancel-all-after with timeOut: "0" to cancel resting orders on OKX
+      // 1. Send cancel-all-after with timeOut: "0" to disarm/clear dead-man switch timer (ADR-0006, Ticket D1)
       const cancelPath = "/api/v5/trade/cancel-all-after";
       const cancelBody = JSON.stringify({ timeOut: "0" });
       const cancelHeaders = buildOkxHeaders({
@@ -985,7 +986,63 @@ export class OkxBroker implements ExchangeBroker {
         // Continue to market reduceOnly orders
       }
 
-      // 2. Submit market reduceOnly orders for all open positions
+      // 2. Query OKX account positions to detect untracked / foreign positions
+      let exchangePositions: Array<{ instId: string; pos: string; posSide?: string }> = [];
+      try {
+        const posPath = "/api/v5/account/positions";
+        const posHeaders = buildOkxHeaders({
+          method: "GET",
+          path: posPath,
+          credentials: creds,
+          timestampIso: new Date(nowMs).toISOString(),
+          isDemo: this.isDemo
+        });
+        const posRes = await this.fetchFn(`https://www.okx.com${posPath}`, {
+          method: "GET",
+          headers: posHeaders
+        });
+        if (posRes.ok) {
+          const posData = (await posRes.json()) as {
+            code?: string;
+            msg?: string;
+            data?: Array<{ instId?: string; pos?: string; posSide?: string }>;
+          };
+          if (posData.code === "0" && Array.isArray(posData.data)) {
+            exchangePositions = posData.data.filter(
+              (p): p is { instId: string; pos: string; posSide?: string } =>
+                Boolean(p.instId && p.pos && p.pos !== "0")
+            );
+          } else if (this.notificationChannel) {
+            await this.notificationChannel.send({
+              severity: "CRITICAL",
+              title: "EXCHANGE POSITIONS QUERY FAILED",
+              body: `OKX positions query returned error during emergency flatten: code ${posData.code ?? "unknown"} - ${posData.msg ?? "unknown"}`,
+              dedupKey: `flatten-pos-query-fail-${nowMs}`
+            });
+          }
+        } else {
+          const errText = await posRes.text();
+          if (this.notificationChannel) {
+            await this.notificationChannel.send({
+              severity: "CRITICAL",
+              title: "EXCHANGE POSITIONS QUERY FAILED",
+              body: `HTTP ${posRes.status} querying OKX positions during emergency flatten: ${errText}`,
+              dedupKey: `flatten-pos-query-fail-${nowMs}`
+            });
+          }
+        }
+      } catch (err) {
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "EXCHANGE POSITIONS QUERY FAILED",
+            body: `Exception querying OKX positions during emergency flatten: ${err instanceof Error ? err.message : String(err)}`,
+            dedupKey: `flatten-pos-query-fail-${nowMs}`
+          });
+        }
+      }
+
+      // 3. Submit market reduceOnly orders for all open local positions
       for (const pos of this.localPositions.values()) {
         if (pos.status === "OPEN") {
           const flatClOrdId =
@@ -1009,14 +1066,134 @@ export class OkxBroker implements ExchangeBroker {
             isDemo: this.isDemo
           });
 
+          let orderSuccess = false;
+          let errMsg = "";
           try {
-            await this.fetchFn("https://www.okx.com/api/v5/trade/order", {
+            const flatRes = await this.fetchFn("https://www.okx.com/api/v5/trade/order", {
               method: "POST",
               headers: flatHeaders,
               body: flatBody
             });
-          } catch {
-            // Continued
+
+            if (flatRes.ok) {
+              const resData = (await flatRes.json()) as {
+                code?: string;
+                msg?: string;
+                data?: Array<{ sCode?: string; sMsg?: string }>;
+              };
+              if (resData.code === "0") {
+                const item = resData.data?.[0];
+                if (!item || !item.sCode || item.sCode === "0") {
+                  orderSuccess = true;
+                } else {
+                  errMsg = `sCode ${item.sCode}: ${item.sMsg ?? "unknown sub-error"}`;
+                }
+              } else {
+                errMsg = `code ${resData.code}: ${resData.msg ?? "unknown error"}`;
+              }
+            } else {
+              const errText = await flatRes.text();
+              errMsg = `HTTP ${flatRes.status}: ${errText}`;
+            }
+          } catch (err) {
+            errMsg = err instanceof Error ? err.message : String(err);
+          }
+
+          if (!orderSuccess) {
+            failedPositionIds.add(pos.positionId);
+            if (this.notificationChannel) {
+              await this.notificationChannel.send({
+                severity: "CRITICAL",
+                title: "EMERGENCY FLATTEN FAILED FOR POSITION",
+                body: `Failed to close position ${pos.positionId} (${pos.instrumentId}) on OKX: ${errMsg}`,
+                dedupKey: `flatten-fail-${pos.positionId}-${nowMs}`
+              });
+            }
+          }
+        }
+      }
+
+      // 4. Dispose of untracked foreign exchange positions not present in local state
+      for (const exPos of exchangePositions) {
+        const matchingLocal = Array.from(this.localPositions.values()).find(
+          (lp) => lp.status === "OPEN" && lp.instrumentId === exPos.instId
+        );
+        const exPosQty = ScaledDecimal.fromString(exPos.pos);
+        let unhedgedQty: ScaledDecimal;
+
+        if (!matchingLocal) {
+          unhedgedQty = exPosQty;
+        } else {
+          const localQty =
+            matchingLocal.side === "long"
+              ? ScaledDecimal.fromString(matchingLocal.contracts)
+              : ScaledDecimal.zero().sub(ScaledDecimal.fromString(matchingLocal.contracts));
+          unhedgedQty = exPosQty.sub(localQty);
+        }
+
+        if (!unhedgedQty.isZero()) {
+          const foreignClOrdId =
+            `kflatEx${nowMs.toString(36)}${sha256Hex(exPos.instId).slice(0, 10)}`.slice(0, 32);
+          const foreignSide = unhedgedQty.isPositive() ? "sell" : "buy";
+          const foreignSz = unhedgedQty.abs().toString();
+          const foreignBody = JSON.stringify({
+            instId: exPos.instId,
+            tdMode: "isolated",
+            side: foreignSide,
+            ordType: "market",
+            sz: foreignSz,
+            reduceOnly: true,
+            clOrdId: foreignClOrdId
+          });
+
+          const foreignHeaders = buildOkxHeaders({
+            method: "POST",
+            path: "/api/v5/trade/order",
+            body: foreignBody,
+            credentials: creds,
+            timestampIso: new Date(nowMs).toISOString(),
+            isDemo: this.isDemo
+          });
+
+          let foreignSuccess = false;
+          let foreignErrMsg = "";
+          try {
+            const foreignRes = await this.fetchFn("https://www.okx.com/api/v5/trade/order", {
+              method: "POST",
+              headers: foreignHeaders,
+              body: foreignBody
+            });
+            if (foreignRes.ok) {
+              const resData = (await foreignRes.json()) as {
+                code?: string;
+                msg?: string;
+                data?: Array<{ sCode?: string; sMsg?: string }>;
+              };
+              if (resData.code === "0") {
+                const item = resData.data?.[0];
+                if (!item || !item.sCode || item.sCode === "0") {
+                  foreignSuccess = true;
+                } else {
+                  foreignErrMsg = `sCode ${item.sCode}: ${item.sMsg ?? "unknown sub-error"}`;
+                }
+              } else {
+                foreignErrMsg = `code ${resData.code}: ${resData.msg ?? "unknown error"}`;
+              }
+            } else {
+              const errText = await foreignRes.text();
+              foreignErrMsg = `HTTP ${foreignRes.status}: ${errText}`;
+            }
+          } catch (err) {
+            foreignErrMsg = err instanceof Error ? err.message : String(err);
+          }
+
+          if (!foreignSuccess && this.notificationChannel) {
+            await this.notificationChannel.send({
+              severity: "CRITICAL",
+              title: "FOREIGN POSITION FLATTEN FAILED",
+              body: `Failed to close untracked foreign exchange position ${exPos.instId} (${foreignSz} lots): ${foreignErrMsg}`,
+              dedupKey: `foreign-flatten-fail-${exPos.instId}-${nowMs}`
+            });
           }
         }
       }
@@ -1025,7 +1202,7 @@ export class OkxBroker implements ExchangeBroker {
     const closed: PaperPositionRecord[] = [];
 
     for (const [id, pos] of this.localPositions.entries()) {
-      if (pos.status === "OPEN") {
+      if (pos.status === "OPEN" && !failedPositionIds.has(pos.positionId)) {
         let exitPriceDec = ScaledDecimal.fromString(pos.entryPrice);
         if (this.marketDataRepo) {
           try {

@@ -1253,4 +1253,162 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     // Local position must NOT remain open without protection
     expect(broker.getOpenPositions().length).toBe(0);
   });
+
+  it("M-C: flattenAllPositions checks OKX responses, keeps position OPEN on failure, and emits CRITICAL alert", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const alerts: Array<{ severity: string; title: string; body: string }> = [];
+
+    const mockNotificationChannel = {
+      send: async (alert: {
+        severity: "INFO" | "WARNING" | "CRITICAL";
+        title: string;
+        body: string;
+      }) => {
+        alerts.push(alert);
+      }
+    };
+
+    let orderSubmitted = false;
+    const mockFetch = async (url: string, init?: { method?: string; body?: string }) => {
+      if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+        if (!orderSubmitted) {
+          orderSubmitted = true;
+          // Initial entry order succeeds
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [{ ordId: "ord_init_1", clOrdId: "cl_init_1", sCode: "0" }]
+            }),
+            text: async () => ""
+          };
+        }
+        // Flatten order FAILS with OKX 51000 error
+        return {
+          ok: false,
+          status: 500,
+          text: async () => "Internal Server Error during flatten"
+        };
+      }
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ algoId: "algo_init_1", state: "live" }]
+          }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch,
+      notificationChannel: mockNotificationChannel
+    });
+
+    await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48500.00"
+    });
+
+    expect(broker.getOpenPositions().length).toBe(1);
+
+    // Flatten fails on exchange
+    await broker.flattenAllPositions("Emergency test flatten");
+
+    // Defect check: position must NOT be fabricated as closed at 0 PnL! It must stay OPEN!
+    const openPositions = broker.getOpenPositions();
+    expect(openPositions.length).toBe(1);
+    expect(openPositions[0]?.status).toBe("OPEN");
+
+    // Must have emitted a CRITICAL alert
+    const criticalAlert = alerts.find(
+      (a) => a.severity === "CRITICAL" && a.title.includes("FLATTEN")
+    );
+    expect(criticalAlert).toBeDefined();
+  });
+
+  it("M-C: flattenAllPositions queries exchange positions and closes untracked foreign exchange positions", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const sentOrders: Array<{ instId: string; side: string; sz: string; reduceOnly: boolean }> = [];
+
+    const mockFetch = async (url: string, init?: { method?: string; body?: string }) => {
+      if (url.includes("/api/v5/account/positions")) {
+        // Exchange has an untracked foreign ETH short position (5 contracts)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [
+              {
+                instId: "ETH-USDT-SWAP",
+                pos: "-5",
+                posSide: "net"
+              }
+            ]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+        const body = JSON.parse(init.body ?? "{}");
+        sentOrders.push(body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ ordId: "ord_foreign_flat", sCode: "0" }]
+          }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch
+    });
+
+    // Local broker has ZERO positions
+    expect(broker.getOpenPositions().length).toBe(0);
+
+    // Call flattenAllPositions
+    await broker.flattenAllPositions("Emergency flatten foreign positions");
+
+    // Must have queried exchange positions and submitted a reduceOnly buy order to close the -5 ETH position
+    const ethOrder = sentOrders.find((o) => o.instId === "ETH-USDT-SWAP");
+    expect(ethOrder).toBeDefined();
+    expect(ethOrder?.side).toBe("buy"); // buy to cover short
+    expect(ethOrder?.sz).toBe("5");
+    expect(ethOrder?.reduceOnly).toBe(true);
+  });
 });
