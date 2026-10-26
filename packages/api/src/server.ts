@@ -1294,21 +1294,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const actualPaperTradesCount = strategyPositions.length;
         const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
 
-        // Compute actual days in stage from persistent ledger / position timestamps (C9)
+        // Compute actual days in stage from stage entry timestamp (promotedAtMs) (M-H)
         const nowMs = clock.nowMs();
-        const ledgerEntries = dataStore.ledgerRepo.listEntries();
-        const strategyEntries = ledgerEntries.filter((e) => e.strategyId === body.strategyId);
-        let daysInStage = 0;
-        if (strategyEntries.length > 0) {
-          const earliestMs = strategyEntries.reduce((min, e) => Math.min(min, e.ts), Infinity);
-          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
-        } else if (strategyPositions.length > 0) {
-          const earliestMs = strategyPositions.reduce(
-            (min, p) => Math.min(min, p.openedAtMs),
-            Infinity
-          );
-          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
-        }
+        const stageStartMs = existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs;
+        const daysInStage = Math.max(0, (nowMs - stageStartMs) / 86_400_000);
+
+        // Segregate shadow advisor evaluations from paper execution records (M-H)
+        const actualShadowTradesCount = dataStore.auditRepo.countShadowEvaluations(body.strategyId);
 
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
@@ -1316,13 +1308,21 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           latestExperiment: latestExp,
           paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct,
-          paperDurationDays: daysInStage,
-          shadowDurationDays: daysInStage,
-          shadowTradesCount: actualPaperTradesCount,
+          paperDurationDays: currentStage === "Paper" ? daysInStage : 0,
+          shadowDurationDays: currentStage === "Shadow" ? daysInStage : 0,
+          shadowTradesCount: actualShadowTradesCount,
           asOfMs: nowMs
         });
 
-        const saved = dataStore.promotionRepo.upsertPromotion(evaluated);
+        const stageChanged = evaluated.currentStage !== existingPromo?.currentStage;
+        const promotedAtMs = stageChanged
+          ? nowMs
+          : (existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs);
+
+        const saved = dataStore.promotionRepo.upsertPromotion({
+          ...evaluated,
+          promotedAtMs
+        });
 
         // Auto-flatten open positions and alert if evaluation detected an automatic demotion
         if (
@@ -1457,19 +1457,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
 
         const nowMs = clock.nowMs();
-        const ledgerEntries = dataStore.ledgerRepo.listEntries();
-        const strategyEntries = ledgerEntries.filter((e) => e.strategyId === body.strategyId);
-        let daysInStage = 0;
-        if (strategyEntries.length > 0) {
-          const earliestMs = strategyEntries.reduce((min, e) => Math.min(min, e.ts), Infinity);
-          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
-        } else if (strategyPositions.length > 0) {
-          const earliestMs = strategyPositions.reduce(
-            (min, p) => Math.min(min, p.openedAtMs),
-            Infinity
-          );
-          daysInStage = Math.max(0, (nowMs - earliestMs) / 86_400_000);
-        }
+
+        // Segregate shadow advisor evaluations from paper execution records (M-H)
+        const actualShadowTradesCount = dataStore.auditRepo.countShadowEvaluations(body.strategyId);
 
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
@@ -1477,9 +1467,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           latestExperiment: latestExp,
           paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct,
-          paperDurationDays: daysInStage,
-          shadowDurationDays: daysInStage,
-          shadowTradesCount: actualPaperTradesCount,
+          paperDurationDays: 0,
+          shadowDurationDays: 0,
+          shadowTradesCount: actualShadowTradesCount,
           asOfMs: nowMs
         });
 
@@ -1493,6 +1483,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           rampAllocationPct,
           eligibleNextStage: evaluated.eligibleNextStage,
           demotionReason: null,
+          promotedAtMs: nowMs,
           updatedAtMs: nowMs
         });
 
