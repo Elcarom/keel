@@ -47,10 +47,13 @@ export {
 } from "./contract.js";
 export { ScaledDecimal, type TickRoundMode } from "./decimal.js";
 export {
+  computeMarketExitPrice,
   computeNextBarOpenEntry,
+  computeTradePnL,
   evaluateIntrabarExit,
   type IntrabarExitResult,
-  type NextBarOpenExecutionResult
+  type NextBarOpenExecutionResult,
+  type TradePnLResult
 } from "./execution.js";
 export {
   ALL_BAR_TIMEFRAMES,

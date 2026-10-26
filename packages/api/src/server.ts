@@ -249,6 +249,22 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     dataStore.close();
   });
 
+  app.setErrorHandler((error, _request, reply) => {
+    if (
+      error instanceof RateLimitError ||
+      (typeof error === "object" &&
+        error !== null &&
+        (error as { isRateLimited?: boolean }).isRateLimited)
+    ) {
+      const retryAfter = (error as { retryAfterSeconds?: number }).retryAfterSeconds ?? 60;
+      void reply.header("retry-after", String(retryAfter));
+      return reply.status(429).send({
+        error: error instanceof Error ? error.message : "Rate limit exceeded"
+      });
+    }
+    return reply.send(error);
+  });
+
   const getIngress = (req: FastifyRequest): IngressContext => {
     const active = getActiveSnapshot();
     return resolveIngressContext({
