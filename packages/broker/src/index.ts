@@ -378,14 +378,14 @@ export class OkxBroker implements ExchangeBroker {
 
     const algoClOrdId = `sl${clOrdId.slice(1, 31)}`;
 
-    // OKX attachAlgoOrds format per ADR-0006 with TP support (C7)
+    // OKX attachAlgoOrds format per ADR-0006 with TP support (C7, M-E)
+    // Confirmed OKX V5 fields: slTriggerPx, slOrdPx, slTriggerPxType, tpTriggerPx, tpOrdPx, tpTriggerPxType
+    // Unverified fields (reduceOnly, closeFraction inside attachAlgoOrds) omitted per OKX V5 spec
     const attachAlgoOrd: Record<string, unknown> = {
       attachAlgoClOrdId: algoClOrdId,
       slTriggerPx: input.protectiveStopPrice,
       slOrdPx: "-1", // market order execution on trigger
-      slTriggerPxType: "mark", // mark price to protect against wicks/manipulation
-      reduceOnly: true,
-      closeFraction: "1"
+      slTriggerPxType: "mark" // mark price to protect against wicks/manipulation
     };
 
     if (tpPx !== null && input.takeProfitPrice) {
@@ -416,6 +416,7 @@ export class OkxBroker implements ExchangeBroker {
     let fillPriceStr = input.entryPrice;
     let actualSizeLots = input.sizeLots;
     let feeUsdtOverride: ScaledDecimal | null = null;
+    let isFillConfirmed = false;
 
     if (creds && creds.apiKey) {
       const headers = buildOkxHeaders({
@@ -501,15 +502,23 @@ export class OkxBroker implements ExchangeBroker {
           };
           const fillItem = orderData.data?.[0];
           if (fillItem) {
-            if (fillItem.avgPx && fillItem.avgPx.trim() !== "" && fillItem.avgPx !== "0") {
+            const hasAvgPx = Boolean(
+              fillItem.avgPx && fillItem.avgPx.trim() !== "" && fillItem.avgPx !== "0"
+            );
+            const hasFillPx = Boolean(
+              fillItem.fillPx && fillItem.fillPx.trim() !== "" && fillItem.fillPx !== "0"
+            );
+
+            if (hasAvgPx && fillItem.avgPx) {
               fillPriceStr = fillItem.avgPx;
-            } else if (
-              fillItem.fillPx &&
-              fillItem.fillPx.trim() !== "" &&
-              fillItem.fillPx !== "0"
-            ) {
+            } else if (hasFillPx && fillItem.fillPx) {
               fillPriceStr = fillItem.fillPx;
             }
+
+            if (fillItem.state === "filled" && (hasAvgPx || hasFillPx)) {
+              isFillConfirmed = true;
+            }
+
             if (fillItem.accFillSz && fillItem.accFillSz.trim() !== "") {
               const parsedSz = Number(fillItem.accFillSz);
               if (!Number.isNaN(parsedSz) && parsedSz > 0) {
@@ -522,7 +531,7 @@ export class OkxBroker implements ExchangeBroker {
           }
         }
       } catch {
-        // Fallback to entryPrice if order fill query times out
+        // Fill details query timed out or failed; leave isFillConfirmed = false
       }
 
       // 2. Query OKX to confirm attached protective stop algo order
@@ -602,7 +611,7 @@ export class OkxBroker implements ExchangeBroker {
       fillPrice: fillPriceStr,
       sizeLots: actualSizeLots,
       protectiveStopPrice: input.protectiveStopPrice,
-      status: "FILLED",
+      status: isFillConfirmed ? "FILLED" : "SUBMITTED",
       submittedAtMs: nowMs
     };
 
@@ -842,41 +851,52 @@ export class OkxBroker implements ExchangeBroker {
         }
       }
 
-      // 2. Query OKX pending conditional algo orders (protective stops)
-      const algoPath = "/api/v5/trade/orders-algo-pending?ordType=conditional";
-      const algoHeaders = buildOkxHeaders({
-        method: "GET",
-        path: algoPath,
-        credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
-      });
+      // 2. Query OKX pending conditional and OCO algo orders (protective stops & take-profits)
+      const activeAlgos: Array<{
+        algoId?: string;
+        instId?: string;
+        slTriggerPx?: string;
+        state?: string;
+      }> = [];
 
-      const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
-        method: "GET",
-        headers: algoHeaders
-      });
+      for (const ordType of ["conditional", "oco"]) {
+        const algoPath = `/api/v5/trade/orders-algo-pending?ordType=${ordType}`;
+        const algoHeaders = buildOkxHeaders({
+          method: "GET",
+          path: algoPath,
+          credentials: creds,
+          timestampIso: new Date(nowMs).toISOString(),
+          isDemo: this.isDemo
+        });
 
-      if (!algoRes.ok) {
-        throw new Error(`OKX reconciliation failed to query algo orders (${algoRes.status})`);
+        const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+          method: "GET",
+          headers: algoHeaders
+        });
+
+        if (!algoRes.ok) {
+          throw new Error(`OKX reconciliation failed to query algo orders (${algoRes.status})`);
+        }
+
+        const algoData = (await algoRes.json()) as {
+          code?: string;
+          msg?: string;
+          data?: Array<{
+            algoId?: string;
+            instId?: string;
+            slTriggerPx?: string;
+            state?: string;
+          }>;
+        };
+
+        if (algoData.code && algoData.code !== "0") {
+          throw new Error(`OKX reconciliation query algos rejected: ${algoData.msg}`);
+        }
+
+        if (Array.isArray(algoData.data)) {
+          activeAlgos.push(...algoData.data);
+        }
       }
-
-      const algoData = (await algoRes.json()) as {
-        code?: string;
-        msg?: string;
-        data?: Array<{
-          algoId?: string;
-          instId?: string;
-          slTriggerPx?: string;
-          state?: string;
-        }>;
-      };
-
-      if (algoData.code && algoData.code !== "0") {
-        throw new Error(`OKX reconciliation query algos rejected: ${algoData.msg}`);
-      }
-
-      const activeAlgos = algoData.data ?? [];
 
       // 3. Verify counts match
       if (activeExchangePositions.length !== openPositions.length) {
@@ -888,7 +908,17 @@ export class OkxBroker implements ExchangeBroker {
       // 4. Verify each exchange position has a corresponding local position and an attached protective stop
       for (const exPos of activeExchangePositions) {
         const instId = exPos.instId ?? "unknown";
-        const matchingLocal = openPositions.find((p) => p.instrumentId === instId);
+        let isExLong = true;
+        try {
+          const exPosQty = ScaledDecimal.fromString(exPos.pos ?? "0");
+          isExLong = exPos.posSide === "long" || (exPos.posSide === "net" && exPosQty.isPositive());
+        } catch {
+          isExLong = exPos.posSide === "long";
+        }
+
+        const matchingLocal = openPositions.find(
+          (p) => p.instrumentId === instId && (p.side === "long" ? isExLong : !isExLong)
+        );
         if (!matchingLocal) {
           driftDetails.push(
             `Exchange position on ${instId} (pos: ${exPos.pos}) not tracked locally`
@@ -964,7 +994,62 @@ export class OkxBroker implements ExchangeBroker {
     const failedPositionIds = new Set<string>();
 
     if (creds && creds.apiKey) {
-      // 1. Send cancel-all-after with timeOut: "0" to disarm/clear dead-man switch timer (ADR-0006, Ticket D1)
+      // 1. Explicitly cancel all resting algo orders (stops, take-profits) on exchange (M-C / ADR-0018)
+      try {
+        const cancelAlgoPath = "/api/v5/trade/cancel-algo-orders";
+        const cancelPayload: Array<{ algoId?: string | undefined; instId: string }> = [];
+
+        for (const ordType of ["conditional", "oco"]) {
+          try {
+            const queryAlgosPath = `/api/v5/trade/orders-algo-pending?ordType=${ordType}`;
+            const queryHeaders = buildOkxHeaders({
+              method: "GET",
+              path: queryAlgosPath,
+              credentials: creds,
+              timestampIso: new Date(nowMs).toISOString(),
+              isDemo: this.isDemo
+            });
+            const algosRes = await this.fetchFn(`https://www.okx.com${queryAlgosPath}`, {
+              method: "GET",
+              headers: queryHeaders
+            });
+            if (algosRes.ok) {
+              const resJson = (await algosRes.json()) as {
+                code?: string;
+                data?: Array<{ algoId?: string; instId?: string }>;
+              };
+              if (resJson.code === "0" && Array.isArray(resJson.data)) {
+                for (const a of resJson.data) {
+                  if (a.instId) {
+                    cancelPayload.push({ algoId: a.algoId, instId: a.instId });
+                  }
+                }
+              }
+            }
+          } catch {
+            // Ignore sub-query error
+          }
+        }
+
+        const cancelAlgoBody = JSON.stringify(cancelPayload);
+        const cancelAlgoHeaders = buildOkxHeaders({
+          method: "POST",
+          path: cancelAlgoPath,
+          body: cancelAlgoBody,
+          credentials: creds,
+          timestampIso: new Date(nowMs).toISOString(),
+          isDemo: this.isDemo
+        });
+        await this.fetchFn(`https://www.okx.com${cancelAlgoPath}`, {
+          method: "POST",
+          headers: cancelAlgoHeaders,
+          body: cancelAlgoBody
+        });
+      } catch {
+        // Continue to market reduceOnly orders
+      }
+
+      // 2. Disarm/clear dead-man switch timer via cancel-all-after timeOut: "0"
       const cancelPath = "/api/v5/trade/cancel-all-after";
       const cancelBody = JSON.stringify({ timeOut: "0" });
       const cancelHeaders = buildOkxHeaders({

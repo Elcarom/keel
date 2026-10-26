@@ -99,6 +99,17 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
           text: async () => ""
         };
       }
+      if (url.includes("/api/v5/trade/order?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ ordId: "1234567890", state: "filled", avgPx: "50000.00", accFillSz: "2" }]
+          }),
+          text: async () => ""
+        };
+      }
       return {
         ok: true,
         status: 200,
@@ -988,6 +999,25 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
             text: async () => ""
           };
         }
+        if (url.includes("/api/v5/trade/order?")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_mf_1",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.30000000"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
         return {
           ok: true,
           status: 200,
@@ -1410,5 +1440,279 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     expect(ethOrder?.side).toBe("buy"); // buy to cover short
     expect(ethOrder?.sz).toBe("5");
     expect(ethOrder?.reduceOnly).toBe(true);
+  });
+
+  it("M-E: attachAlgoOrds includes confirmed fields and excludes unverified reduceOnly/closeFraction inside attachAlgoOrds", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    let capturedPayload: { attachAlgoOrds?: Array<Record<string, unknown>> } | null = null;
+    const mockFetch = async (url: string, init?: { body?: string }) => {
+      if (url.includes("/api/v5/trade/order") && init?.body) {
+        capturedPayload = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ ordId: "ord_100", sCode: "0" }]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ algoId: "algo_100", state: "live" }]
+          }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: "0",
+          data: [{ state: "filled", avgPx: "50100.00", accFillSz: "1", fee: "-0.30" }]
+        }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch
+    });
+
+    await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      takeProfitPrice: "55000.00"
+    });
+
+    expect(capturedPayload).not.toBeNull();
+    const algoOrd = capturedPayload?.attachAlgoOrds?.[0];
+    expect(algoOrd).toBeDefined();
+
+    // Confirmed OKX V5 fields
+    expect(algoOrd?.slTriggerPx).toBe("48000.00");
+    expect(algoOrd?.slOrdPx).toBe("-1");
+    expect(algoOrd?.slTriggerPxType).toBe("mark");
+    expect(algoOrd?.tpTriggerPx).toBe("55000.00");
+    expect(algoOrd?.tpOrdPx).toBe("-1");
+    expect(algoOrd?.tpTriggerPxType).toBe("mark");
+
+    // Unverified fields inside attachAlgoOrds must NOT be present
+    expect(algoOrd?.reduceOnly).toBeUndefined();
+    expect(algoOrd?.closeFraction).toBeUndefined();
+  });
+
+  it("M-B: submitOrder marks status SUBMITTED when fill details cannot be confirmed rather than FILLED at entryPrice", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    const mockFetch = async (url: string) => {
+      if (url.includes("/api/v5/trade/order") && !url.includes("?")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ ordId: "ord_unconfirmed_fill", sCode: "0" }]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/order?")) {
+        // Query order fill details fails or returns empty/unfilled state
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ state: "live", avgPx: "0", accFillSz: "0" }]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ algoId: "algo_valid_stop", state: "live" }]
+          }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch
+    });
+
+    const res = await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00"
+    });
+
+    // When real fill is not confirmed, status must be SUBMITTED, not FILLED!
+    expect(res.status).toBe("SUBMITTED");
+  });
+
+  it("M-C: flattenAllPositions explicitly cancels attached algo orders on exchange", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const cancelledAlgos: string[] = [];
+
+    const mockFetch = async (url: string, _init?: { body?: string }) => {
+      if (url.includes("/api/v5/trade/cancel-algo-orders")) {
+        cancelledAlgos.push(url);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [{ sCode: "0" }] }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/account/positions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/order")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [{ ordId: "ord_flat", sCode: "0" }] }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch
+    });
+
+    await broker.flattenAllPositions("Emergency flatten");
+    // Must call cancel-algo-orders to explicitly cancel resting stops/TPs!
+    expect(cancelledAlgos.length).toBeGreaterThan(0);
+  });
+
+  it("Reconciliation: queries both conditional and oco ordTypes and matches long/short and net mode positions", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const algoQueries: string[] = [];
+
+    const mockFetch = async (url: string) => {
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        algoQueries.push(url);
+        if (url.includes("ordType=oco")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [{ algoId: "algo_oco_1", instId: "ETH-USDT-SWAP", slTriggerPx: "2500.00" }]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [{ algoId: "algo_cond_1", instId: "BTC-USDT-SWAP", slTriggerPx: "48000.00" }]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/account/positions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [
+              {
+                instId: "BTC-USDT-SWAP",
+                pos: "1",
+                posSide: "long",
+                markPx: "51000.00",
+                upl: "100.00"
+              },
+              {
+                instId: "ETH-USDT-SWAP",
+                pos: "-2",
+                posSide: "net",
+                markPx: "2600.00",
+                upl: "50.00"
+              }
+            ]
+          }),
+          text: async () => ""
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: "0", data: [] }),
+        text: async () => ""
+      };
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      isDemo: true,
+      fetchFn: mockFetch
+    });
+
+    const recon = await broker.reconcilePositions();
+    expect(recon.exchangePositionsCount).toBe(2);
+
+    // Verifies that both conditional and oco algo queries were executed
+    const hasConditional = algoQueries.some((q) => q.includes("ordType=conditional"));
+    const hasOco = algoQueries.some((q) => q.includes("ordType=oco"));
+    expect(hasConditional).toBe(true);
+    expect(hasOco).toBe(true);
   });
 });
