@@ -1,6 +1,6 @@
 # Phase D: Empirical Backtest & Sealed Holdout Results Report
 
-**Date of Execution**: 2026-10-25T20:24:50.157Z  
+**Date of Execution**: 2026-10-26T07:15:44.677Z  
 **Dataset**: OKX 1H Confirmed Bars (`confirm === "1"`) & 8H Settled Funding Rates  
 **Instruments**: `BTC-USDT-SWAP`, `ETH-USDT-SWAP`  
 **Sample Span**:
