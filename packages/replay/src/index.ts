@@ -68,6 +68,7 @@ export interface ReplayRunInput {
   readonly numTrialsForDsr?: number | undefined;
   readonly allowHoldoutAccess?: boolean | undefined;
   readonly candidateStrategies?: readonly Strategy[] | undefined;
+  readonly randomEntryPaths?: number | undefined;
 }
 
 export interface ReplayEquityPoint {
@@ -885,6 +886,7 @@ export class ReplayEngine {
       marketDataRepo: this.marketDataRepo,
       riskFraction,
       maxLeverage,
+      numPaths: input.randomEntryPaths ?? 200,
       strategySharpe: dsrMetrics.sharpeRatio
     });
 

@@ -1,7 +1,7 @@
 # Phase D: Empirical Backtest & Sealed Holdout Results Report
 
-**Date of Execution**: 2026-10-26T09:17:09.379Z  
-**Git Commit SHA**: `65fa65826c23b679f15716003f8b26e358437698`  
+**Date of Execution**: 2026-10-26T22:52:01.523Z  
+**Git Commit SHA**: `aed7d8f8da1aa344d23c6b71166c94d5c2fdbaf7`  
 **Dataset Snapshot ID**: `48b5d6a5b022d7fee31b3fc41dc12f219a62a7e0b62a0aaaa693de053cfcabb0`  
 **Configuration Hash**: `8f1bfe202e2de789e2154724d5625dd960be009167e7967ee0260187cc3ddc05`  
 **Instruments**: `BTC-USDT-SWAP`, `ETH-USDT-SWAP`  
@@ -29,7 +29,7 @@ This report delivers the empirical evidence required under **Phase D** and defec
 - **2x Cost Stress Multiplier**: Scales both exchange fees and execution slippage: $\text{extraCost} = (\text{multiplier} - 1.0) \times (\text{fees} + \text{slippage})$.
 - **Benchmark Distribution Gate**: Replay Gate requires strategy Sharpe to exceed both Buy & Hold Sharpe and the **75th percentile** of $\ge 200$ seeded random entry paths (ADR-0016).
 - **Strategy-Specific Walk-Forward CV**: Evaluates each strategy individually across 5 purged and embargoed folds to report honest per-strategy out-of-sample expectancy (fixing N2c).
-- **Trial Universe Accounting**: Deflated Sharpe Ratio (DSR) is evaluated against an explicit parameter/trial count ($N=3$), fully decoupled from repository row counts (ADR-0012, ADR-0015).
+- **Trial Universe Accounting**: Deflated Sharpe Ratio (DSR) is evaluated against the persisted research trial universe ($N=3$, fixing N2b).
 
 ---
 
@@ -57,7 +57,44 @@ This report delivers the empirical evidence required under **Phase D** and defec
 
 ---
 
-## 3. Sealed Holdout (2025-01-01 to 2025-12-31 UTC)
+## 3. Funding Rate Sensitivity Analysis (5 Scenarios per Instrument/Strategy Pair)
+
+| Instrument      | Strategy                | Scenario            | Funding Paid (USDT) | Net PnL (USDT)  | Sharpe Ratio | Avg R | Gate Status |
+| :-------------- | :---------------------- | :------------------ | :-----------------: | :-------------: | :----------: | :---: | :---------: |
+| `BTC-USDT-SWAP` | `donchian-trend-v1`     | -0.005% / 8h        |     $19.3910271     | $-1079.13357823 |    -0.21     | -0.02 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-mean-reversion-v1` | -0.005% / 8h        |    $-3.05000152     | $-8208.91296124 |    -3.85     | -0.23 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-momentum-v1`       | -0.005% / 8h        |    $35.82498513     | $-1514.58215483 |    -0.43     | -0.05 | **FAILED**  |
+| `ETH-USDT-SWAP` | `donchian-trend-v1`     | -0.005% / 8h        |    $15.23805179     | $-5359.92830292 |    -1.91     | -0.19 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-mean-reversion-v1` | -0.005% / 8h        |    $-11.6099179     | $-7451.49102045 |    -3.04     | -0.18 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-momentum-v1`       | -0.005% / 8h        |    $32.36525268     | $-1576.08327811 |    -0.48     | -0.06 | **FAILED**  |
+| `BTC-USDT-SWAP` | `donchian-trend-v1`     | 0.000% / 8h         |         $0          | $-1097.96429888 |    -0.21     | -0.02 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-mean-reversion-v1` | 0.000% / 8h         |         $0          | $-8207.62431628 |    -3.85     | -0.23 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-momentum-v1`       | 0.000% / 8h         |         $0          | $-1549.65271373 |    -0.44     | -0.05 | **FAILED**  |
+| `ETH-USDT-SWAP` | `donchian-trend-v1`     | 0.000% / 8h         |         $0          | $-5371.81792057 |    -1.91     | -0.19 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-mean-reversion-v1` | 0.000% / 8h         |         $0          | $-7447.84821776 |    -3.04     | -0.18 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-momentum-v1`       | 0.000% / 8h         |         $0          | $-1622.44110183 |    -0.50     | -0.06 | **FAILED**  |
+| `BTC-USDT-SWAP` | `donchian-trend-v1`     | +0.005% / 8h        |    $-19.41937959    | $-1115.66059416 |    -0.22     | -0.02 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-mean-reversion-v1` | +0.005% / 8h        |     $3.01380633     | $-8205.86395565 |    -3.85     | -0.23 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-momentum-v1`       | +0.005% / 8h        |    $-35.72686829    | $-1585.12974421 |    -0.45     | -0.05 | **FAILED**  |
+| `ETH-USDT-SWAP` | `donchian-trend-v1`     | +0.005% / 8h        |    $-15.23116126    | $-5385.06678621 |    -1.92     | -0.19 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-mean-reversion-v1` | +0.005% / 8h        |    $11.61004663     | $-7443.68850951 |    -3.03     | -0.18 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-momentum-v1`       | +0.005% / 8h        |    $-32.30510131    | $-1645.17116429 |    -0.51     | -0.06 | **FAILED**  |
+| `BTC-USDT-SWAP` | `donchian-trend-v1`     | +0.010% / 8h (Seed) |    $-38.92646533    | $-1133.2241174  |    -0.22     | -0.03 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-mean-reversion-v1` | +0.010% / 8h (Seed) |     $6.01387219     | $-8204.64352977 |    -3.85     | -0.23 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-momentum-v1`       | +0.010% / 8h (Seed) |    $-71.3690154     | $-1620.86950258 |    -0.47     | -0.05 | **FAILED**  |
+| `ETH-USDT-SWAP` | `donchian-trend-v1`     | +0.010% / 8h (Seed) |    $-30.51614118    | $-5392.31905904 |    -1.92     | -0.19 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-mean-reversion-v1` | +0.010% / 8h (Seed) |    $23.09908228     | $-7437.89321185 |    -3.03     | -0.18 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-momentum-v1`       | +0.010% / 8h (Seed) |    $-64.46479214    | $-1681.44474865 |    -0.52     | -0.06 | **FAILED**  |
+| `BTC-USDT-SWAP` | `donchian-trend-v1`     | +0.020% / 8h        |    $-77.9467477     | $-1168.84340212 |    -0.23     | -0.03 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-mean-reversion-v1` | +0.020% / 8h        |     $11.8929212     | $-8202.36148045 |    -3.84     | -0.23 | **FAILED**  |
+| `BTC-USDT-SWAP` | `vol-momentum-v1`       | +0.020% / 8h        |   $-142.32176757    | $-1692.0742243  |    -0.49     | -0.06 | **FAILED**  |
+| `ETH-USDT-SWAP` | `donchian-trend-v1`     | +0.020% / 8h        |    $-61.01825282    | $-5415.57612464 |    -1.94     | -0.19 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-mean-reversion-v1` | +0.020% / 8h        |     $46.3588771     | $-7433.75623679 |    -3.02     | -0.18 | **FAILED**  |
+| `ETH-USDT-SWAP` | `vol-momentum-v1`       | +0.020% / 8h        |   $-128.39001674    | $-1744.83555906 |    -0.55     | -0.06 | **FAILED**  |
+
+---
+
+## 4. Sealed Holdout (2025-01-01 to 2025-12-31 UTC)
 
 > [!WARNING]
 > **NOT REGENERATED**: In strict compliance with AGENTS.md, ADR-0009, and ADR-0011, no code or research evaluation has been run against data on or after 2025-01-01 UTC. The 2025 partition was evaluated exactly once during initial Phase D calibration and is scientifically spent. The historical record below is reproduced from the original un-remediated audit report for historical comparison only. Future out-of-sample validation must use the quarantined 2026 partition under ADR-0011.
@@ -73,11 +110,13 @@ This report delivers the empirical evidence required under **Phase D** and defec
 
 ---
 
-## 4. Empirical Findings & Governance Directives
+## 5. Empirical Findings & Governance Directives
 
 1. **Unanimous Replay Gate Rejection**:
    - Under realistic market execution (next-bar open execution, gap slippage, and 2x cost stress) and the 75th percentile random baseline distribution gate (ADR-0016), **ALL THREE STRATEGIES FAIL THE REPLAY GATE**.
-2. **Deflated Sharpe Ratio (DSR)**:
-   - With explicit trial accounting ($N=3$), DSR rigorously deflates strategy Sharpe ratios, demonstrating that none of the candidate strategies exhibit statistically significant outperformance over noise.
-3. **Operational Directive**:
+2. **Deflated Sharpe Ratio (DSR) Accounting (N2b)**:
+   - DSR is evaluated against the explicit trial count ($N=3$). The candidate strategies achieve low or zero DSR primarily because their in-sample raw annualized Sharpe ratios are non-positive or near-zero under realistic execution friction (fees, adverse slippage, and funding costs). Trial deflation mathematically confirms that none of the candidate strategies exhibit statistically significant outperformance over noise.
+3. **Funding Rate Impact**:
+   - Sensitivity analysis demonstrates that varying funding rates across $[-0.005\%, +0.020\%]$ per 8h does not alter gate outcomes; all strategies remain rejected across all funding scenarios.
+4. **Operational Directive**:
    - As documented in `docs/research/strategy-status.md`, all three strategies are strictly prohibited from promotion to paper, demo, or live capital.

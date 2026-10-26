@@ -81,7 +81,7 @@ services:
       - DATA_DIR=/data
       - BACKUPS_DIR=/backups
       - LOG_LEVEL=info
-      - KEEL_MASTER_KEY=${KEEL_MASTER_KEY:?KEEL_MASTER_KEY must be set (min 32 characters)}
+      - KEEL_MASTER_KEY=${KEEL_MASTER_KEY:?KEEL_MASTER_KEY must be set (generate with: openssl rand -base64 48)}
     ports:
       - "8080:8080"
     volumes:
@@ -119,7 +119,7 @@ docker run -d \
   -e PORT=8080 \
   -e DATA_DIR=/data \
   -e BACKUPS_DIR=/backups \
-  -e KEEL_MASTER_KEY="your-random-32-character-secret-key-material" \
+  -e KEEL_MASTER_KEY="$(openssl rand -base64 48)" \
   -p 8080:8080 \
   -v /mnt/user/appdata/keel/data:/data \
   -v /mnt/user/appdata/keel/backups:/backups \

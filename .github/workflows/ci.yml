@@ -47,6 +47,9 @@ jobs:
       - name: Run unit & fast-check property tests (Vitest)
         run: pnpm test
 
+      - name: Verify documentation and architecture claims
+        run: pnpm check-claims
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 

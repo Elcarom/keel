@@ -1,0 +1,260 @@
+[
+  {
+    "id": "CLAIM-ADR-0006-STOP-MANDATORY",
+    "claim": "ADR-0006 Attached Protective Stops: Entry orders without protective stop are strictly rejected.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "strictly rejects entry orders missing protective stop per ADR-0006"
+  },
+  {
+    "id": "CLAIM-ADR-0006-STOP-ATTACHED",
+    "claim": "ADR-0006 Attached Protective Stops: Entry orders place exchange-side attached protective stop order.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "submits order with atomic attached algo mark-price protective stop"
+  },
+  {
+    "id": "CLAIM-ADR-0006-STOP-AMEND",
+    "claim": "ADR-0006 Attached Protective Stops: Supports ratcheting/amending existing algo stop order.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "amends existing algo protective stop for ratcheting (ADR-0006)"
+  },
+  {
+    "id": "CLAIM-ADR-0006-STOP-DRIFT",
+    "claim": "ADR-0006 Attached Protective Stops: Missing protective stop on open position triggers CRITICAL alert and auto-flattening.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "detects missing protective stops during reconciliation, sends CRITICAL alert, and auto-flattens (ADR-0006)"
+  },
+  {
+    "id": "CLAIM-ADR-0006-DMS",
+    "claim": "ADR-0006 Dead-Man's Switch: Sends 60-second cancel-all-after heartbeat to OKX.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "manages 60-second Dead-Man's Switch (cancel-all-after) heartbeat"
+  },
+  {
+    "id": "CLAIM-ADR-0007-GATES",
+    "claim": "ADR-0007 Promotion Ladder: Enforces step-up authentication for G2/G3 human gates and rejects unvetted promotions.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "enforces step-up authentication for G2 (Demo, Live-Ramp) and G3 (Live) and rejects unvetted promotions"
+  },
+  {
+    "id": "CLAIM-ADR-0007-DEMOTION",
+    "claim": "ADR-0007 Promotion Ladder: Automatically flattens positions and emits alerts when drawdown breach occurs.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "automatically flattens positions and emits alerts when evaluation detects drawdown demotion breach"
+  },
+  {
+    "id": "CLAIM-ADR-0007-DYNAMIC-DD",
+    "claim": "ADR-0007 Promotion Ladder: Computes paperDrawdownPct dynamically from persistent ledger equity without manual seeding.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "computes paperDrawdownPct dynamically from persistent ledger equity without manual seeding (C8)"
+  },
+  {
+    "id": "CLAIM-ADR-0007-STAGE-REQS",
+    "claim": "ADR-0007 Promotion Ladder: Evaluates calendar duration and trade count requirements from persistent ledger before granting Demo eligibility.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "evaluates calendar duration and trade count requirements from persistent ledger state before granting Demo eligibility (C9)"
+  },
+  {
+    "id": "CLAIM-ADR-0007-SHADOW-ISOLATION",
+    "claim": "ADR-0007 Promotion Ladder: Measures daysInStage from promotedAtMs and isolates shadow stats from paper ledger.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "remediates M-H: measures daysInStage from promotedAtMs and isolates shadow stats from paper ledger"
+  },
+  {
+    "id": "CLAIM-ADR-0008-DECIMAL",
+    "claim": "ADR-0008 Exact Decimal Accounting: Eliminates IEEE-754 float drift on decimal additions.",
+    "testFile": "packages/core/test/decimal-and-sizing.test.ts",
+    "testName": "eliminates IEEE-754 float drift on classic decimal additions (0.1 + 0.2 === 0.3)"
+  },
+  {
+    "id": "CLAIM-ADR-0008-SIZING",
+    "claim": "ADR-0008 R-based Sizing: Sizes integer contracts from 1R stop distance bounded by risk and leverage caps.",
+    "testFile": "packages/core/test/decimal-and-sizing.test.ts",
+    "testName": "never exceeds 1R risk or maxGrossLeverage across arbitrary prices, stops, and equities (fast-check)"
+  },
+  {
+    "id": "CLAIM-ADR-0009-HOLDOUT-2025",
+    "claim": "ADR-0009 Backtest Realism: Strictly enforces sealed 2025 holdout partition and prevents accidental leakage.",
+    "testFile": "packages/replay/test/replay-engine.test.ts",
+    "testName": "strictly enforces sealed 2025 holdout partition and prevents accidental leakage (M1, ADR-0009)"
+  },
+  {
+    "id": "CLAIM-ADR-0009-NEXT-BAR-OPEN",
+    "claim": "ADR-0009 Backtest Realism: Executes fills at next-bar open with configurable slippage instead of signal-bar close.",
+    "testFile": "packages/replay/test/replay-engine.test.ts",
+    "testName": "executes fills at next-bar open with configurable slippage instead of signal-bar close (M2)"
+  },
+  {
+    "id": "CLAIM-ADR-0009-GAP-STOPS",
+    "claim": "ADR-0009 Backtest Realism: Fills protective stop at worse gap price when a bar gaps through the stop.",
+    "testFile": "packages/replay/test/replay-engine.test.ts",
+    "testName": "fills protective stop at the worse gap price when a bar gaps through the stop (M2)"
+  },
+  {
+    "id": "CLAIM-ADR-0010-RISK-ROUTING",
+    "claim": "ADR-0010 Unified Risk Routing: Routes broker orders through RiskGuardian and rejects risk breaches with 403.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "routes POST /api/v1/broker/orders through RiskGuardian, rejects risk breaches with 403, and records true strategyId & initialRiskUsdt (C3)"
+  },
+  {
+    "id": "CLAIM-ADR-0010-RECONCILE",
+    "claim": "ADR-0010 Exchange Reconciliation: Reconciles positions and flattens all open positions on demand.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "reconciles positions and flattens all open positions on demand"
+  },
+  {
+    "id": "CLAIM-ADR-0011-HOLDOUT-2026",
+    "claim": "ADR-0011 Sealed 2026 Holdout: ReplayEngine strictly blocks replay runs spanning or touching sealed 2026 holdout partition without explicit token.",
+    "testFile": "packages/replay/test/holdout-seal-2026.test.ts",
+    "testName": "rejects access at or after SEALED_2026_HOLDOUT_START_TS without allowHoldoutAccess"
+  },
+  {
+    "id": "CLAIM-ADR-0011-EFFECTIVE-RANGE",
+    "claim": "ADR-0011 Sealed 2026 Holdout: In-sample replay succeeds without holdout token even when stored coverage extends into 2026.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "C1: in-sample replay succeeds without holdout token even when stored coverage extends into 2026"
+  },
+  {
+    "id": "CLAIM-ADR-0011-ATOMIC-TOKEN",
+    "claim": "ADR-0011 Sealed 2026 Holdout: Consumes single-use token on authorization only when experiment creation succeeds.",
+    "testFile": "packages/replay/test/holdout-seal-2026.test.ts",
+    "testName": "consumes single-use token on authorization only when experiment creation succeeds; failure does not consume token (C1)"
+  },
+  {
+    "id": "CLAIM-ADR-0012-TRIAL-COUNTER",
+    "claim": "ADR-0012 Research Trial Accounting: Decouples DSR trial count from experiment repository database row count.",
+    "testFile": "packages/replay/test/replay-engine.test.ts",
+    "testName": "decouples DSR trial count from experiment repository database row count (N2b)"
+  },
+  {
+    "id": "CLAIM-ADR-0012-MONOTONIC-TRIALS",
+    "claim": "ADR-0012 Research Trial Accounting: Persists distinct research trials in non-decreasing monotonic counter across restarts.",
+    "testFile": "packages/data/test/trial-accounting-and-holdout.test.ts",
+    "testName": "R2: persists distinct research trials, monotonic counter never decreases across restarts"
+  },
+  {
+    "id": "CLAIM-ADR-0013-VAULT-KEY",
+    "claim": "ADR-0013 Security Vault Hardening: Strictly refuses vault operations if KEEL_MASTER_KEY is unset, < 32 chars, or default string.",
+    "testFile": "packages/api/test/security.test.ts",
+    "testName": "S1: SecretVault strictly refuses vault operations if KEEL_MASTER_KEY is unset, < 32 chars, or default string"
+  },
+  {
+    "id": "CLAIM-ADR-0013-LOGIN-THROTTLE",
+    "claim": "ADR-0013 Security Login Throttling: Enforces persistent SQLite rate limiting with exponential backoff on login failures.",
+    "testFile": "packages/api/test/security.test.ts",
+    "testName": "S2: AuthManager enforces persistent SQLite rate limiting with exponential backoff on login failures"
+  },
+  {
+    "id": "CLAIM-ADR-0013-VERSIONED-FORMATS",
+    "claim": "ADR-0013 Versioned Formats: Supports versioned Argon2id hashes and AES-256-GCM ciphertexts with transparent upgrades.",
+    "testFile": "packages/api/test/security.test.ts",
+    "testName": "Formats: supports versioned Argon2id hashes and transparently upgrades legacy m=4096 hashes"
+  },
+  {
+    "id": "CLAIM-ADR-0014-ADVERSE-SLIPPAGE",
+    "claim": "ADR-0014 Adverse Slippage: Applies adverse slippage to protective stops and market exits, but never to take-profit limit fills.",
+    "testFile": "packages/core/test/execution-parity.test.ts",
+    "testName": "applies adverse slippage to protective stops and market exits, but NEVER to take-profit limit fills"
+  },
+  {
+    "id": "CLAIM-ADR-0014-COST-STRESS",
+    "claim": "ADR-0014 Shared Execution Model: Scales both trading fees and execution slippage under the 2.0x cost stress multiplier.",
+    "testFile": "packages/core/test/execution-parity.test.ts",
+    "testName": "scales BOTH trading fees and execution slippage under the 2.0x cost stress multiplier"
+  },
+  {
+    "id": "CLAIM-ADR-0014-EXECUTION-PARITY",
+    "claim": "ADR-0014 Execution Parity: Bit-for-bit execution parity between ReplayEngine and PaperBroker shared models.",
+    "testFile": "packages/core/test/execution-parity.test.ts",
+    "testName": "proves bit-for-bit execution parity between ReplayEngine and PaperBroker shared models"
+  },
+  {
+    "id": "CLAIM-ADR-0015-IMMUTABLE-EXPERIMENTS",
+    "claim": "ADR-0015 Immutable Experiments: Experiments table enforces immutable plain INSERT semantics using persistent sequences.",
+    "testFile": "packages/data/test/trial-accounting-and-holdout.test.ts",
+    "testName": "R2: experiments table enforces immutable plain INSERT semantics (throws on duplicate ID)"
+  },
+  {
+    "id": "CLAIM-ADR-0016-RANDOM-BASELINE",
+    "claim": "ADR-0016 Benchmark Distribution Gate: Evaluates >= 200 random entry paths and requires beating the 75th percentile.",
+    "testFile": "packages/replay/test/benchmark-distribution.test.ts",
+    "testName": "replayGatePassed requires beating the 75th percentile of the random entry distribution (M-G / R3)"
+  },
+  {
+    "id": "CLAIM-ADR-0016-DEFENSIVE-THRESHOLDS",
+    "claim": "ADR-0016 Defensive Thresholds: Enforces minTrades >= 100 and minDsr >= 0.8 in ReplayEngine.",
+    "testFile": "packages/replay/test/benchmark-distribution.test.ts",
+    "testName": "enforces defensive default thresholds in ReplayEngine (minTrades >= 100, minDsr >= 0.8) (M-G)"
+  },
+  {
+    "id": "CLAIM-ADR-0017-SCHEDULER-CATCHUP",
+    "claim": "ADR-0017 Scheduler Backlog: Caps processing at 500 unprocessed bars per step and resumes on subsequent step.",
+    "testFile": "packages/api/test/scheduler.test.ts",
+    "testName": "R6: caps processing at 500 unprocessed bars per step and resumes on subsequent step"
+  },
+  {
+    "id": "CLAIM-ADR-0017-SCHEDULER-ANCHOR",
+    "claim": "ADR-0017 Scheduler Anchoring: Anchors newly enabled strategies at latest confirmed bar and excludes quarantined 2026 bars.",
+    "testFile": "packages/api/test/scheduler.test.ts",
+    "testName": "C2: newly enabled (instrument, strategy) anchors at latest confirmed bar and excludes quarantined 2026 bars (zero ticks on 20,000 history bars)"
+  },
+  {
+    "id": "CLAIM-ADR-0017-BAR-IDEMPOTENCY",
+    "claim": "ADR-0017 Scheduler Idempotency: Steps repeatedly on the same confirmed bar idempotently without duplicating ticks.",
+    "testFile": "packages/api/test/scheduler.test.ts",
+    "testName": "N1: scheduler steps repeatedly on the same confirmed bar idempotently without duplicating ticks"
+  },
+  {
+    "id": "CLAIM-ADR-0018-FILL-INGESTION",
+    "claim": "ADR-0018 Broker Truthfulness: submitOrder ingests true fill details from OKX instead of signal price.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "M-B: submitOrder ingests true fill details (avgPx, accFillSz, fee) from OKX instead of signal price"
+  },
+  {
+    "id": "CLAIM-ADR-0018-STRICT-STOP-CONFIRM",
+    "claim": "ADR-0018 Broker Truthfulness: Stop confirmation matches strictly by ID equality and queries both conditional and oco algos.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "C3a: submitOrder stop confirmation matches ONLY by ID equality and queries both conditional and oco"
+  },
+  {
+    "id": "CLAIM-ADR-0018-RECONCILE-FILLS",
+    "claim": "ADR-0018 Broker Truthfulness: ReconcilePositions polls fill history for closed positions, journals real PnL, and avoids false-positive drift.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "C3b: reconcilePositions polls fill history for closed positions, journals real PnL, and does not flatten"
+  },
+  {
+    "id": "CLAIM-ADR-0018-FLATTEN-TRUTHFULNESS",
+    "claim": "ADR-0018 Broker Truthfulness: flattenAllPositions posts real PnL from confirmed fills or keeps position OPEN if unconfirmed.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "C3c: flattenAllPositions posts real PnL from fill, or keeps position OPEN when fill is unconfirmed"
+  },
+  {
+    "id": "CLAIM-ADR-0018-UNCONFIRMED-SUBMIT",
+    "claim": "ADR-0018 Broker Truthfulness: submitOrder fill-query failure alerts CRITICAL, emergency flattens, and throws.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "C3d: submitOrder fill-query failure alerts CRITICAL, emergency flattens, and throws"
+  },
+  {
+    "id": "CLAIM-ADR-0018-TDMODE-POSSIDE",
+    "claim": "ADR-0018 Broker Truthfulness: Serializes tdMode and posSide correctly in OKX order payload.",
+    "testFile": "packages/broker/test/okx-broker.test.ts",
+    "testName": "serializes tdMode and posSide correctly in OKX order payload"
+  },
+  {
+    "id": "CLAIM-ADR-0019-PROMOTION-RECHECK",
+    "claim": "ADR-0019 Runtime Promotion Re-Check: Re-evaluates eligibility at promote time rather than trusting stored eligibleNextStage.",
+    "testFile": "packages/api/test/promotion.test.ts",
+    "testName": "re-evaluates eligibility at promote time rather than trusting stored eligibleNextStage (T7)"
+  },
+  {
+    "id": "CLAIM-README-GO-LIVE-SECURITY",
+    "claim": "README & Go-Live Checklist: Enforces bootstrap token, Argon2id hashing, TOTP step-up, and Cloudflare JWT validation.",
+    "testFile": "packages/api/test/security.test.ts",
+    "testName": "enforces one-time bootstrap token, Argon2id password hashing, TOTP step-up enforcement, and Cloudflare JWT validation"
+  },
+  {
+    "id": "CLAIM-README-LIFECYCLE",
+    "claim": "README & Go-Live Checklist: Enforces bootstrap, session auth, step-up config mutation, rollback, vault, audit, and backup.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "enforces bootstrap -> session auth -> step-up config mutation -> rollback -> vault -> audit -> backup"
+  }
+]
