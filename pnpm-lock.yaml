@@ -132,6 +132,21 @@ importers:
       '@keel/data':
         specifier: workspace:*
         version: link:../data
+      '@keel/spec':
+        specifier: workspace:*
+        version: link:../spec
+
+  packages/spec:
+    dependencies:
+      '@keel/core':
+        specifier: workspace:*
+        version: link:../core
+      '@keel/strategy':
+        specifier: workspace:*
+        version: link:../strategy
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
 
   packages/strategy:
     dependencies:
