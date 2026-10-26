@@ -369,6 +369,9 @@ export const IN_SAMPLE_END_TS = 1_735_689_600_000; // 2025-01-01 00:00:00 UTC
 export const SEALED_HOLDOUT_START_TS = 1_735_689_600_000; // 2025-01-01 00:00:00 UTC
 export const SEALED_HOLDOUT_END_TS = 1_767_225_600_000; // 2026-01-01 00:00:00 UTC
 
+export const SEALED_2026_HOLDOUT_START_TS = 1_767_225_600_000; // 2026-01-01 00:00:00 UTC
+export const SEALED_2026_HOLDOUT_END_TS = 1_782_863_999_000; // 2026-06-30 23:59:59 UTC
+
 export const BenchmarkBaselineSchema = z.object({
   returnPct: z.number(),
   sharpeRatio: z.number(),
@@ -377,6 +380,7 @@ export const BenchmarkBaselineSchema = z.object({
 export type BenchmarkBaseline = z.infer<typeof BenchmarkBaselineSchema>;
 
 export const ExperimentRecordSchema = z.object({
+  sequence: z.number().int().positive().optional(),
   experimentId: z.string().min(1),
   strategyId: z.string().min(1),
   strategyVersion: z.string().min(1),
@@ -407,10 +411,35 @@ export const ExperimentRecordSchema = z.object({
 });
 export type ExperimentRecord = z.infer<typeof ExperimentRecordSchema>;
 
+export interface ResearchTrialInput {
+  readonly strategyId: string;
+  readonly parameterHash: string;
+  readonly instrumentId: string;
+  readonly timeframe: string;
+  readonly recordedAtMs?: number | undefined;
+}
+
+export interface HoldoutTokenInput {
+  readonly token: string;
+  readonly partition: string;
+  readonly createdAtMs?: number | undefined;
+}
+
+export interface ConsumeHoldoutTokenInput {
+  readonly token?: string | undefined;
+  readonly partition: string;
+  readonly nowMs: number;
+}
+
 export interface ExperimentRepository {
   saveExperiment(record: ExperimentRecord): ExperimentRecord;
   listExperiments(limit?: number): readonly ExperimentRecord[];
   getExperiment(experimentId: string): ExperimentRecord | null;
+  recordTrial(trial: ResearchTrialInput): number;
+  getTrialCount(): number;
+  createHoldoutToken(input: HoldoutTokenInput): void;
+  consumeHoldoutToken(input: ConsumeHoldoutTokenInput): boolean;
+  hasUnusedHoldoutToken(partition: string): boolean;
 }
 
 export const CircuitBreakerStatusSchema = z.enum([

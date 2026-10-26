@@ -227,6 +227,11 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   } catch {
     // Column already exists
   }
+  try {
+    db.exec("ALTER TABLE experiments ADD COLUMN sequence INTEGER");
+  } catch {
+    // Column already exists
+  }
   db.exec(PAPER_SCHEMA_SQL);
   try {
     db.exec("ALTER TABLE strategy_promotions ADD COLUMN promoted_at_ms INTEGER");

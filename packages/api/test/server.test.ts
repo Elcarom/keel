@@ -349,9 +349,23 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       });
       expect(runReplayRes.statusCode).toBe(200);
       expect(runReplayRes.json().experiment.strategyId).toBe("donchian-trend-v1");
+      expect(runReplayRes.json().experiment.numTrials).toBe(1);
       expect(runReplayRes.json().experiment.dataSnapshotId).toBe(
         seedRes.json().snapshot.snapshotId
       );
+
+      const runReplay2Res = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: {
+          strategyId: "vol-mean-reversion-v1",
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H"
+        }
+      });
+      expect(runReplay2Res.statusCode).toBe(200);
+      expect(runReplay2Res.json().experiment.numTrials).toBe(2);
 
       const listExpRes = await app.inject({
         method: "GET",
@@ -359,7 +373,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         headers: { cookie: cookieHeader }
       });
       expect(listExpRes.statusCode).toBe(200);
-      expect(listExpRes.json().experiments.length).toBe(1);
+      expect(listExpRes.json().experiments.length).toBe(2);
     } finally {
       await app.close();
     }
