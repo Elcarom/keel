@@ -141,7 +141,8 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     const gateway = new GeminiLlmGateway({
       clock,
       getConfig: () => config.ai,
-      getApiKey: () => null
+      getApiKey: () => null,
+      simulateResponses: true
     });
 
     const analyst = new ContextAnalyst(gateway);
@@ -238,7 +239,7 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     const config = createDefaultConfig();
     const gateway = new GeminiLlmGateway({
       clock,
-      getConfig: () => config.ai,
+      getConfig: () => ({ ...config.ai, simulateResponses: true }),
       getApiKey: () => "simulated-key"
     });
 
@@ -259,7 +260,7 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     const config = createDefaultConfig();
     const gateway = new GeminiLlmGateway({
       clock,
-      getConfig: () => config.ai,
+      getConfig: () => ({ ...config.ai, simulateResponses: true }),
       getApiKey: () => "simulated-key"
     });
 
@@ -282,7 +283,7 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     const config = createDefaultConfig();
     const gateway = new GeminiLlmGateway({
       clock,
-      getConfig: () => config.ai,
+      getConfig: () => ({ ...config.ai, simulateResponses: true }),
       getApiKey: () => "simulated-key"
     });
 
@@ -314,7 +315,7 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     const config = createDefaultConfig();
     const gateway = new GeminiLlmGateway({
       clock,
-      getConfig: () => config.ai,
+      getConfig: () => ({ ...config.ai, simulateResponses: true }),
       getApiKey: () => "simulated-key"
     });
 
@@ -349,7 +350,7 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
 
     const gateway = new GeminiLlmGateway({
       clock,
-      getConfig: () => exhaustedConfig.ai,
+      getConfig: () => ({ ...exhaustedConfig.ai, simulateResponses: true }),
       getApiKey: () => "simulated-key"
     });
 
@@ -389,5 +390,70 @@ describe("GeminiLlmGateway, ContextAnalyst, & ShadowAdvisor (M4)", () => {
     expect(adverseReport.recommendedAggressiveness).toBe("MORE_PASSIVE");
     expect(adverseReport.adverseSelectionScore).toBe(0.85);
     expect(adverseReport.forensicSummary).toContain("adverse selection");
+  });
+
+  it("E1: transmits Gemini API key in x-goog-api-key header and requires explicit simulateResponses flag", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    let capturedUrl = "";
+    let capturedHeaders: Record<string, string> = {};
+
+    const mockFetch = async (url: string, init: { headers: Record<string, string> }) => {
+      capturedUrl = url;
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      headline: "Test Headline",
+                      directionalBias: "neutral",
+                      noveltyScore: 0.5,
+                      confidenceScore: 0.8,
+                      affectedInstruments: ["BTC-USDT-SWAP"],
+                      tags: ["test"]
+                    })
+                  }
+                ]
+              }
+            }
+          ],
+          usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 25 }
+        }),
+        text: async () => ""
+      };
+    };
+
+    // Even if apiKey contains "test" or "simulated", it must NOT silently simulate unless simulateResponses is true!
+    const gateway = new GeminiLlmGateway({
+      clock,
+      getConfig: () => config.ai,
+      getApiKey: () => "test-gemini-secret-api-key",
+      fetchFn: mockFetch,
+      simulateResponses: false
+    });
+
+    const analyst = new ContextAnalyst(gateway);
+    await analyst.analyzeText({
+      text: "Market conditions report.",
+      source: "Wire",
+      asOfMs: 1_750_000_000_000
+    });
+
+    // 1. Key must NOT be in URL query string
+    expect(capturedUrl).not.toContain("?key=");
+    expect(capturedUrl).not.toContain("test-gemini-secret-api-key");
+    expect(capturedUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    );
+
+    // 2. Key must be in x-goog-api-key header
+    expect(capturedHeaders["x-goog-api-key"]).toBe("test-gemini-secret-api-key");
   });
 });
