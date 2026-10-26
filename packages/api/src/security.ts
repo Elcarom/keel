@@ -160,6 +160,20 @@ export function validateMasterKey(masterKeyMaterial: string | undefined): {
       reason: "KEEL_MASTER_KEY must be at least 32 characters long"
     };
   }
+  const distinctChars = new Set(masterKeyMaterial).size;
+  if (distinctChars < 12) {
+    return {
+      valid: false,
+      reason: "KEEL_MASTER_KEY must have at least 12 distinct characters"
+    };
+  }
+  const lower = masterKeyMaterial.toLowerCase();
+  if (lower.includes("your-random") || lower.includes("change-me")) {
+    return {
+      valid: false,
+      reason: "KEEL_MASTER_KEY must not contain placeholder values ('your-random' or 'change-me')"
+    };
+  }
   return { valid: true };
 }
 

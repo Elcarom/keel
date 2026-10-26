@@ -285,6 +285,35 @@ describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-25
             masterKeyMaterial: "keel-default-local-dev-master-key-change-in-prod"
           })
       ).toThrow(/default.*prohibited/i);
+
+      // 4. Master key with < 12 distinct characters -> must throw (D1)
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock,
+            masterKeyMaterial: "01234567890101010101010101010101"
+          })
+      ).toThrow(/at least 12 distinct characters/i);
+
+      // 5. Master key containing placeholder 'your-random' or 'change-me' -> must throw (D1)
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock,
+            masterKeyMaterial: "your-random-32-character-secret-key-material-here"
+          })
+      ).toThrow(/must not contain placeholder/i);
+
+      expect(
+        () =>
+          new SecretVault({
+            repo: store.secretVaultRepo,
+            clock,
+            masterKeyMaterial: "this-is-a-change-me-key-with-enough-length-and-entropy-now"
+          })
+      ).toThrow(/must not contain placeholder/i);
     } finally {
       if (oldEnv !== undefined) {
         process.env["KEEL_MASTER_KEY"] = oldEnv;

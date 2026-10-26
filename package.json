@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
+    "check-claims": "node scripts/check-claims.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
