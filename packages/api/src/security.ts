@@ -124,10 +124,49 @@ function maskSecretPreview(plaintext: string): string {
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 
+export const LEGACY_DEFAULT_MASTER_KEY = "keel-default-local-dev-master-key-change-in-prod";
+
+export class RateLimitError extends Error {
+  public readonly isRateLimited = true;
+  public readonly retryAfterSeconds: number;
+
+  public constructor(message: string, retryAfterSeconds: number) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfterSeconds = Math.max(1, Math.ceil(retryAfterSeconds));
+  }
+}
+
+export function validateMasterKey(masterKeyMaterial: string | undefined): {
+  valid: boolean;
+  reason?: string;
+} {
+  if (!masterKeyMaterial || masterKeyMaterial.trim().length === 0) {
+    return {
+      valid: false,
+      reason: "KEEL_MASTER_KEY environment variable or masterKeyMaterial must be set"
+    };
+  }
+  if (masterKeyMaterial.trim() === LEGACY_DEFAULT_MASTER_KEY) {
+    return {
+      valid: false,
+      reason: "Default development master key is prohibited. Please set a secure KEEL_MASTER_KEY"
+    };
+  }
+  if (masterKeyMaterial.length < 32) {
+    return {
+      valid: false,
+      reason: "KEEL_MASTER_KEY must be at least 32 characters long"
+    };
+  }
+  return { valid: true };
+}
+
 export interface SecretVaultOptions {
   readonly repo: SecretVaultRepository;
   readonly clock: Clock;
   readonly masterKeyMaterial?: string | undefined;
+  readonly allowUnconfigured?: boolean | undefined;
 }
 
 /**
@@ -136,19 +175,31 @@ export interface SecretVaultOptions {
 export class SecretVault {
   private readonly repo: SecretVaultRepository;
   private readonly clock: Clock;
-  private readonly derivedKey: Buffer;
+  private readonly derivedKey: Buffer | null = null;
+  private readonly legacyDerivedKey: Buffer | null = null;
+  private readonly unconfiguredReason: string | null = null;
 
   public constructor(options: SecretVaultOptions) {
     this.repo = options.repo;
     this.clock = options.clock;
-    const rawMaterial =
-      options.masterKeyMaterial ??
-      process.env["KEEL_MASTER_KEY"] ??
-      "keel-default-local-dev-master-key-change-in-prod";
+    const rawMaterial = options.masterKeyMaterial ?? process.env["KEEL_MASTER_KEY"];
+    const validation = validateMasterKey(rawMaterial);
+
+    if (!validation.valid || typeof rawMaterial !== "string") {
+      if (options.allowUnconfigured) {
+        this.unconfiguredReason = validation.reason ?? "Invalid master key";
+        return;
+      }
+      throw new Error(validation.reason ?? "Invalid master key");
+    }
+
     // RFC 5869 HKDF standard key derivation for AES-256-GCM
     this.derivedKey = Buffer.from(
       hkdfSync("sha256", rawMaterial, "keel-vault-salt-v1", "keel-aes-256-gcm-v1", 32)
     );
+    this.legacyDerivedKey = createHash("sha256")
+      .update(`keel-aes-256-gcm-v1:${rawMaterial}`)
+      .digest();
   }
 
   public upsertSecret(input: {
@@ -156,6 +207,11 @@ export class SecretVault {
     plaintextValue: string;
     actor: string;
   }): SecretMetadataRecord {
+    if (this.unconfiguredReason || !this.derivedKey) {
+      throw new Error(
+        `Vault operations disabled: ${this.unconfiguredReason ?? "Invalid master key"}`
+      );
+    }
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.derivedKey, iv);
     cipher.setAAD(Buffer.from(input.keyName, "utf8"));
@@ -166,7 +222,7 @@ export class SecretVault {
 
     this.repo.upsertSecret({
       keyName: input.keyName,
-      ciphertextBase64: encrypted.toString("base64"),
+      ciphertextBase64: `v1:${encrypted.toString("base64")}`,
       ivBase64: iv.toString("base64"),
       authTagBase64: authTag.toString("base64"),
       maskedPreview,
@@ -184,18 +240,46 @@ export class SecretVault {
   }
 
   public getDecryptedSecret(keyName: SecretKeyName): string | null {
+    if (this.unconfiguredReason || !this.derivedKey) {
+      throw new Error(
+        `Vault operations disabled: ${this.unconfiguredReason ?? "Invalid master key"}`
+      );
+    }
     const record = this.repo.getSecret(keyName);
     if (!record) {
       return null;
     }
     const iv = Buffer.from(record.ivBase64, "base64");
-    const ciphertext = Buffer.from(record.ciphertextBase64, "base64");
     const authTag = Buffer.from(record.authTagBase64, "base64");
+
+    const isV1 = record.ciphertextBase64.startsWith("v1:");
+    const rawCiphertextB64 = isV1 ? record.ciphertextBase64.slice(3) : record.ciphertextBase64;
+    const ciphertext = Buffer.from(rawCiphertextB64, "base64");
+
+    if (isV1) {
+      const decipher = createDecipheriv("aes-256-gcm", this.derivedKey, iv);
+      decipher.setAAD(Buffer.from(keyName, "utf8"));
+      decipher.setAuthTag(authTag);
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      return decrypted.toString("utf8");
+    }
+
+    // Legacy fallback without v1: prefix
+    try {
+      if (this.legacyDerivedKey) {
+        const decipher = createDecipheriv("aes-256-gcm", this.legacyDerivedKey, iv);
+        decipher.setAAD(Buffer.from(keyName, "utf8"));
+        decipher.setAuthTag(authTag);
+        const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        return decrypted.toString("utf8");
+      }
+    } catch {
+      // Fall through to try derivedKey
+    }
 
     const decipher = createDecipheriv("aes-256-gcm", this.derivedKey, iv);
     decipher.setAAD(Buffer.from(keyName, "utf8"));
     decipher.setAuthTag(authTag);
-
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     return decrypted.toString("utf8");
   }
@@ -229,24 +313,51 @@ function hashSessionToken(token: string): string {
 }
 
 /**
- * RFC 9106 Argon2id memory-hard password derivation (ADR-0003).
+ * RFC 9106 Argon2id memory-hard password derivation (ADR-0003, ADR-0013).
+ * Modern versioned format: argon2id$v=1$m=19456,t=2,p=1$<saltHex>$<hashHex>
  */
-function hashPasswordArgon2id(password: string, saltHex: string): string {
+export function hashPasswordArgon2idV1(password: string, saltHex: string): string {
   const salt = Buffer.from(saltHex, "hex");
   // OWASP Password Storage Guidelines (RFC 9106 Argon2id): m=19456 KiB (19 MiB), t=2, p=1, dkLen=32
   const digest = argon2id(password, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
-  return Buffer.from(digest).toString("hex");
+  const hashHex = Buffer.from(digest).toString("hex");
+  return `argon2id$v=1$m=19456,t=2,p=1$${saltHex}$${hashHex}`;
 }
 
-function verifyPasswordConstantTime(
+export function verifyPasswordConstantTime(
   password: string,
   saltHex: string,
-  expectedHashHex: string
-): boolean {
-  const candidateHex = hashPasswordArgon2id(password, saltHex);
-  const a = Buffer.from(candidateHex, "hex");
-  const b = Buffer.from(expectedHashHex, "hex");
-  return a.length === b.length && timingSafeEqual(a, b);
+  storedHash: string
+): { valid: boolean; needsUpgrade: boolean } {
+  if (storedHash.startsWith("argon2id$v=1$m=19456,t=2,p=1$")) {
+    const parts = storedHash.split("$");
+    const expectedSaltHex = parts[3] ?? saltHex;
+    const expectedHashHex = parts[4] ?? "";
+    const salt = Buffer.from(expectedSaltHex, "hex");
+    const digest = argon2id(password, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
+    const candidateHex = Buffer.from(digest).toString("hex");
+    const a = Buffer.from(candidateHex, "hex");
+    const b = Buffer.from(expectedHashHex, "hex");
+    const valid = a.length === b.length && timingSafeEqual(a, b);
+    return { valid, needsUpgrade: false };
+  }
+
+  // Legacy format: raw 64-hex string using m=4096 (or m=19456)
+  const salt = Buffer.from(saltHex, "hex");
+  const digest4096 = argon2id(password, salt, { t: 2, m: 4096, p: 1, dkLen: 32 });
+  const a4096 = Buffer.from(digest4096);
+  const b = Buffer.from(storedHash, "hex");
+  if (a4096.length === b.length && timingSafeEqual(a4096, b)) {
+    return { valid: true, needsUpgrade: true };
+  }
+
+  const digest19456 = argon2id(password, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
+  const a19456 = Buffer.from(digest19456);
+  if (a19456.length === b.length && timingSafeEqual(a19456, b)) {
+    return { valid: true, needsUpgrade: true };
+  }
+
+  return { valid: false, needsUpgrade: false };
 }
 
 export interface AuthManagerOptions {
@@ -284,11 +395,23 @@ export class AuthManager {
     return this.authRepo.getAdminUser() !== null;
   }
 
-  public bootstrapAdmin(input: { bootstrapToken: string; username: string; password: string }): {
+  public bootstrapAdmin(input: {
+    bootstrapToken: string;
+    username: string;
+    password: string;
+    clientIp?: string | undefined;
+  }): {
     username: string;
     totpSecretBase32: string;
     otpauthUri: string;
   } {
+    const nowMs = this.clock.nowMs();
+    const rateLimitKey = `bootstrap:${input.clientIp ?? "127.0.0.1"}:${input.username.trim()}`;
+    const rateLimit = this.authRepo.getRateLimit(rateLimitKey);
+    if (rateLimit && rateLimit.lockedUntilMs > nowMs) {
+      const retryAfter = Math.ceil((rateLimit.lockedUntilMs - nowMs) / 1000);
+      throw new RateLimitError("Too many failed bootstrap attempts.", retryAfter);
+    }
     if (this.isBootstrapped()) {
       throw new Error("Admin account is already bootstrapped");
     }
@@ -298,13 +421,13 @@ export class AuthManager {
     const candidateBuf = Buffer.from(input.bootstrapToken.trim(), "utf8");
     const expectedBuf = Buffer.from(this.activeBootstrapToken, "utf8");
     if (candidateBuf.length !== expectedBuf.length || !timingSafeEqual(candidateBuf, expectedBuf)) {
+      this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
       throw new Error("Invalid bootstrap token");
     }
 
     const saltHex = randomBytes(16).toString("hex");
-    const passwordHashHex = hashPasswordArgon2id(input.password, saltHex);
+    const passwordHashHex = hashPasswordArgon2idV1(input.password, saltHex);
     const totpSecretBase32 = TotpEngine.generateSecretBase32();
-    const nowMs = this.clock.nowMs();
 
     this.authRepo.upsertAdminUser({
       username: input.username.trim(),
@@ -316,6 +439,7 @@ export class AuthManager {
       updatedAtMs: nowMs
     });
 
+    this.authRepo.resetRateLimit(rateLimitKey);
     this.activeBootstrapToken = null;
 
     return {
@@ -335,21 +459,49 @@ export class AuthManager {
     username: string;
     totpEnabled: boolean;
   } {
+    const nowMs = this.clock.nowMs();
+    const rateLimitKey = `login:${input.clientIp}:${input.username.trim()}`;
+    const rateLimit = this.authRepo.getRateLimit(rateLimitKey);
+    if (rateLimit && rateLimit.lockedUntilMs > nowMs) {
+      const retryAfter = Math.ceil((rateLimit.lockedUntilMs - nowMs) / 1000);
+      throw new RateLimitError(`Too many failed attempts. Account locked.`, retryAfter);
+    }
+
     const user = this.authRepo.getAdminUser();
     if (!user || user.username !== input.username.trim()) {
-      throw new Error("Invalid credentials");
+      this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
+      throw new Error("Invalid username or password");
     }
-    if (!verifyPasswordConstantTime(input.password, user.passwordSaltHex, user.passwordHashHex)) {
-      throw new Error("Invalid credentials");
+    const verifyRes = verifyPasswordConstantTime(
+      input.password,
+      user.passwordSaltHex,
+      user.passwordHashHex
+    );
+    if (!verifyRes.valid) {
+      this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
+      throw new Error("Invalid username or password");
     }
-    const nowMs = this.clock.nowMs();
+
+    if (verifyRes.needsUpgrade) {
+      const upgradedHash = hashPasswordArgon2idV1(input.password, user.passwordSaltHex);
+      this.authRepo.upsertAdminUser({
+        ...user,
+        passwordHashHex: upgradedHash,
+        updatedAtMs: nowMs
+      });
+    }
+
     let stepUpAtMs: number | null = null;
     if (user.totpEnabled && user.totpSecretBase32) {
       if (!input.totpCode || !TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
+        this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
         throw new Error("Invalid or missing TOTP code");
       }
       stepUpAtMs = nowMs;
     }
+
+    // Success - reset rate limits
+    this.authRepo.resetRateLimit(rateLimitKey);
 
     this.authRepo.pruneExpiredSessions(nowMs);
     const sessionToken = randomBytes(32).toString("hex");
@@ -386,11 +538,24 @@ export class AuthManager {
     otpauthUri: string;
   } {
     const user = this.requireAuthenticatedUser(sessionToken);
-    if (!verifyPasswordConstantTime(password, user.passwordSaltHex, user.passwordHashHex)) {
+    const verifyRes = verifyPasswordConstantTime(
+      password,
+      user.passwordSaltHex,
+      user.passwordHashHex
+    );
+    if (!verifyRes.valid) {
       throw new Error("Invalid password for TOTP enrollment");
     }
-    const totpSecretBase32 = TotpEngine.generateSecretBase32();
     const nowMs = this.clock.nowMs();
+    if (verifyRes.needsUpgrade) {
+      const upgradedHash = hashPasswordArgon2idV1(password, user.passwordSaltHex);
+      this.authRepo.upsertAdminUser({
+        ...user,
+        passwordHashHex: upgradedHash,
+        updatedAtMs: nowMs
+      });
+    }
+    const totpSecretBase32 = TotpEngine.generateSecretBase32();
     this.authRepo.upsertAdminUser({
       ...user,
       totpSecretBase32,
@@ -424,6 +589,7 @@ export class AuthManager {
     sessionToken: string | null;
     password?: string | undefined;
     totpCode?: string | undefined;
+    clientIp?: string | undefined;
   }): boolean {
     if (!input.sessionToken) {
       return false;
@@ -434,14 +600,22 @@ export class AuthManager {
       return false;
     }
     const nowMs = this.clock.nowMs();
+    const rateLimitKey = `stepup:${input.clientIp ?? session.clientIp}:${user.username}`;
+    const rateLimit = this.authRepo.getRateLimit(rateLimitKey);
+    if (rateLimit && rateLimit.lockedUntilMs > nowMs) {
+      const retryAfter = Math.ceil((rateLimit.lockedUntilMs - nowMs) / 1000);
+      throw new RateLimitError("Too many failed step-up attempts.", retryAfter);
+    }
 
     // When TOTP is enabled on the account, password alone cannot bypass TOTP step-up
     if (user.totpEnabled && user.totpSecretBase32) {
       if (input.totpCode) {
         if (TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
+          this.authRepo.resetRateLimit(rateLimitKey);
           this.authRepo.updateSessionStepUp(session.sessionIdHash, nowMs);
           return true;
         }
+        this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
         return false;
       }
       return (
@@ -450,13 +624,27 @@ export class AuthManager {
     }
 
     if (input.password) {
-      if (verifyPasswordConstantTime(input.password, user.passwordSaltHex, user.passwordHashHex)) {
+      const verifyRes = verifyPasswordConstantTime(
+        input.password,
+        user.passwordSaltHex,
+        user.passwordHashHex
+      );
+      if (verifyRes.valid) {
+        if (verifyRes.needsUpgrade) {
+          const upgradedHash = hashPasswordArgon2idV1(input.password, user.passwordSaltHex);
+          this.authRepo.upsertAdminUser({
+            ...user,
+            passwordHashHex: upgradedHash,
+            updatedAtMs: nowMs
+          });
+        }
+        this.authRepo.resetRateLimit(rateLimitKey);
         this.authRepo.updateSessionStepUp(session.sessionIdHash, nowMs);
         return true;
       }
+      this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
       return false;
     }
-
     if (session.lastStepUpAtMs !== null && nowMs - session.lastStepUpAtMs <= this.stepUpWindowMs) {
       return true;
     }

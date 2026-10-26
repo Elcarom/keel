@@ -116,6 +116,13 @@ export interface AdminSessionRecord {
   readonly lastStepUpAtMs: number | null;
 }
 
+export interface AuthRateLimitRecord {
+  readonly key: string;
+  readonly attempts: number;
+  readonly firstAttemptMs: number;
+  readonly lockedUntilMs: number;
+}
+
 export interface AuthRepository {
   getAdminUser(): AdminUserRecord | null;
   upsertAdminUser(user: AdminUserRecord): void;
@@ -124,6 +131,9 @@ export interface AuthRepository {
   updateSessionStepUp(sessionIdHash: string, stepUpAtMs: number): void;
   deleteSession(sessionIdHash: string): void;
   pruneExpiredSessions(nowMs: number): number;
+  getRateLimit(key: string): AuthRateLimitRecord | null;
+  recordRateLimitAttempt(key: string, nowMs: number, windowMs: number): AuthRateLimitRecord;
+  resetRateLimit(key: string): void;
 }
 
 export const NotificationSeveritySchema = z.enum(["CRITICAL", "WARNING", "INFO"]);

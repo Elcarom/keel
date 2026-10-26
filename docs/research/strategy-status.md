@@ -1,7 +1,7 @@
 # Strategy Evaluation Status: In-Sample & Holdout Assessment
 
 **Date**: 2026-10-26  
-**Status**: REJECTED FOR PROMOTION  
+**Status**: REJECTED FOR PROMOTION
 
 ---
 

@@ -15,6 +15,7 @@ import {
   createDefaultConfig,
   type AdminSessionRecord,
   type AdminUserRecord,
+  type AuthRateLimitRecord,
   type AuditEventRecord,
   type AuditRepository,
   type AuthRepository,
@@ -156,6 +157,13 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+  key TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL,
+  first_attempt_ms INTEGER NOT NULL,
+  locked_until_ms INTEGER NOT NULL
+);
 `;
 
 function mapConfigRow(row: Record<string, unknown>): ConfigSnapshotRecord {
@@ -506,6 +514,55 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     pruneExpiredSessions(nowMs: number): number {
       const res = db.prepare("DELETE FROM admin_sessions WHERE expires_at_ms <= ?").run(nowMs);
       return Number(res.changes);
+    },
+
+    getRateLimit(key: string): AuthRateLimitRecord | null {
+      const row = db
+        .prepare(
+          "SELECT key, attempts, first_attempt_ms, locked_until_ms FROM auth_rate_limits WHERE key = ?"
+        )
+        .get(key);
+      if (!row) {
+        return null;
+      }
+      return {
+        key: String(row["key"]),
+        attempts: Number(row["attempts"]),
+        firstAttemptMs: Number(row["first_attempt_ms"]),
+        lockedUntilMs: Number(row["locked_until_ms"])
+      };
+    },
+
+    recordRateLimitAttempt(key: string, nowMs: number, windowMs: number): AuthRateLimitRecord {
+      const existing = this.getRateLimit(key);
+      let attempts = 1;
+      let firstAttemptMs = nowMs;
+      let lockedUntilMs = 0;
+
+      if (existing && nowMs - existing.firstAttemptMs <= windowMs) {
+        attempts = existing.attempts + 1;
+        firstAttemptMs = existing.firstAttemptMs;
+        if (attempts >= 5) {
+          // 5 failed attempts -> exponential backoff up to 15 minutes (900 seconds)
+          const backoffMs = Math.min(15 * 60 * 1000, 60 * 1000 * Math.pow(2, attempts - 5));
+          lockedUntilMs = nowMs + backoffMs;
+        }
+      }
+
+      db.prepare(
+        `INSERT INTO auth_rate_limits (key, attempts, first_attempt_ms, locked_until_ms)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           attempts = excluded.attempts,
+           first_attempt_ms = excluded.first_attempt_ms,
+           locked_until_ms = excluded.locked_until_ms`
+      ).run(key, attempts, firstAttemptMs, lockedUntilMs);
+
+      return { key, attempts, firstAttemptMs, lockedUntilMs };
+    },
+
+    resetRateLimit(key: string): void {
+      db.prepare("DELETE FROM auth_rate_limits WHERE key = ?").run(key);
     }
   };
 

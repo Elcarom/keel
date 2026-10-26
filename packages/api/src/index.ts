@@ -6,10 +6,14 @@ export {
 export { PINO_REDACT_PATHS, redactLogObject, redactSecrets } from "./redact.js";
 export {
   AuthManager,
+  RateLimitError,
   SecretVault,
   TotpEngine,
+  hashPasswordArgon2idV1,
   resolveIngressContext,
+  validateMasterKey,
   verifyCloudflareAccessJwt,
+  verifyPasswordConstantTime,
   type AuthManagerOptions,
   type IngressContext,
   type SecretVaultOptions

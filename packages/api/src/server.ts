@@ -21,6 +21,7 @@ import {
   type PortfolioRiskState,
   type PromotionStage,
   type Proposal,
+  type SecretKeyName,
   type StrategyRiskState
 } from "@keel/core";
 import {
@@ -48,10 +49,12 @@ import { UnattendedScheduler } from "./scheduler.js";
 import { PINO_REDACT_PATHS } from "./redact.js";
 import {
   AuthManager,
+  RateLimitError,
   SecretVault,
   formatClearSessionCookieHeader,
   formatSessionCookieHeader,
   resolveIngressContext,
+  validateMasterKey,
   type IngressContext
 } from "./security.js";
 
@@ -90,10 +93,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       initialConfig
     });
 
+  const masterKeyMaterial = options.masterKeyMaterial ?? process.env["KEEL_MASTER_KEY"];
+  const masterKeyCheck = validateMasterKey(masterKeyMaterial);
+
   const secretVault = new SecretVault({
     repo: dataStore.secretVaultRepo,
     clock,
-    masterKeyMaterial: options.masterKeyMaterial
+    masterKeyMaterial,
+    allowUnconfigured: !masterKeyCheck.valid
   });
 
   const authManager = new AuthManager({
@@ -111,13 +118,19 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   const getActiveSnapshot = () => dataStore.configRepo.getActiveConfig();
 
+  const getSecretSafe = (key: SecretKeyName): string | null => {
+    try {
+      return secretVault.getDecryptedSecret(key);
+    } catch {
+      return null;
+    }
+  };
+
   const notifier = new DiscordWebhookNotifier({
     clock,
     getConfig: () => getActiveSnapshot().config,
     getWebhookUrl: () =>
-      secretVault.getDecryptedSecret("discordWebhookUrl") ??
-      process.env["KEEL_DISCORD_WEBHOOK_URL"] ??
-      null,
+      getSecretSafe("discordWebhookUrl") ?? process.env["KEEL_DISCORD_WEBHOOK_URL"] ?? null,
     fetchFn: options.webhookFetchFn
   });
 
@@ -139,8 +152,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     new GeminiLlmGateway({
       clock,
       getConfig: () => getActiveSnapshot().config.ai,
-      getApiKey: () =>
-        secretVault.getDecryptedSecret("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
+      getApiKey: () => getSecretSafe("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
     });
 
   const contextAnalyst = new ContextAnalyst(llmGateway);
@@ -155,14 +167,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       clock,
       getRiskConfig: () => getActiveSnapshot().config.risk,
       getCredentials: () => {
-        const apiKey =
-          secretVault.getDecryptedSecret("okxApiKey") ?? process.env["OKX_API_KEY"] ?? null;
-        const secretKey =
-          secretVault.getDecryptedSecret("okxSecretKey") ?? process.env["OKX_API_SECRET"] ?? null;
+        const apiKey = getSecretSafe("okxApiKey") ?? process.env["OKX_API_KEY"] ?? null;
+        const secretKey = getSecretSafe("okxSecretKey") ?? process.env["OKX_API_SECRET"] ?? null;
         const passphrase =
-          secretVault.getDecryptedSecret("okxPassphrase") ??
-          process.env["OKX_API_PASSPHRASE"] ??
-          null;
+          getSecretSafe("okxPassphrase") ?? process.env["OKX_API_PASSPHRASE"] ?? null;
 
         if (!apiKey || !secretKey || !passphrase) {
           return null;
@@ -221,6 +229,15 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           }
         : false
   });
+
+  if (!masterKeyCheck.valid) {
+    const errorMsg = `[KEEL SECURITY ERROR] Vault master key is invalid or unset: ${masterKeyCheck.reason}. Vault storage and retrieval are disabled.`;
+    if (options.logger === true) {
+      app.log.error(errorMsg);
+    } else {
+      process.stderr.write(`${errorMsg}\n`);
+    }
+  }
 
   app.addHook("onClose", async () => {
     scheduler.stop();
@@ -449,6 +466,21 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             }
           };
         } catch (err) {
+          if (
+            err instanceof RateLimitError ||
+            (typeof err === "object" &&
+              err !== null &&
+              (err as { isRateLimited?: boolean }).isRateLimited)
+          ) {
+            const retryAfter = (err as { retryAfterSeconds?: number }).retryAfterSeconds ?? 60;
+            reply.header("retry-after", String(retryAfter));
+            return {
+              status: 429,
+              body: {
+                error: err instanceof Error ? err.message : "Rate limit exceeded"
+              }
+            };
+          }
           return {
             status: 403,
             body: {
@@ -490,6 +522,21 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             }
           };
         } catch (err) {
+          if (
+            err instanceof RateLimitError ||
+            (typeof err === "object" &&
+              err !== null &&
+              (err as { isRateLimited?: boolean }).isRateLimited)
+          ) {
+            const retryAfter = (err as { retryAfterSeconds?: number }).retryAfterSeconds ?? 60;
+            reply.header("retry-after", String(retryAfter));
+            return {
+              status: 429,
+              body: {
+                error: err instanceof Error ? err.message : "Rate limit exceeded"
+              }
+            };
+          }
           return {
             status: 401,
             body: {
