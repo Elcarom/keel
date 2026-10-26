@@ -694,7 +694,9 @@ export const ExchangeOrderInputSchema = z.object({
   clOrdId: z.string().optional(),
   strategyId: z.string().optional(),
   initialRiskUsdt: z.string().optional(),
-  reduceOnly: z.boolean().default(false)
+  reduceOnly: z.boolean().default(false),
+  tdMode: z.enum(["isolated", "cross"]).optional(),
+  posSide: z.enum(["net", "long", "short"]).optional()
 });
 export type ExchangeOrderInput = z.infer<typeof ExchangeOrderInputSchema>;
 

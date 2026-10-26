@@ -88,13 +88,27 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
         capturedRequestBody = init.body;
       }
       if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        let sentAlgoId: string | undefined;
+        try {
+          sentAlgoId = capturedRequestBody
+            ? JSON.parse(capturedRequestBody).attachAlgoOrds?.[0]?.attachAlgoClOrdId
+            : undefined;
+        } catch {
+          // Ignore
+        }
         return {
           ok: true,
           status: 200,
           json: async () => ({
             code: "0",
             msg: "",
-            data: [{ algoId: "algo_test_stop_1", state: "live" }]
+            data: [
+              {
+                algoId: "algo_test_stop_1",
+                attachAlgoClOrdId: sentAlgoId ?? "algo_test_stop_1",
+                state: "live"
+              }
+            ]
           }),
           text: async () => ""
         };
@@ -186,12 +200,25 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
   it("reconciles positions and flattens all open positions on demand", async () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
+    let capturedAttachAlgoClOrdId = "";
+    let capturedClOrdId = "";
     const broker = new OkxBroker({
       clock,
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
       isDemo: true,
-      fetchFn: async (url) => {
+      fetchFn: async (url, init) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.clOrdId) capturedClOrdId = body.clOrdId;
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
         if (url.includes("/api/v5/account/positions")) {
           return {
             ok: true,
@@ -218,7 +245,38 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
             json: async () => ({
               code: "0",
               msg: "",
-              data: [{ algoId: "algo_1", instId: "BTC-USDT-SWAP", slTriggerPx: "48000.00" }]
+              data: [
+                {
+                  algoId: "algo_1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                  instId: "BTC-USDT-SWAP",
+                  slTriggerPx: "48000.00"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (
+          url.includes("/api/v5/trade/order?") ||
+          (init?.method === "GET" && url.includes("/api/v5/trade/order"))
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  ordId: "ord_reconcile_1",
+                  clOrdId: capturedClOrdId,
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.50000000"
+                }
+              ]
             }),
             text: async () => ""
           };
@@ -257,16 +315,66 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
     let capturedBody = "";
+    let capturedAttachAlgoClOrdId = "";
     const broker = new OkxBroker({
       clock,
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
-      fetchFn: async (_url, init) => {
+      fetchFn: async (url, init) => {
         capturedBody = init.body ?? "";
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  algoId: "algo_test1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_test1",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.50"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
         return {
           ok: true,
           status: 200,
-          json: async () => ({ code: "0", data: [{ algoId: "algo_test1" }] }),
+          json: async () => ({
+            code: "0",
+            data: [{ algoId: "algo_test1", ordId: "ord_test1", sCode: "0" }]
+          }),
           text: async () => "ok"
         };
       }
@@ -434,7 +542,51 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
       fetchFn: async (url, init) => {
-        if (url.includes("/api/v5/trade/order") && init.method === "POST") {
+        if (
+          url.includes("/api/v5/trade/order-algo") ||
+          url.includes("/api/v5/trade/orders-algo-pending")
+        ) {
+          const attachClOrdId = (
+            capturedPayload?.["attachAlgoOrds"] as Array<Record<string, unknown>>
+          )?.[0]?.["attachAlgoClOrdId"] as string | undefined;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  algoId: "algo_exchange_9999",
+                  attachAlgoClOrdId: attachClOrdId,
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              msg: "",
+              data: [
+                {
+                  ordId: "ord_1001",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.50"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
           capturedPayload = JSON.parse(init.body ?? "{}");
           return {
             ok: true,
@@ -448,26 +600,6 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
                   ordId: "ord_1001",
                   sCode: "0",
                   sMsg: ""
-                }
-              ]
-            }),
-            text: async () => ""
-          };
-        }
-        if (
-          url.includes("/api/v5/trade/order-algo") ||
-          url.includes("/api/v5/trade/orders-algo-pending")
-        ) {
-          return {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              code: "0",
-              msg: "",
-              data: [
-                {
-                  algoId: "algo_exchange_9999",
-                  state: "live"
                 }
               ]
             }),
@@ -685,6 +817,7 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
 
     const ordersSent: Array<Record<string, unknown>> = [];
     let cancelAllSent = false;
+    let capturedAttachAlgoClOrdId = "";
 
     const broker = new OkxBroker({
       clock,
@@ -692,6 +825,16 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       getCredentials: () => credentials,
       isDemo: true,
       fetchFn: async (url, init) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
         if (url.includes("/api/v5/trade/cancel-all-after")) {
           cancelAllSent = true;
           return {
@@ -707,12 +850,37 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
             status: 200,
             json: async () => ({
               code: "0",
-              data: [{ algoId: "algo_flat_stop_1", state: "live" }]
+              data: [
+                {
+                  algoId: "algo_flat_stop_1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                  state: "live"
+                }
+              ]
             }),
             text: async () => ""
           };
         }
-        if (url.includes("/api/v5/trade/order") && init.method === "POST") {
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_flat_1",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "2",
+                  fee: "-0.50"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
           const body = JSON.parse(init.body ?? "{}");
           ordersSent.push(body);
           return {
@@ -796,20 +964,56 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       }
     };
 
+    let capturedAttachAlgoClOrdId1 = "";
     // First broker instance writes state
     const broker1 = new OkxBroker({
       clock,
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
       accountRepo: mockRepo,
-      fetchFn: async (url) => {
+      fetchFn: async (url, init) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId1 = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
         if (url.includes("/api/v5/trade/orders-algo-pending")) {
           return {
             ok: true,
             status: 200,
             json: async () => ({
               code: "0",
-              data: [{ algoId: "algo_persist_stop_1", state: "live" }]
+              data: [
+                {
+                  algoId: "algo_persist_stop_1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId1,
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_persist_1",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.50"
+                }
+              ]
             }),
             text: async () => ""
           };
@@ -980,6 +1184,8 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       detectGaps: () => []
     };
 
+    let capturedAttachAlgoClOrdId = "";
+    let isFlattenOrder = false;
     const broker = new OkxBroker({
       clock,
       getRiskConfig: () => config.risk,
@@ -987,14 +1193,33 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       ledgerRepo: mockLedgerRepo,
       marketDataRepo: mockMarketDataRepo,
       isDemo: true,
-      fetchFn: async (url) => {
+      fetchFn: async (url, init) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.reduceOnly) {
+              isFlattenOrder = true;
+            }
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
         if (url.includes("/api/v5/trade/orders-algo-pending")) {
           return {
             ok: true,
             status: 200,
             json: async () => ({
               code: "0",
-              data: [{ algoId: "algo_mf_stop_1", state: "live" }]
+              data: [
+                {
+                  algoId: "algo_mf_stop_1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                  state: "live"
+                }
+              ]
             }),
             text: async () => ""
           };
@@ -1007,9 +1232,9 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
               code: "0",
               data: [
                 {
-                  ordId: "ord_mf_1",
+                  ordId: isFlattenOrder ? "ord_mf_close" : "ord_mf_1",
                   state: "filled",
-                  avgPx: "50000.00",
+                  avgPx: isFlattenOrder ? "55000.00" : "50000.00",
                   accFillSz: "1",
                   fee: "-0.30000000"
                 }
@@ -1023,7 +1248,13 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
           status: 200,
           json: async () => ({
             code: "0",
-            data: [{ ordId: "ord_mf_1", clOrdId: "cl_mf_1", sCode: "0" }]
+            data: [
+              {
+                ordId: isFlattenOrder ? "ord_mf_close" : "ord_mf_1",
+                clOrdId: "cl_mf_1",
+                sCode: "0"
+              }
+            ]
           }),
           text: async () => ""
         };
@@ -1113,16 +1344,33 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
 
-    const mockFetch = async (url: string) => {
-      if (url.includes("/api/v5/trade/order") && !url.includes("?")) {
-        // POST /api/v5/trade/order placement response
+    let capturedAttachAlgoClOrdId = "";
+    const mockFetch = async (url: string, init?: { body?: string }) => {
+      if (init?.body) {
+        try {
+          const body = JSON.parse(init.body);
+          if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+            capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+          }
+        } catch {
+          // ignore non-JSON payload
+        }
+      }
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        // Stop confirmation
         return {
           ok: true,
           status: 200,
           json: async () => ({
             code: "0",
             msg: "",
-            data: [{ ordId: "1234567890", clOrdId: "cl_fill_test", sCode: "0" }]
+            data: [
+              {
+                algoId: "algo_confirmed_999",
+                attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                state: "live"
+              }
+            ]
           }),
           text: async () => ""
         };
@@ -1149,15 +1397,15 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
           text: async () => ""
         };
       }
-      if (url.includes("/api/v5/trade/orders-algo-pending")) {
-        // Stop confirmation
+      if (url.includes("/api/v5/trade/order") && !url.includes("?")) {
+        // POST /api/v5/trade/order placement response
         return {
           ok: true,
           status: 200,
           json: async () => ({
             code: "0",
             msg: "",
-            data: [{ algoId: "algo_confirmed_999", algoClOrdId: "slcl_fill_test", state: "live" }]
+            data: [{ ordId: "1234567890", clOrdId: "cl_fill_test", sCode: "0" }]
           }),
           text: async () => ""
         };
@@ -1300,7 +1548,54 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     };
 
     let orderSubmitted = false;
+    let capturedAttachAlgoClOrdId = "";
     const mockFetch = async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.body) {
+        try {
+          const body = JSON.parse(init.body);
+          if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+            capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+          }
+        } catch {
+          // ignore non-JSON payload
+        }
+      }
+      if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [
+              {
+                algoId: "algo_init_1",
+                attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                state: "live"
+              }
+            ]
+          }),
+          text: async () => ""
+        };
+      }
+      if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: "0",
+            data: [
+              {
+                ordId: "ord_init_1",
+                state: "filled",
+                avgPx: "50000.00",
+                accFillSz: "1",
+                fee: "-0.50"
+              }
+            ]
+          }),
+          text: async () => ""
+        };
+      }
       if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
         if (!orderSubmitted) {
           orderSubmitted = true;
@@ -1320,17 +1615,6 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
           ok: false,
           status: 500,
           text: async () => "Internal Server Error during flatten"
-        };
-      }
-      if (url.includes("/api/v5/trade/orders-algo-pending")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            code: "0",
-            data: [{ algoId: "algo_init_1", state: "live" }]
-          }),
-          text: async () => ""
         };
       }
       return {
@@ -1461,12 +1745,14 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
         };
       }
       if (url.includes("/api/v5/trade/orders-algo-pending")) {
+        const attachClOrdId = capturedPayload?.attachAlgoOrds?.[0]?.["attachAlgoClOrdId"] as
+          string | undefined;
         return {
           ok: true,
           status: 200,
           json: async () => ({
             code: "0",
-            data: [{ algoId: "algo_100", state: "live" }]
+            data: [{ algoId: "algo_100", attachAlgoClOrdId: attachClOrdId, state: "live" }]
           }),
           text: async () => ""
         };
@@ -1516,9 +1802,16 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     expect(algoOrd?.closeFraction).toBeUndefined();
   });
 
-  it("M-B: submitOrder marks status SUBMITTED when fill details cannot be confirmed rather than FILLED at entryPrice", async () => {
+  it("C3d: submitOrder alerts CRITICAL, flattens positions, and throws when fill details cannot be confirmed", async () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
+    const alerts: Array<{ severity: string; title: string; body: string }> = [];
+
+    const mockNotificationChannel = {
+      send: async (alert: { severity: string; title: string; body: string }) => {
+        alerts.push(alert);
+      }
+    };
 
     const mockFetch = async (url: string) => {
       if (url.includes("/api/v5/trade/order") && !url.includes("?")) {
@@ -1568,19 +1861,25 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
       getRiskConfig: () => config.risk,
       getCredentials: () => credentials,
       isDemo: true,
-      fetchFn: mockFetch
+      fetchFn: mockFetch,
+      notificationChannel: mockNotificationChannel
     });
 
-    const res = await broker.submitOrder({
-      instrumentId: "BTC-USDT-SWAP",
-      side: "long",
-      sizeLots: 1,
-      entryPrice: "50000.00",
-      protectiveStopPrice: "48000.00"
-    });
+    await expect(
+      broker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/Order ord_unconfirmed_fill fill details could not be confirmed on OKX/);
 
-    // When real fill is not confirmed, status must be SUBMITTED, not FILLED!
-    expect(res.status).toBe("SUBMITTED");
+    expect(
+      alerts.some(
+        (a) => a.severity === "CRITICAL" && a.title.includes("UNCONFIRMED EXECUTION FILL")
+      )
+    ).toBe(true);
   });
 
   it("M-C: flattenAllPositions explicitly cancels attached algo orders on exchange", async () => {
@@ -1714,5 +2013,527 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     const hasOco = algoQueries.some((q) => q.includes("ordType=oco"));
     expect(hasConditional).toBe(true);
     expect(hasOco).toBe(true);
+  });
+
+  it("C3a: submitOrder stop confirmation matches ONLY by ID equality and queries both conditional and oco", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+
+    // Return a single pending algo order with a DIFFERENT algoId and DIFFERENT clOrdId
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async (url, init) => {
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          // Exactly 1 pending algo order, but with UNRELATED ID! Old code accepted this via length === 1
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  algoId: "unrelated_other_user_algo",
+                  algoClOrdId: "unrelated_cl_ord_id",
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [{ ordId: "ord_100", clOrdId: "cl_100", sCode: "0" }]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_100",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.30"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    // Must REJECT and emergency flatten because ID equality does not match
+    await expect(
+      broker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/Protective stop algo order.*could not be confirmed on OKX/);
+  });
+
+  it("C3d: submitOrder fill-query failure alerts CRITICAL, emergency flattens, and throws", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const alerts: Array<{ severity: string; title: string }> = [];
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      notificationChannel: {
+        send: async (n) => {
+          alerts.push({ severity: n.severity, title: n.title });
+        }
+      },
+      fetchFn: async (url, init) => {
+        if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [{ ordId: "ord_200", clOrdId: "cl_200", sCode: "0" }]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          // Fill query fails / returns 500
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ code: "500", msg: "Internal error" }),
+            text: async () => "Internal error"
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    await expect(
+      broker.submitOrder({
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        sizeLots: 1,
+        entryPrice: "50000.00",
+        protectiveStopPrice: "48000.00"
+      })
+    ).rejects.toThrow(/fill details could not be confirmed on OKX/i);
+
+    expect(alerts.some((a) => a.severity === "CRITICAL" && a.title.includes("UNCONFIRMED"))).toBe(
+      true
+    );
+  });
+
+  it("C3b: reconcilePositions polls fill history for closed positions, journals real PnL, and does not flatten", async () => {
+    const clock = new ManualClock(1_750_000_100_000);
+    const config = createDefaultConfig();
+    const ledgerJournals: Array<{
+      debitAccount: string;
+      creditAccount: string;
+      amountUsdt: string;
+    }> = [];
+    const alerts: string[] = [];
+
+    const mockLedger: LedgerRepository = {
+      recordJournal: (input) => {
+        ledgerJournals.push({
+          debitAccount: input.debitAccount,
+          creditAccount: input.creditAccount,
+          amountUsdt: input.amountUsdt
+        });
+        return {
+          entryId: "entry_1",
+          txGroupId: input.txGroupId,
+          ts: input.ts,
+          strategyId: input.strategyId,
+          instrumentId: input.instrumentId,
+          debitAccount: input.debitAccount,
+          creditAccount: input.creditAccount,
+          amountUsdt: input.amountUsdt,
+          description: input.description
+        };
+      },
+      listEntries: () => [],
+      getTrialBalance: () => ({
+        totalDebitsUsdt: "0",
+        totalCreditsUsdt: "0",
+        isBalanced: true,
+        cashBalanceUsdt: "10000",
+        realizedPnlUsdt: "0",
+        feesExpenseUsdt: "0",
+        fundingPnlUsdt: "0",
+        netEquityUsdt: "10000",
+        entryCount: 0
+      }),
+      getRiskMetrics: () => ({
+        currentEquityUsdt: ScaledDecimal.fromString("10000"),
+        dayStartEquityUsdt: ScaledDecimal.fromString("10000"),
+        weekStartEquityUsdt: ScaledDecimal.fromString("10000"),
+        highWaterMarkEquityUsdt: ScaledDecimal.fromString("10000"),
+        feesTodayUsdt: ScaledDecimal.zero(),
+        drawdownPct: ScaledDecimal.zero()
+      }),
+      recordEquitySnapshot: () => {}
+    };
+
+    const initialPositions = new Map<string, PaperPositionRecord>();
+    const pos1: PaperPositionRecord = {
+      positionId: "pos_test_c3b",
+      strategyId: "donchian-trend-v1",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      contracts: "1",
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      takeProfitPrice: null,
+      initialRiskUsdt: "20.00",
+      unrealizedPnlUsdt: "0",
+      realizedPnlUsdt: "0",
+      feesPaidUsdt: "0.30",
+      fundingPaidUsdt: "0",
+      openedAtMs: 1_750_000_000_000,
+      lastFundingSettledTs: 1_750_000_000_000,
+      status: "OPEN",
+      closedAtMs: null,
+      exitPrice: null,
+      exitReason: null
+    };
+    initialPositions.set(pos1.positionId, pos1);
+
+    const mockAccountRepo: PaperAccountRepository = {
+      savePosition: (p) => {
+        initialPositions.set(p.positionId, p);
+        return p;
+      },
+      getPosition: (id) => initialPositions.get(id) ?? null,
+      listOpenPositions: () =>
+        Array.from(initialPositions.values()).filter((p) => p.status === "OPEN"),
+      listAllPositions: () => Array.from(initialPositions.values()),
+      saveOrder: (o) => o,
+      listOrders: () => [],
+      countFilledOrdersToday: () => 0,
+      getCircuitBreaker: () => ({
+        status: "NORMAL",
+        reason: "",
+        triggeredAtMs: 0,
+        cooldownUntilMs: null,
+        updatedBy: "system"
+      }),
+      setCircuitBreaker: (cb) => cb
+    };
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      ledgerRepo: mockLedger,
+      accountRepo: mockAccountRepo,
+      notificationChannel: {
+        send: async (n) => {
+          alerts.push(n.title);
+        }
+      },
+      fetchFn: async (url) => {
+        // Exchange positions query returns 0 positions (position was closed on exchange by stop fill)
+        if (url.includes("/api/v5/account/positions")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ code: "0", data: [] }),
+            text: async () => ""
+          };
+        }
+        // Algo orders pending returns 0 algos
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ code: "0", data: [] }),
+            text: async () => ""
+          };
+        }
+        // Fills history returns the stop fill
+        if (url.includes("/api/v5/trade/fills") || url.includes("/api/v5/trade/orders-history")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  instId: "BTC-USDT-SWAP",
+                  side: "sell",
+                  fillPx: "48000.00",
+                  sz: "1",
+                  fee: "-0.28800000",
+                  fillTime: "1750000050000"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    const recon = await broker.reconcilePositions();
+
+    // Reconcile must recognize the exit fill, mark position closed at real exit fill, and not trigger drift
+    expect(recon.matched).toBe(true);
+    expect(alerts).toHaveLength(0);
+    const updatedPos = mockAccountRepo.getPosition("pos_test_c3b");
+    expect(updatedPos?.status).toBe("CLOSED");
+    expect(updatedPos?.exitPrice).toBe("48000.00");
+    expect(updatedPos?.realizedPnlUsdt).toBe("-20.00000000");
+    expect(updatedPos?.unrealizedPnlUsdt).toBe("0.00000000");
+    expect(ledgerJournals.length).toBeGreaterThan(0);
+    // Realized loss: (48000 - 50000) * 1 * 0.01 = -20 USDT
+    const lossJournal = ledgerJournals.find((j) => j.debitAccount === "realized_pnl:usdt");
+    expect(lossJournal?.amountUsdt).toBe("20.00000000");
+  });
+
+  it("C3c: flattenAllPositions posts real PnL from fill, or keeps position OPEN when fill is unconfirmed", async () => {
+    const clock = new ManualClock(1_750_000_100_000);
+    const config = createDefaultConfig();
+    const alerts: string[] = [];
+
+    // Local position
+    const positionsMap = new Map<string, PaperPositionRecord>();
+    const pos2: PaperPositionRecord = {
+      positionId: "pos_test_c3c",
+      strategyId: "donchian-trend-v1",
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      contracts: "1",
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      takeProfitPrice: null,
+      initialRiskUsdt: "20.00",
+      unrealizedPnlUsdt: "0",
+      realizedPnlUsdt: "0",
+      feesPaidUsdt: "0.30",
+      fundingPaidUsdt: "0",
+      openedAtMs: 1_750_000_000_000,
+      lastFundingSettledTs: 1_750_000_000_000,
+      status: "OPEN",
+      closedAtMs: null,
+      exitPrice: null,
+      exitReason: null
+    };
+    positionsMap.set(pos2.positionId, pos2);
+
+    const mockAccountRepo: PaperAccountRepository = {
+      savePosition: (p) => {
+        positionsMap.set(p.positionId, p);
+        return p;
+      },
+      getPosition: (id) => positionsMap.get(id) ?? null,
+      listOpenPositions: () => Array.from(positionsMap.values()).filter((p) => p.status === "OPEN"),
+      listAllPositions: () => Array.from(positionsMap.values()),
+      saveOrder: (o) => o,
+      listOrders: () => [],
+      countFilledOrdersToday: () => 0,
+      getCircuitBreaker: () => ({
+        status: "NORMAL",
+        reason: "",
+        triggeredAtMs: 0,
+        cooldownUntilMs: null,
+        updatedBy: "system"
+      }),
+      setCircuitBreaker: (cb) => cb
+    };
+
+    // Broker where flatten market order succeeds but fill details query fails
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      accountRepo: mockAccountRepo,
+      notificationChannel: {
+        send: async (n) => {
+          alerts.push(n.title);
+        }
+      },
+      fetchFn: async (url, init) => {
+        if (url.includes("/api/v5/trade/cancel-algo-orders")) {
+          return { ok: true, status: 200, json: async () => ({ code: "0" }), text: async () => "" };
+        }
+        if (url.includes("/api/v5/trade/cancel-all-after")) {
+          return { ok: true, status: 200, json: async () => ({ code: "0" }), text: async () => "" };
+        }
+        if (url.includes("/api/v5/account/positions")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ code: "0", data: [] }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [{ ordId: "flat_ord_999", clOrdId: "cl_flat_999", sCode: "0" }]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          // Fill query returns 500 (unconfirmed)
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ code: "500", msg: "Internal Error" }),
+            text: async () => "Internal Error"
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    const closed = await broker.flattenAllPositions("Emergency test unconfirmed fill");
+
+    // Position must NOT be closed, must remain OPEN, and must alert CRITICAL
+    expect(closed).toHaveLength(0);
+    const pos = mockAccountRepo.getPosition("pos_test_c3c");
+    expect(pos?.status).toBe("OPEN");
+    expect(alerts.some((t) => t.includes("FAIL") || t.includes("UNCONFIRMED"))).toBe(true);
+  });
+
+  it("serializes tdMode and posSide correctly in OKX order payload", async () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const config = createDefaultConfig();
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    let capturedAttachAlgoClOrdId = "";
+
+    const broker = new OkxBroker({
+      clock,
+      getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: async (url, init) => {
+        if (init?.body) {
+          try {
+            const body = JSON.parse(init.body);
+            if (url.includes("/api/v5/trade/order") && init?.method === "POST") {
+              capturedBodies.push(body);
+            }
+            if (body.attachAlgoOrds?.[0]?.attachAlgoClOrdId) {
+              capturedAttachAlgoClOrdId = body.attachAlgoOrds[0].attachAlgoClOrdId;
+            }
+          } catch {
+            // ignore non-JSON payload
+          }
+        }
+        if (url.includes("/api/v5/trade/orders-algo-pending")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  algoId: "algo_1",
+                  attachAlgoClOrdId: capturedAttachAlgoClOrdId,
+                  state: "live"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        if (url.includes("/api/v5/trade/order") && init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              code: "0",
+              data: [
+                {
+                  ordId: "ord_1",
+                  state: "filled",
+                  avgPx: "50000.00",
+                  accFillSz: "1",
+                  fee: "-0.50"
+                }
+              ]
+            }),
+            text: async () => ""
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "0", data: [{ ordId: "ord_1", sCode: "0" }] }),
+          text: async () => ""
+        };
+      }
+    });
+
+    // 1. Default: tdMode defaults to isolated, posSide omitted when net
+    await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      posSide: "net"
+    });
+    expect(capturedBodies[0].tdMode).toBe("isolated");
+    expect(capturedBodies[0].posSide).toBeUndefined();
+
+    // 2. Explicit cross and posSide: long
+    await broker.submitOrder({
+      instrumentId: "BTC-USDT-SWAP",
+      side: "long",
+      sizeLots: 1,
+      entryPrice: "50000.00",
+      protectiveStopPrice: "48000.00",
+      tdMode: "cross",
+      posSide: "long"
+    });
+    expect(capturedBodies[1].tdMode).toBe("cross");
+    expect(capturedBodies[1].posSide).toBe("long");
   });
 });

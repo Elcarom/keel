@@ -396,9 +396,10 @@ export class OkxBroker implements ExchangeBroker {
 
     const attachAlgoOrds = [attachAlgoOrd];
 
-    const orderPayload = {
+    const effectiveTdMode = input.tdMode ?? "isolated";
+    const orderPayload: Record<string, unknown> = {
       instId: input.instrumentId,
-      tdMode: "isolated",
+      tdMode: effectiveTdMode,
       side: input.side === "long" ? "buy" : "sell",
       ordType: "market",
       sz: String(input.sizeLots),
@@ -406,6 +407,9 @@ export class OkxBroker implements ExchangeBroker {
       reduceOnly: input.reduceOnly,
       attachAlgoOrds
     };
+    if (input.posSide && input.posSide !== "net") {
+      orderPayload["posSide"] = input.posSide;
+    }
 
     const creds = this.getCredentials();
     const path = "/api/v5/trade/order";
@@ -531,48 +535,70 @@ export class OkxBroker implements ExchangeBroker {
           }
         }
       } catch {
-        // Fill details query timed out or failed; leave isFillConfirmed = false
+        // Query error; leave isFillConfirmed = false
       }
 
-      // 2. Query OKX to confirm attached protective stop algo order
-      const algoPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(input.instrumentId)}&ordType=conditional`;
-      const algoHeaders = buildOkxHeaders({
-        method: "GET",
-        path: algoPath,
-        credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
-      });
+      // C3d: Fill-query failure on submit alerts CRITICAL, emergency flattens, throws
+      if (!isFillConfirmed) {
+        if (this.notificationChannel) {
+          await this.notificationChannel.send({
+            severity: "CRITICAL",
+            title: "CRITICAL: UNCONFIRMED EXECUTION FILL",
+            body: `Order ${orderId} was placed on exchange but fill details could not be confirmed on OKX. Executing emergency flatten.`,
+            dedupKey: `unconfirmed-fill-${orderId}`
+          });
+        }
+        await this.flattenAllPositions(`Unconfirmed fill for order ${orderId}`);
+        throw new Error(
+          `Order ${orderId} fill details could not be confirmed on OKX. Emergency position flatten executed (ADR-0018).`
+        );
+      }
 
+      // 2. Query OKX to confirm attached protective stop algo order (conditional and oco)
       let confirmedAlgoId: string | null = null;
-      try {
-        const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+      for (const ordType of ["conditional", "oco"]) {
+        if (confirmedAlgoId) break;
+        const algoPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(input.instrumentId)}&ordType=${ordType}`;
+        const algoHeaders = buildOkxHeaders({
           method: "GET",
-          headers: algoHeaders
+          path: algoPath,
+          credentials: creds,
+          timestampIso: new Date(nowMs).toISOString(),
+          isDemo: this.isDemo
         });
 
-        if (algoRes.ok) {
-          const algoData = (await algoRes.json()) as {
-            code?: string;
-            data?: Array<{
-              algoId?: string;
-              algoClOrdId?: string;
-              attachAlgoClOrdId?: string;
-              state?: string;
-            }>;
-          };
-          const matches = algoData.data?.filter(
-            (a) =>
-              (a.algoClOrdId && (a.algoClOrdId === algoClOrdId || a.algoClOrdId === clOrdId)) ||
-              (a.attachAlgoClOrdId && a.attachAlgoClOrdId === algoClOrdId) ||
-              Boolean(a.algoId && (a.algoId === algoOrderId || algoData.data?.length === 1))
-          );
-          if (matches && matches.length > 0 && matches[0]?.algoId) {
-            confirmedAlgoId = matches[0].algoId;
+        try {
+          const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
+            method: "GET",
+            headers: algoHeaders
+          });
+
+          if (algoRes.ok) {
+            const algoData = (await algoRes.json()) as {
+              code?: string;
+              data?: Array<{
+                algoId?: string;
+                algoClOrdId?: string;
+                attachAlgoClOrdId?: string;
+                state?: string;
+              }>;
+            };
+            if (algoData.code === "0" && Array.isArray(algoData.data)) {
+              // C3a: match ONLY by ID equality (delete single-pending shortcut)
+              const matches = algoData.data.filter(
+                (a) =>
+                  (a.algoClOrdId && (a.algoClOrdId === algoClOrdId || a.algoClOrdId === clOrdId)) ||
+                  (a.attachAlgoClOrdId && a.attachAlgoClOrdId === algoClOrdId) ||
+                  Boolean(algoOrderId && a.algoId && a.algoId === algoOrderId)
+              );
+              if (matches.length > 0 && matches[0]?.algoId) {
+                confirmedAlgoId = matches[0].algoId;
+              }
+            }
           }
+        } catch {
+          // Query error
         }
-      } catch {
-        // Query error
       }
 
       if (!confirmedAlgoId) {
@@ -898,14 +924,150 @@ export class OkxBroker implements ExchangeBroker {
         }
       }
 
-      // 3. Verify counts match
-      if (activeExchangePositions.length !== openPositions.length) {
+      // 3. Verify each local position exists on exchange (or was closed by confirmed stop/TP fill)
+      for (const locPos of openPositions) {
+        const matchingEx = activeExchangePositions.find((p) => p.instId === locPos.instrumentId);
+        if (!matchingEx) {
+          // C3b: Check fill/order history on OKX before declaring drift!
+          let resolvedByHistory = false;
+          try {
+            const fillsPath = `/api/v5/trade/fills?instType=SWAP&instId=${encodeURIComponent(locPos.instrumentId)}`;
+            const fillsHeaders = buildOkxHeaders({
+              method: "GET",
+              path: fillsPath,
+              credentials: creds,
+              timestampIso: new Date(nowMs).toISOString(),
+              isDemo: this.isDemo
+            });
+            const fillsRes = await this.fetchFn(`https://www.okx.com${fillsPath}`, {
+              method: "GET",
+              headers: fillsHeaders
+            });
+            if (fillsRes.ok) {
+              const fillsData = (await fillsRes.json()) as {
+                code?: string;
+                data?: Array<{
+                  instId?: string;
+                  side?: string;
+                  posSide?: string;
+                  fillPx?: string;
+                  avgPx?: string;
+                  fee?: string;
+                  sz?: string;
+                  fillTime?: string;
+                  ts?: string;
+                  uTime?: string;
+                }>;
+              };
+              if (fillsData.code === "0" && Array.isArray(fillsData.data)) {
+                const closeSide = locPos.side === "long" ? "sell" : "buy";
+                const matchingFill = fillsData.data.find((f) => {
+                  const fTs = Number(f.fillTime || f.uTime || f.ts || 0);
+                  const isOpposite =
+                    f.side === closeSide &&
+                    (!f.posSide || f.posSide === "net" || f.posSide === locPos.side);
+                  return f.instId === locPos.instrumentId && isOpposite && fTs >= locPos.openedAtMs;
+                });
+                if (matchingFill && (matchingFill.fillPx || matchingFill.avgPx)) {
+                  resolvedByHistory = true;
+                  const exitPxStr = matchingFill.fillPx || matchingFill.avgPx || locPos.entryPrice;
+                  const exitPxDec = ScaledDecimal.fromString(exitPxStr);
+                  const entryPxDec = ScaledDecimal.fromString(locPos.entryPrice);
+                  const contractsDec = ScaledDecimal.fromString(locPos.contracts);
+                  const spec = defaultInstrumentSpec(locPos.instrumentId);
+                  const exitFeeDec = matchingFill.fee
+                    ? ScaledDecimal.fromString(matchingFill.fee).abs()
+                    : ScaledDecimal.zero();
+
+                  const grossPnl =
+                    locPos.side === "long"
+                      ? contractsDec.mul(spec.contractValue).mul(exitPxDec.sub(entryPxDec))
+                      : contractsDec.mul(spec.contractValue).mul(entryPxDec.sub(exitPxDec));
+
+                  const fillTimeMs = Number(matchingFill.fillTime || matchingFill.uTime || nowMs);
+
+                  // Post real PnL to ledger
+                  if (this.ledgerRepo) {
+                    const txGroup = `close-${locPos.positionId}-${fillTimeMs}`;
+                    if (grossPnl.isPositive()) {
+                      this.ledgerRepo.recordJournal({
+                        txGroupId: txGroup,
+                        ts: fillTimeMs,
+                        strategyId: locPos.strategyId,
+                        instrumentId: locPos.instrumentId,
+                        debitAccount: "cash:usdt",
+                        creditAccount: "realized_pnl:usdt",
+                        amountUsdt: grossPnl.toFixed(8),
+                        description: `Realized profit on ${locPos.positionId} from exchange fill`
+                      });
+                    } else if (grossPnl.lt(ScaledDecimal.zero())) {
+                      this.ledgerRepo.recordJournal({
+                        txGroupId: txGroup,
+                        ts: fillTimeMs,
+                        strategyId: locPos.strategyId,
+                        instrumentId: locPos.instrumentId,
+                        debitAccount: "realized_pnl:usdt",
+                        creditAccount: "cash:usdt",
+                        amountUsdt: grossPnl.abs().toFixed(8),
+                        description: `Realized loss on ${locPos.positionId} from exchange fill`
+                      });
+                    }
+
+                    if (exitFeeDec.isPositive()) {
+                      this.ledgerRepo.recordJournal({
+                        txGroupId: txGroup,
+                        ts: fillTimeMs,
+                        strategyId: locPos.strategyId,
+                        instrumentId: locPos.instrumentId,
+                        debitAccount: "fees_expense:usdt",
+                        creditAccount: "cash:usdt",
+                        amountUsdt: exitFeeDec.toFixed(8),
+                        description: `Exit execution fee on ${locPos.positionId}`
+                      });
+                    }
+                  }
+
+                  const prevFees = ScaledDecimal.fromString(locPos.feesPaidUsdt);
+                  const updated: PaperPositionRecord = {
+                    ...locPos,
+                    status: "CLOSED",
+                    closedAtMs: fillTimeMs,
+                    exitPrice: exitPxStr,
+                    exitReason: "exchange_stop_or_tp_fill",
+                    realizedPnlUsdt: grossPnl.toFixed(8),
+                    unrealizedPnlUsdt: "0.00000000",
+                    feesPaidUsdt: prevFees.add(exitFeeDec).toFixed(8)
+                  };
+                  this.localPositions.set(locPos.positionId, updated);
+                  if (this.accountRepo) {
+                    this.accountRepo.savePosition(updated);
+                  }
+                }
+              }
+            }
+          } catch {
+            // Fill history query error
+          }
+
+          if (!resolvedByHistory) {
+            driftDetails.push(
+              `Local position ${locPos.positionId} (${locPos.instrumentId}) missing on exchange with no confirmed exit fill`
+            );
+            driftPositions.push(locPos);
+          }
+        }
+      }
+
+      const activeLocalPositions = this.getOpenPositions();
+
+      // 4. Verify counts match remaining active positions
+      if (activeExchangePositions.length !== activeLocalPositions.length) {
         driftDetails.push(
-          `Position count mismatch: exchange has ${activeExchangePositions.length}, local has ${openPositions.length}`
+          `Position count mismatch: exchange has ${activeExchangePositions.length}, local has ${activeLocalPositions.length}`
         );
       }
 
-      // 4. Verify each exchange position has a corresponding local position and an attached protective stop
+      // 5. Verify each exchange position has a corresponding local position and an attached protective stop
       for (const exPos of activeExchangePositions) {
         const instId = exPos.instId ?? "unknown";
         let isExLong = true;
@@ -916,7 +1078,7 @@ export class OkxBroker implements ExchangeBroker {
           isExLong = exPos.posSide === "long";
         }
 
-        const matchingLocal = openPositions.find(
+        const matchingLocal = activeLocalPositions.find(
           (p) => p.instrumentId === instId && (p.side === "long" ? isExLong : !isExLong)
         );
         if (!matchingLocal) {
@@ -931,17 +1093,6 @@ export class OkxBroker implements ExchangeBroker {
           driftDetails.push(
             `Exchange position on ${instId} has no active protective stop algo order on OKX`
           );
-        }
-      }
-
-      // 5. Verify each local position exists on exchange
-      for (const locPos of openPositions) {
-        const matchingEx = activeExchangePositions.find((p) => p.instId === locPos.instrumentId);
-        if (!matchingEx) {
-          driftDetails.push(
-            `Local position ${locPos.positionId} (${locPos.instrumentId}) missing on exchange`
-          );
-          driftPositions.push(locPos);
         }
       }
     }
@@ -992,6 +1143,7 @@ export class OkxBroker implements ExchangeBroker {
     const creds = this.getCredentials();
     const nowMs = this.clock.nowMs();
     const failedPositionIds = new Set<string>();
+    const confirmedFills = new Map<string, { exitPrice: string; fee: ScaledDecimal }>();
 
     if (creds && creds.apiKey) {
       // 1. Explicitly cancel all resting algo orders (stops, take-profits) on exchange (M-C / ADR-0018)
@@ -1072,7 +1224,12 @@ export class OkxBroker implements ExchangeBroker {
       }
 
       // 2. Query OKX account positions to detect untracked / foreign positions
-      let exchangePositions: Array<{ instId: string; pos: string; posSide?: string }> = [];
+      let exchangePositions: Array<{
+        instId: string;
+        pos: string;
+        posSide?: string;
+        mgnMode?: string;
+      }> = [];
       try {
         const posPath = "/api/v5/account/positions";
         const posHeaders = buildOkxHeaders({
@@ -1090,11 +1247,11 @@ export class OkxBroker implements ExchangeBroker {
           const posData = (await posRes.json()) as {
             code?: string;
             msg?: string;
-            data?: Array<{ instId?: string; pos?: string; posSide?: string }>;
+            data?: Array<{ instId?: string; pos?: string; posSide?: string; mgnMode?: string }>;
           };
           if (posData.code === "0" && Array.isArray(posData.data)) {
             exchangePositions = posData.data.filter(
-              (p): p is { instId: string; pos: string; posSide?: string } =>
+              (p): p is { instId: string; pos: string; posSide?: string; mgnMode?: string } =>
                 Boolean(p.instId && p.pos && p.pos !== "0")
             );
           } else if (this.notificationChannel) {
@@ -1132,15 +1289,27 @@ export class OkxBroker implements ExchangeBroker {
         if (pos.status === "OPEN") {
           const flatClOrdId =
             `kflat${nowMs.toString(36)}${sha256Hex(pos.positionId).slice(0, 10)}`.slice(0, 32);
-          const flatBody = JSON.stringify({
+
+          const matchingExPos = exchangePositions.find((ep) => ep.instId === pos.instrumentId);
+          const flatTdMode = matchingExPos?.mgnMode ?? "isolated";
+          const flatPosSide =
+            matchingExPos?.posSide && matchingExPos.posSide !== "net"
+              ? matchingExPos.posSide
+              : undefined;
+
+          const flatBodyObj: Record<string, unknown> = {
             instId: pos.instrumentId,
-            tdMode: "isolated",
+            tdMode: flatTdMode,
             side: pos.side === "long" ? "sell" : "buy",
             ordType: "market",
             sz: pos.contracts,
             reduceOnly: true,
             clOrdId: flatClOrdId
-          });
+          };
+          if (flatPosSide) {
+            flatBodyObj["posSide"] = flatPosSide;
+          }
+          const flatBody = JSON.stringify(flatBodyObj);
 
           const flatHeaders = buildOkxHeaders({
             method: "POST",
@@ -1152,6 +1321,7 @@ export class OkxBroker implements ExchangeBroker {
           });
 
           let orderSuccess = false;
+          let flatOrdId: string | null = null;
           let errMsg = "";
           try {
             const flatRes = await this.fetchFn("https://www.okx.com/api/v5/trade/order", {
@@ -1164,12 +1334,15 @@ export class OkxBroker implements ExchangeBroker {
               const resData = (await flatRes.json()) as {
                 code?: string;
                 msg?: string;
-                data?: Array<{ sCode?: string; sMsg?: string }>;
+                data?: Array<{ ordId?: string; sCode?: string; sMsg?: string }>;
               };
               if (resData.code === "0") {
                 const item = resData.data?.[0];
                 if (!item || !item.sCode || item.sCode === "0") {
                   orderSuccess = true;
+                  if (item?.ordId) {
+                    flatOrdId = item.ordId;
+                  }
                 } else {
                   errMsg = `sCode ${item.sCode}: ${item.sMsg ?? "unknown sub-error"}`;
                 }
@@ -1184,16 +1357,66 @@ export class OkxBroker implements ExchangeBroker {
             errMsg = err instanceof Error ? err.message : String(err);
           }
 
-          if (!orderSuccess) {
+          let closeFillConfirmed = false;
+          let realExitPxStr: string | null = null;
+          let realExitFee: ScaledDecimal | null = null;
+
+          // C3c: Query real fill details from OKX
+          if (orderSuccess && flatOrdId) {
+            try {
+              const fillQueryPath = `/api/v5/trade/order?instId=${encodeURIComponent(pos.instrumentId)}&ordId=${encodeURIComponent(flatOrdId)}`;
+              const fillQueryHeaders = buildOkxHeaders({
+                method: "GET",
+                path: fillQueryPath,
+                credentials: creds,
+                timestampIso: new Date(nowMs).toISOString(),
+                isDemo: this.isDemo
+              });
+              const fillRes = await this.fetchFn(`https://www.okx.com${fillQueryPath}`, {
+                method: "GET",
+                headers: fillQueryHeaders
+              });
+              if (fillRes.ok) {
+                const fillData = (await fillRes.json()) as {
+                  code?: string;
+                  data?: Array<{
+                    avgPx?: string;
+                    fillPx?: string;
+                    fee?: string;
+                    state?: string;
+                  }>;
+                };
+                if (fillData.code === "0") {
+                  const fItem = fillData.data?.[0];
+                  if (fItem && fItem.state === "filled" && (fItem.avgPx || fItem.fillPx)) {
+                    realExitPxStr = fItem.avgPx || fItem.fillPx || null;
+                    if (fItem.fee && fItem.fee.trim() !== "") {
+                      realExitFee = ScaledDecimal.fromString(fItem.fee).abs();
+                    }
+                    closeFillConfirmed = true;
+                  }
+                }
+              }
+            } catch {
+              // Fill query failed
+            }
+          }
+
+          if (!orderSuccess || !closeFillConfirmed || !realExitPxStr) {
             failedPositionIds.add(pos.positionId);
             if (this.notificationChannel) {
               await this.notificationChannel.send({
                 severity: "CRITICAL",
                 title: "EMERGENCY FLATTEN FAILED FOR POSITION",
-                body: `Failed to close position ${pos.positionId} (${pos.instrumentId}) on OKX: ${errMsg}`,
+                body: `Failed to confirm execution fill for position ${pos.positionId} (${pos.instrumentId}) on OKX: ${errMsg || "unconfirmed fill"}. Position remains OPEN; no fictional PnL posted.`,
                 dedupKey: `flatten-fail-${pos.positionId}-${nowMs}`
               });
             }
+          } else {
+            confirmedFills.set(pos.positionId, {
+              exitPrice: realExitPxStr,
+              fee: realExitFee ?? ScaledDecimal.zero()
+            });
           }
         }
       }
@@ -1221,15 +1444,23 @@ export class OkxBroker implements ExchangeBroker {
             `kflatEx${nowMs.toString(36)}${sha256Hex(exPos.instId).slice(0, 10)}`.slice(0, 32);
           const foreignSide = unhedgedQty.isPositive() ? "sell" : "buy";
           const foreignSz = unhedgedQty.abs().toString();
-          const foreignBody = JSON.stringify({
+          const foreignTdMode = exPos.mgnMode ?? "isolated";
+          const foreignPosSide =
+            exPos.posSide && exPos.posSide !== "net" ? exPos.posSide : undefined;
+
+          const foreignBodyObj: Record<string, unknown> = {
             instId: exPos.instId,
-            tdMode: "isolated",
+            tdMode: foreignTdMode,
             side: foreignSide,
             ordType: "market",
             sz: foreignSz,
             reduceOnly: true,
             clOrdId: foreignClOrdId
-          });
+          };
+          if (foreignPosSide) {
+            foreignBodyObj["posSide"] = foreignPosSide;
+          }
+          const foreignBody = JSON.stringify(foreignBodyObj);
 
           const foreignHeaders = buildOkxHeaders({
             method: "POST",
@@ -1288,21 +1519,40 @@ export class OkxBroker implements ExchangeBroker {
 
     for (const [id, pos] of this.localPositions.entries()) {
       if (pos.status === "OPEN" && !failedPositionIds.has(pos.positionId)) {
-        let exitPriceDec = ScaledDecimal.fromString(pos.entryPrice);
-        if (this.marketDataRepo) {
-          try {
-            const bars = this.marketDataRepo.getConfirmedBarsAsOf({
-              instrumentId: pos.instrumentId,
-              timeframe: "1H",
-              asOfMs: nowMs,
-              limit: 1
-            });
-            if (bars && bars.length > 0 && bars[0]) {
-              exitPriceDec = ScaledDecimal.fromString(bars[0].close);
-            }
-          } catch {
-            // fallback to entryPrice
+        let exitPriceDec: ScaledDecimal;
+        let exitFee: ScaledDecimal;
+
+        if (creds && creds.apiKey) {
+          const confirmed = confirmedFills.get(pos.positionId);
+          if (!confirmed) {
+            continue;
           }
+          exitPriceDec = ScaledDecimal.fromString(confirmed.exitPrice);
+          exitFee = confirmed.fee;
+        } else {
+          // Offline / mock mode fallback
+          exitPriceDec = ScaledDecimal.fromString(pos.entryPrice);
+          if (this.marketDataRepo) {
+            try {
+              const bars = this.marketDataRepo.getConfirmedBarsAsOf({
+                instrumentId: pos.instrumentId,
+                timeframe: "1H",
+                asOfMs: nowMs,
+                limit: 1
+              });
+              if (bars && bars.length > 0 && bars[0]) {
+                exitPriceDec = ScaledDecimal.fromString(bars[0].close);
+              }
+            } catch {
+              // fallback to entryPrice
+            }
+          }
+          const contractsDecFallback = ScaledDecimal.fromString(pos.contracts);
+          const specFallback = defaultInstrumentSpec(pos.instrumentId);
+          const exitNotional = contractsDecFallback
+            .mul(specFallback.contractValue)
+            .mul(exitPriceDec);
+          exitFee = exitNotional.mul(ScaledDecimal.fromString("0.0006"));
         }
 
         const entryPriceDec = ScaledDecimal.fromString(pos.entryPrice);
@@ -1313,8 +1563,8 @@ export class OkxBroker implements ExchangeBroker {
             ? contractsDec.mul(spec.contractValue).mul(exitPriceDec.sub(entryPriceDec))
             : contractsDec.mul(spec.contractValue).mul(entryPriceDec.sub(exitPriceDec));
 
-        const exitNotional = contractsDec.mul(spec.contractValue).mul(exitPriceDec);
-        const exitFee = exitNotional.mul(ScaledDecimal.fromString("0.0006"));
+        // Use confirmed real fee if available, else exitNotional fee
+        const effectiveExitFee = exitFee;
 
         if (this.ledgerRepo) {
           const txGroup = `close-${pos.positionId}-${nowMs}`;
@@ -1342,7 +1592,7 @@ export class OkxBroker implements ExchangeBroker {
             });
           }
 
-          if (exitFee.isPositive()) {
+          if (effectiveExitFee.isPositive()) {
             this.ledgerRepo.recordJournal({
               txGroupId: txGroup,
               ts: nowMs,
@@ -1350,14 +1600,14 @@ export class OkxBroker implements ExchangeBroker {
               instrumentId: pos.instrumentId,
               debitAccount: "fees_expense:usdt",
               creditAccount: "cash:usdt",
-              amountUsdt: exitFee.toFixed(8),
+              amountUsdt: effectiveExitFee.toFixed(8),
               description: `Exit execution fee on ${pos.positionId}`
             });
           }
         }
 
         const prevFees = ScaledDecimal.fromString(pos.feesPaidUsdt);
-        const totalFees = prevFees.add(exitFee);
+        const totalFees = prevFees.add(effectiveExitFee);
 
         const closedPos: PaperPositionRecord = {
           ...pos,
