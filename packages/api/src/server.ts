@@ -1390,8 +1390,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const stageStartMs = existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs;
         const daysInStage = Math.max(0, (nowMs - stageStartMs) / 86_400_000);
 
-        // Segregate shadow advisor evaluations from paper execution records (M-H)
-        const actualShadowTradesCount = dataStore.auditRepo.countShadowEvaluations(body.strategyId);
+        // Resolve and query segregated shadow advisor evaluations (T7 / M-H)
+        dataStore.shadowRepo.resolvePendingDecisions({
+          marketDataRepo: dataStore.marketDataRepo
+        });
+        const shadowStats = dataStore.shadowRepo.getShadowStats(body.strategyId);
 
         const evaluated = evaluator.evaluate({
           strategyId: body.strategyId,
@@ -1401,7 +1404,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           paperDrawdownPct,
           paperDurationDays: currentStage === "Paper" ? daysInStage : 0,
           shadowDurationDays: currentStage === "Shadow" ? daysInStage : 0,
-          shadowTradesCount: actualShadowTradesCount,
+          shadowTradesCount: shadowStats.resolvedCount,
+          shadowExpectancyR: shadowStats.expectancyR,
           asOfMs: nowMs
         });
 
@@ -1508,38 +1512,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             }
           };
         }
-        if (!existingPromo.replayGatePassed) {
-          return {
-            status: 400,
-            body: {
-              error: `Strategy ${body.strategyId} has not passed the quantitative replay gate.`
-            }
-          };
-        }
-        if (existingPromo.eligibleNextStage !== body.targetStage) {
-          return {
-            status: 400,
-            body: {
-              error: `Strategy ${body.strategyId} is not eligible for ${body.targetStage} (eligible: ${existingPromo.eligibleNextStage ?? "None"}).`
-            }
-          };
-        }
 
-        let rampAllocationPct = 100;
-        if (body.targetStage === "Live-Ramp") {
-          rampAllocationPct =
-            existingPromo.paperTradesCount >= 40
-              ? 50
-              : existingPromo.paperTradesCount >= 20
-                ? 25
-                : 10;
-        }
-
-        // Re-evaluate eligibility for the newly assigned stage to prevent skipping gates (C9)
         const active = getActiveSnapshot();
         const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
         const experiments = dataStore.experimentRepo.listExperiments(50);
         const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
+
         const allPositions = dataStore.paperAccountRepo.listAllPositions();
         const strategyPositions = allPositions.filter(
           (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
@@ -1548,31 +1526,74 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
 
         const nowMs = clock.nowMs();
+        const stageStartMs = existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs;
+        const daysInStage = Math.max(0, (nowMs - stageStartMs) / 86_400_000);
 
-        // Segregate shadow advisor evaluations from paper execution records (M-H)
-        const actualShadowTradesCount = dataStore.auditRepo.countShadowEvaluations(body.strategyId);
+        dataStore.shadowRepo.resolvePendingDecisions({
+          marketDataRepo: dataStore.marketDataRepo
+        });
+        const shadowStats = dataStore.shadowRepo.getShadowStats(body.strategyId);
 
-        const evaluated = evaluator.evaluate({
+        // Re-evaluate current eligibility with live data at promote time (T7: do not trust stored eligibleNextStage)
+        const currentEvaluation = evaluator.evaluate({
           strategyId: body.strategyId,
-          currentStage: body.targetStage,
+          currentStage: existingPromo.currentStage,
           latestExperiment: latestExp,
           paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct,
+          paperDurationDays: existingPromo.currentStage === "Paper" ? daysInStage : 0,
+          shadowDurationDays: existingPromo.currentStage === "Shadow" ? daysInStage : 0,
+          shadowTradesCount: shadowStats.resolvedCount,
+          shadowExpectancyR: shadowStats.expectancyR,
+          asOfMs: nowMs
+        });
+
+        if (!currentEvaluation.replayGatePassed) {
+          return {
+            status: 400,
+            body: {
+              error: `Strategy ${body.strategyId} has not passed the quantitative replay gate.`
+            }
+          };
+        }
+        if (currentEvaluation.eligibleNextStage !== body.targetStage) {
+          return {
+            status: 400,
+            body: {
+              error: `Strategy ${body.strategyId} is not eligible for ${body.targetStage} (live eligibility: ${currentEvaluation.eligibleNextStage ?? "None"}).`
+            }
+          };
+        }
+
+        let rampAllocationPct = 100;
+        if (body.targetStage === "Live-Ramp") {
+          rampAllocationPct =
+            actualPaperTradesCount >= 40 ? 50 : actualPaperTradesCount >= 20 ? 25 : 10;
+        }
+
+        // Evaluate eligible next stage from the newly entered target stage (C9)
+        const targetEvaluation = evaluator.evaluate({
+          strategyId: body.strategyId,
+          currentStage: body.targetStage,
+          latestExperiment: latestExp,
+          paperTradesCount: 0,
+          paperDrawdownPct: 0,
           paperDurationDays: 0,
           shadowDurationDays: 0,
-          shadowTradesCount: actualShadowTradesCount,
+          shadowTradesCount: 0,
+          shadowExpectancyR: 0,
           asOfMs: nowMs
         });
 
         const updatedPromo = dataStore.promotionRepo.upsertPromotion({
           strategyId: body.strategyId,
           currentStage: body.targetStage,
-          latestExperimentId: existingPromo.latestExperimentId,
-          replayGatePassed: existingPromo.replayGatePassed,
+          latestExperimentId: latestExp?.experimentId ?? existingPromo.latestExperimentId,
+          replayGatePassed: currentEvaluation.replayGatePassed,
           paperTradesCount: actualPaperTradesCount,
           paperDrawdownPct,
           rampAllocationPct,
-          eligibleNextStage: evaluated.eligibleNextStage,
+          eligibleNextStage: targetEvaluation.eligibleNextStage,
           demotionReason: null,
           promotedAtMs: nowMs,
           updatedAtMs: nowMs
@@ -1767,6 +1788,32 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           });
 
           const agreement = baselineChosen?.proposalId === shadowResult.chosenProposalId;
+
+          // Record shadow pick with signal bar and dedupe per (strategy, instrument, bar) (T7 / M-H)
+          if (shadowResult.chosenProposalId) {
+            const chosenProp = menu.proposals.find(
+              (p) => p.proposalId === shadowResult.chosenProposalId
+            );
+            const signalBar = bars[bars.length - 1];
+            if (chosenProp && signalBar) {
+              dataStore.shadowRepo.recordDecision({
+                strategyId: body.strategyId,
+                instrumentId: body.instrumentId,
+                signalBarOpenTs: signalBar.openTs,
+                signalBarCloseTs: signalBar.closeTs,
+                proposalId: chosenProp.proposalId,
+                side: chosenProp.side,
+                entryPrice: chosenProp.entryPrice,
+                protectiveStopPrice: chosenProp.protectiveStopPrice,
+                takeProfitPrice: chosenProp.takeProfitPrice ?? null,
+                createdAtMs: asOfMs
+              });
+
+              dataStore.shadowRepo.resolvePendingDecisions({
+                marketDataRepo: dataStore.marketDataRepo
+              });
+            }
+          }
 
           dataStore.auditRepo.append({
             ts: clock.nowMs(),

@@ -100,6 +100,8 @@ export {
   SecretKeyNameSchema,
   SecretMetadataRecordSchema,
   SettledFundingRateSchema,
+  ShadowDecisionRecordSchema,
+  ShadowStatsSchema,
   StrategyPromotionRecordSchema,
   TIMEFRAME_DURATION_MS,
   type AdminSessionRecord,
@@ -172,6 +174,10 @@ export {
   type SecretMetadataRecord,
   type SecretVaultRepository,
   type SettledFundingRate,
+  type ShadowDecisionRecord,
+  type ShadowStats,
+  type ShadowRepository,
+  type RecordShadowDecisionInput,
   type StrategyPromotionRecord
 } from "./ports.js";
 export {

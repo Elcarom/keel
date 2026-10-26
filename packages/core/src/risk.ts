@@ -370,6 +370,7 @@ export class PromotionLadderEvaluator {
     readonly paperDurationDays?: number | undefined;
     readonly shadowDurationDays?: number | undefined;
     readonly shadowTradesCount?: number | undefined;
+    readonly shadowExpectancyR?: number | undefined;
   }): StrategyPromotionRecord {
     const exp = input.latestExperiment;
     const replayGatePassed =
@@ -479,7 +480,8 @@ export class PromotionLadderEvaluator {
       rampAllocationPct = 100;
       const meetsShadowDays = (input.shadowDurationDays ?? 0) >= this.config.shadowMinDays;
       const meetsShadowTrades = (input.shadowTradesCount ?? 0) >= this.config.shadowMinTrades;
-      if (replayGatePassed && meetsShadowDays && meetsShadowTrades) {
+      const nonNegativeExpectancy = (input.shadowExpectancyR ?? 0) >= 0;
+      if (replayGatePassed && meetsShadowDays && meetsShadowTrades && nonNegativeExpectancy) {
         eligibleNextStage = "Paper";
       } else {
         eligibleNextStage = null;

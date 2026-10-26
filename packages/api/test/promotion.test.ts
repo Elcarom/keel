@@ -68,17 +68,68 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     expect(unvettedRes.statusCode).toBe(400);
 
     // 3. Seed an experiment and promotion record where strategy passed replay gate and is eligible for Paper -> Demo
+    dataStore.experimentRepo.saveExperiment({
+      experimentId: "exp-1",
+      strategyId: "donchian-trend",
+      strategyVersion: "1.0.0",
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      dataSnapshotId: "0".repeat(64),
+      configHash: "1".repeat(64),
+      fromTs: 1_700_000_000_000,
+      toTs: 1_710_000_000_000,
+      totalTrades: 200,
+      winRate: 0.55,
+      avgR: 0.35,
+      netPnlUsdt: "1250.00",
+      totalFeesUsdt: "45.00",
+      totalFundingUsdt: "-12.00",
+      sharpeRatio: 1.5,
+      deflatedSharpeRatio: 0.95,
+      maxDrawdownPct: 5.0,
+      stressNetExpectancyR: 0.45,
+      walkForwardOutOfSampleAvgR: 0.25,
+      replayGatePassed: true,
+      createdAtMs: clock.nowMs()
+    });
+
+    const thirtyOneDaysAgo = clock.nowMs() - 31 * 86_400_000;
+    for (let i = 0; i < 50; i++) {
+      dataStore.paperAccountRepo.savePosition({
+        positionId: `paper-pos-${i}`,
+        strategyId: "donchian-trend",
+        instrumentId: "BTC-USDT-SWAP",
+        side: "long",
+        contracts: "1",
+        entryPrice: "50000.00",
+        protectiveStopPrice: "49000.00",
+        takeProfitPrice: null,
+        initialRiskUsdt: "10.00",
+        unrealizedPnlUsdt: "0.00",
+        realizedPnlUsdt: "5.00",
+        feesPaidUsdt: "0.50",
+        fundingPaidUsdt: "0.00",
+        openedAtMs: thirtyOneDaysAgo + i * 3600_000,
+        lastFundingSettledTs: thirtyOneDaysAgo + i * 3600_000,
+        status: "CLOSED",
+        closedAtMs: thirtyOneDaysAgo + i * 3600_000 + 1800_000,
+        exitPrice: "50500.00",
+        exitReason: "take_profit"
+      });
+    }
+
     dataStore.promotionRepo.upsertPromotion({
       strategyId: "donchian-trend",
       currentStage: "Paper",
       latestExperimentId: "exp-1",
       replayGatePassed: true,
-      paperTradesCount: 25,
+      paperTradesCount: 50,
       paperDrawdownPct: 1.5,
       rampAllocationPct: 100,
       eligibleNextStage: "Demo",
       demotionReason: null,
-      updatedAtMs: clock.nowMs()
+      promotedAtMs: thirtyOneDaysAgo,
+      updatedAtMs: thirtyOneDaysAgo
     });
 
     // 4. Attempt promoting to Demo (Gate G2) without password -> 403 step-up required
@@ -591,6 +642,93 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     expect(evalRes.statusCode).toBe(200);
     const evalBody = evalRes.json() as { promotion: { eligibleNextStage: string | null } };
     expect(evalBody.promotion.eligibleNextStage).toBeNull();
+
+    await app.close();
+  });
+
+  it("re-evaluates eligibility at promote time rather than trusting stored eligibleNextStage (T7)", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    let bootstrapToken = "";
+    const app = await createKeelServer({
+      config,
+      clock,
+      dataStore,
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    const bootRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/bootstrap",
+      headers: { "cf-connecting-ip": "203.0.113.42", "x-forwarded-proto": "https" },
+      payload: {
+        bootstrapToken,
+        username: "captain",
+        password: "correct-horse-battery-staple"
+      }
+    });
+    const cookieHeader = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
+
+    dataStore.experimentRepo.saveExperiment({
+      experimentId: "exp-pass",
+      strategyId: "donchian-trend",
+      strategyVersion: "1.0.0",
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      dataSnapshotId: "0".repeat(64),
+      configHash: "1".repeat(64),
+      fromTs: 1_700_000_000_000,
+      toTs: 1_710_000_000_000,
+      totalTrades: 200,
+      winRate: 0.55,
+      avgR: 0.35,
+      netPnlUsdt: "1250.00",
+      totalFeesUsdt: "45.00",
+      totalFundingUsdt: "-12.00",
+      sharpeRatio: 1.5,
+      deflatedSharpeRatio: 0.95,
+      maxDrawdownPct: 5.0,
+      stressNetExpectancyR: 0.45,
+      walkForwardOutOfSampleAvgR: 0.25,
+      replayGatePassed: true,
+      createdAtMs: clock.nowMs()
+    });
+
+    // Artificially store eligibleNextStage as "Paper", even though actual shadow criteria are not met!
+    const yesterdayMs = clock.nowMs() - 86_400_000;
+    dataStore.promotionRepo.upsertPromotion({
+      strategyId: "donchian-trend",
+      currentStage: "Shadow",
+      latestExperimentId: "exp-pass",
+      replayGatePassed: true,
+      paperTradesCount: 0,
+      paperDrawdownPct: 0.0,
+      rampAllocationPct: 100,
+      eligibleNextStage: "Paper", // Stored state says eligible, but live data is NOT!
+      demotionReason: null,
+      promotedAtMs: yesterdayMs,
+      updatedAtMs: yesterdayMs
+    });
+
+    const promoteRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/promotion/promote",
+      headers: { cookie: cookieHeader },
+      payload: { strategyId: "donchian-trend", targetStage: "Paper" }
+    });
+
+    // Must reject because promote re-evaluates current data at runtime
+    expect(promoteRes.statusCode).toBe(400);
+    const promoteBody = promoteRes.json() as { error: string };
+    expect(promoteBody.error).toContain("not eligible");
 
     await app.close();
   });

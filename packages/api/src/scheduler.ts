@@ -256,6 +256,15 @@ export class UnattendedScheduler {
           strategyId: null,
           equityUsdt: portfolioMetrics.currentEquityUsdt
         });
+
+        // Resolve any pending shadow decisions across ingested confirmed bars (T7)
+        try {
+          this.dataStore.shadowRepo.resolvePendingDecisions({
+            marketDataRepo: this.dataStore.marketDataRepo
+          });
+        } catch (err) {
+          errors.push(`Shadow resolution failed: ${String(err)}`);
+        }
       }
 
       // 3. In Demo and Live modes, maintain honest DMS heartbeat and position reconciliation
