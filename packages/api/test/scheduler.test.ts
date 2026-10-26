@@ -362,6 +362,13 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     // Advance clock past all 10 bars
     clock.advanceMs(15 * 3600_000);
 
+    // Strategy was enabled at startTs, accumulating a 10-bar backlog (C2)
+    dataStore.paperAccountRepo.setSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1",
+      anchorCloseTs: startTs
+    });
+
     const scheduler = new UnattendedScheduler({
       clock,
       dataStore,
@@ -435,6 +442,13 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
 
     clock.advanceMs((totalBars + 5) * 3600_000);
 
+    // Strategy was enabled at startTs, accumulating a 505-bar backlog (C2)
+    dataStore.paperAccountRepo.setSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1",
+      anchorCloseTs: startTs
+    });
+
     const scheduler = new UnattendedScheduler({
       clock,
       dataStore,
@@ -470,5 +484,83 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     const finalCandle = candles[504];
     expect(finalCandle).toBeDefined();
     expect(finalCloseTs).toBe(finalCandle ? finalCandle.openTs + 3600_000 : -1);
+  });
+
+  it("C2: newly enabled (instrument, strategy) anchors at latest confirmed bar and excludes quarantined 2026 bars (zero ticks on 20,000 history bars)", async () => {
+    // 20,000 hours is ~833 days (~2.28 years). Starting from 2024-01-01 (1_704_067_200_000)
+    // spans well past 2026-01-01 (SEALED_2026_HOLDOUT_START_TS = 1_767_225_600_000)
+    const startTs = 1_704_067_200_000;
+    const totalBars = 20_000;
+    const latestBarCloseTs = startTs + totalBars * 3600_000;
+
+    // Clock is set after all 20,000 bars have been stored, but 10 days ahead so none are "live present"
+    const clock = new ManualClock(latestBarCloseTs + 10 * 86_400_000);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    // Seed 20,000 confirmed bars in chunks using raw DB / bulk ingestion
+    const candles = [];
+    for (let i = 0; i < totalBars; i++) {
+      const openTs = startTs + i * 3600_000;
+      candles.push({
+        openTs,
+        open: "50000.00",
+        high: "51000.00",
+        low: "49000.00",
+        close: "50500.00",
+        volumeContracts: "10",
+        volumeQuote: "505000.00",
+        confirm: "1" as const
+      });
+    }
+
+    // Ingest in chunks of 5000
+    for (let i = 0; i < totalBars; i += 5000) {
+      dataStore.marketDataRepo.ingestOkxCandles({
+        instrumentId: "BTC-USDT-SWAP",
+        timeframe: "1H",
+        candles: candles.slice(i, i + 5000)
+      });
+    }
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // On first step with a newly enabled strategy, it must anchor at the latest confirmed bar (latestBarCloseTs)
+    // and execute ZERO ticks on the 20,000 historical bars
+    const step1 = await scheduler.stepOnce();
+    expect(step1.ok).toBe(true);
+    expect(step1.ticksExecuted).toBe(0);
+
+    // Verify anchor was stored in the new scheduler_anchors table
+    const anchorCloseTs = dataStore.paperAccountRepo.getSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1"
+    });
+    expect(anchorCloseTs).toBe(latestBarCloseTs);
+
+    // No paper trades or positions were opened on ancient history
+    const allPositions = dataStore.paperAccountRepo.listAllPositions();
+    expect(allPositions).toHaveLength(0);
   });
 });

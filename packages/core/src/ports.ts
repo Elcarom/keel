@@ -607,6 +607,16 @@ export interface PaperAccountRepository {
     readonly instrumentId: string;
     readonly proposal: Proposal | null;
   }): void;
+  getSchedulerAnchor(params: {
+    readonly instrumentId: string;
+    readonly strategyId: string;
+  }): number | null;
+  setSchedulerAnchor(params: {
+    readonly instrumentId: string;
+    readonly strategyId: string;
+    readonly anchorCloseTs: number;
+    readonly createdAtMs?: number | undefined;
+  }): void;
 }
 
 export const PromotionStageSchema = z.enum([
