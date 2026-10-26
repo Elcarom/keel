@@ -154,6 +154,14 @@ CREATE TABLE IF NOT EXISTS shadow_decisions (
   UNIQUE (strategy_id, instrument_id, signal_bar_close_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_decisions_lookup ON shadow_decisions(strategy_id, status);
+
+CREATE TABLE IF NOT EXISTS scheduler_anchors (
+  instrument_id TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  anchor_close_ts INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (instrument_id, strategy_id)
+);
 `;
 
 function mapLedgerRow(row: Record<string, unknown>): LedgerEntryRecord {
@@ -688,6 +696,37 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
            ON CONFLICT(strategy_id, instrument_id) DO UPDATE SET proposal_json = excluded.proposal_json`
         ).run(params.strategyId, params.instrumentId, JSON.stringify(params.proposal));
       }
+    },
+
+    getSchedulerAnchor(params: {
+      readonly instrumentId: string;
+      readonly strategyId: string;
+    }): number | null {
+      const row = db
+        .prepare(
+          `SELECT anchor_close_ts FROM scheduler_anchors WHERE instrument_id = ? AND strategy_id = ?`
+        )
+        .get(params.instrumentId, params.strategyId) as { anchor_close_ts: number } | undefined;
+      return row ? Number(row.anchor_close_ts) : null;
+    },
+
+    setSchedulerAnchor(params: {
+      readonly instrumentId: string;
+      readonly strategyId: string;
+      readonly anchorCloseTs: number;
+      readonly createdAtMs?: number | undefined;
+    }): void {
+      db.prepare(
+        `INSERT INTO scheduler_anchors (instrument_id, strategy_id, anchor_close_ts, created_at_ms)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(instrument_id, strategy_id) DO UPDATE SET
+           anchor_close_ts = excluded.anchor_close_ts`
+      ).run(
+        params.instrumentId,
+        params.strategyId,
+        params.anchorCloseTs,
+        params.createdAtMs ?? Date.now()
+      );
     }
   };
 }

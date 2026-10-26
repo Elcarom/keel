@@ -102,9 +102,24 @@ export class PaperBroker implements Broker {
     const positionsOpened: PaperPositionRecord[] = [];
     const vetoedProposals: { proposal: Proposal; reason: string }[] = [];
 
-    // Per-bar idempotency: check if bar was already processed for this (instrument, strategy)
+    // Per-bar idempotency & anchor enforcement (C2): check if bar was already processed or is at/before anchor
     const strategyId = strategy?.strategyId;
     if (strategyId) {
+      const anchorCloseTs = this.paperAccountRepo.getSchedulerAnchor({
+        instrumentId: bar.instrumentId,
+        strategyId
+      });
+      if (anchorCloseTs !== null && bar.closeTs <= anchorCloseTs) {
+        return {
+          asOfMs,
+          barEvaluated: null,
+          positionsClosed,
+          positionsOpened,
+          vetoedProposals,
+          trialBalance: this.ledgerRepo.getTrialBalance()
+        };
+      }
+
       const lastCloseTs = this.paperAccountRepo.getLastProcessedBarCloseTs({
         instrumentId: bar.instrumentId,
         strategyId

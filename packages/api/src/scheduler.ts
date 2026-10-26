@@ -1,4 +1,5 @@
 import {
+  SEALED_2026_HOLDOUT_START_TS,
   type Clock,
   type RiskConfig,
   type SystemConfig,
@@ -102,6 +103,38 @@ export class UnattendedScheduler {
     const errors: string[] = [];
 
     try {
+      // 0. Anchor newly enabled (instrument, strategy) pairs at the latest confirmed bar at enabling time (C2)
+      for (const instId of this.instruments) {
+        for (const stratId of this.strategies) {
+          const existingAnchor = this.dataStore.paperAccountRepo.getSchedulerAnchor({
+            instrumentId: instId,
+            strategyId: stratId
+          });
+          if (existingAnchor === null) {
+            const latestBars = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
+              instrumentId: instId,
+              timeframe: "1H",
+              asOfMs: nowMs,
+              limit: 1
+            });
+            const latest = latestBars[0] ?? null;
+            if (latest !== null) {
+              this.dataStore.paperAccountRepo.setSchedulerAnchor({
+                instrumentId: instId,
+                strategyId: stratId,
+                anchorCloseTs: latest.closeTs,
+                createdAtMs: nowMs
+              });
+              this.dataStore.paperAccountRepo.recordProcessedBar({
+                instrumentId: instId,
+                strategyId: stratId,
+                closeTs: latest.closeTs
+              });
+            }
+          }
+        }
+      }
+
       // 1. Ingest newly confirmed 1H bars for each tracked instrument
       for (const instId of this.instruments) {
         if (this.ingestor) {
@@ -133,10 +166,14 @@ export class UnattendedScheduler {
           }
         }
 
-        // 2. Step strategy evaluation on all unprocessed confirmed bars in chronological order (capped at 500 per step) (R6)
+        // 2. Step strategy evaluation on all unprocessed confirmed bars in chronological order (capped at 500 per step) (R6, C2)
         for (const stratId of this.strategies) {
           try {
             const strategy = resolveStrategyById(stratId);
+            const anchorCloseTs = this.dataStore.paperAccountRepo.getSchedulerAnchor({
+              instrumentId: instId,
+              strategyId: stratId
+            });
             const lastProcessedCloseTs = this.dataStore.paperAccountRepo.getLastProcessedBarCloseTs(
               {
                 instrumentId: instId,
@@ -144,17 +181,43 @@ export class UnattendedScheduler {
               }
             );
 
-            const fromOpenTs = lastProcessedCloseTs !== null ? lastProcessedCloseTs : 0;
-            const unprocessedBars = this.dataStore.marketDataRepo
-              .getConfirmedBarsInRange({
-                instrumentId: instId,
-                timeframe: "1H",
-                fromOpenTs,
-                toCloseTs: nowMs
-              })
-              .slice(0, 500);
+            // Bars at or before the anchor are never evaluated by the scheduler (C2)
+            const minAllowedCloseTs = Math.max(anchorCloseTs ?? 0, lastProcessedCloseTs ?? 0);
+            const fromOpenTs = minAllowedCloseTs;
+            const candidateBars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
+              instrumentId: instId,
+              timeframe: "1H",
+              fromOpenTs,
+              toCloseTs: nowMs
+            });
 
-            for (const bar of unprocessedBars) {
+            const eligibleBars = [];
+            for (const bar of candidateBars) {
+              if (bar.closeTs <= minAllowedCloseTs) {
+                continue;
+              }
+
+              // Scheduler never evaluates bars with openTs >= SEALED_2026_HOLDOUT_START_TS
+              // unless that is the live present (closeTs within 2 hours of clock.nowMs()) (C2)
+              if (bar.openTs >= SEALED_2026_HOLDOUT_START_TS) {
+                const isLivePresent = Math.abs(nowMs - bar.closeTs) <= 2 * 3600_000;
+                if (!isLivePresent) {
+                  this.dataStore.paperAccountRepo.recordProcessedBar({
+                    instrumentId: instId,
+                    strategyId: stratId,
+                    closeTs: bar.closeTs
+                  });
+                  continue;
+                }
+              }
+
+              eligibleBars.push(bar);
+              if (eligibleBars.length >= 500) {
+                break;
+              }
+            }
+
+            for (const bar of eligibleBars) {
               const featureBars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
                 instrumentId: instId,
                 timeframe: "1H",
@@ -198,7 +261,7 @@ export class UnattendedScheduler {
               }
             }
 
-            if (unprocessedBars.length > 0) {
+            if (eligibleBars.length > 0) {
               const strategyMetrics = this.dataStore.ledgerRepo.getRiskMetrics({
                 asOfMs: nowMs,
                 strategyId: stratId
