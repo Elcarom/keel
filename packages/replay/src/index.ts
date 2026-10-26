@@ -759,10 +759,10 @@ export class ReplayEngine {
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
-    if (
-      input.toTs >= SEALED_2026_HOLDOUT_START_TS ||
-      input.fromTs >= SEALED_2026_HOLDOUT_START_TS
-    ) {
+    const touches2026Holdout =
+      input.toTs >= SEALED_2026_HOLDOUT_START_TS || input.fromTs >= SEALED_2026_HOLDOUT_START_TS;
+
+    if (touches2026Holdout) {
       if (!input.allowHoldoutAccess) {
         throw new Error(
           `Sealed 2026 holdout violation: Replay access at or after ${SEALED_2026_HOLDOUT_START_TS} requires explicit allowHoldoutAccess authorization (ADR-0011).`
@@ -773,11 +773,8 @@ export class ReplayEngine {
           `Sealed 2026 holdout violation: Cannot verify single-use holdout authorization token without ExperimentRepository (ADR-0011).`
         );
       }
-      const tokenConsumed = this.experimentRepo.consumeHoldoutToken({
-        partition: "2026_holdout",
-        nowMs: this.clock.nowMs()
-      });
-      if (!tokenConsumed) {
+      const hasToken = this.experimentRepo.hasUnusedHoldoutToken("2026_holdout");
+      if (!hasToken) {
         throw new Error(
           `Sealed 2026 holdout violation: No unused single-use authorization token found for partition '2026_holdout'. Access denied (ADR-0011).`
         );
@@ -832,23 +829,26 @@ export class ReplayEngine {
       costStressMultiplier
     });
 
-    const oosResult = this.computePurgedWalkForwardOosExpectancy({
-      instrumentId: input.instrumentId,
-      instrumentSpec: spec,
-      timeframe: input.timeframe,
-      primaryStrategy: input.strategy,
-      candidateStrategies: input.candidateStrategies,
-      bars: allBars,
-      embargoBars,
-      walkForwardFolds,
-      initialEquityUsdt,
-      riskFraction,
-      maxLeverage,
-      slippageBps,
-      oneWayFeeBps,
-      totalOneWayCostBps,
-      costStressMultiplier
-    });
+    const oosResult =
+      walkForwardFolds > 0
+        ? this.computePurgedWalkForwardOosExpectancy({
+            instrumentId: input.instrumentId,
+            instrumentSpec: spec,
+            timeframe: input.timeframe,
+            primaryStrategy: input.strategy,
+            candidateStrategies: input.candidateStrategies,
+            bars: allBars,
+            embargoBars,
+            walkForwardFolds,
+            initialEquityUsdt,
+            riskFraction,
+            maxLeverage,
+            slippageBps,
+            oneWayFeeBps,
+            totalOneWayCostBps,
+            costStressMultiplier
+          })
+        : { oosExpectancyR: 0, isSufficientData: false };
 
     const numTrials =
       input.numTrials ??
@@ -960,7 +960,15 @@ export class ReplayEngine {
     };
 
     if (this.experimentRepo) {
-      this.experimentRepo.saveExperiment(record);
+      this.experimentRepo.saveExperiment(
+        record,
+        touches2026Holdout
+          ? {
+              consumeHoldoutPartition: "2026_holdout",
+              nowMs: this.clock.nowMs()
+            }
+          : undefined
+      );
     }
 
     return {

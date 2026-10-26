@@ -1096,16 +1096,26 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         const active = getActiveSnapshot();
-        const effectiveToTs =
+        const effectiveFromTs = body.fromTs ?? coverage.earliestOpenTs;
+        const defaultToTs =
           coverage.earliestOpenTs < SEALED_HOLDOUT_START_TS
             ? Math.min(coverage.latestCloseTs, SEALED_HOLDOUT_START_TS)
             : coverage.latestCloseTs;
+        const effectiveToTs = body.toTs ?? defaultToTs;
 
         const reaches2026Holdout =
-          coverage.earliestOpenTs >= SEALED_2026_HOLDOUT_START_TS ||
-          coverage.latestCloseTs >= SEALED_2026_HOLDOUT_START_TS;
+          effectiveFromTs >= SEALED_2026_HOLDOUT_START_TS ||
+          effectiveToTs >= SEALED_2026_HOLDOUT_START_TS;
 
         if (reaches2026Holdout) {
+          if (!body.allowHoldoutAccess) {
+            return {
+              status: 400,
+              body: {
+                error: `Sealed 2026 holdout violation: Access to data at or after ${SEALED_2026_HOLDOUT_START_TS} requires explicit allowHoldoutAccess authorization (ADR-0011).`
+              }
+            };
+          }
           const hasToken = dataStore.experimentRepo.hasUnusedHoldoutToken("2026_holdout");
           if (!hasToken) {
             return {
@@ -1125,14 +1135,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           recordedAtMs: clock.nowMs()
         });
 
-        const allowHoldoutAccess =
-          reaches2026Holdout || coverage.earliestOpenTs >= SEALED_HOLDOUT_START_TS;
+        const allowHoldoutAccess = Boolean(body.allowHoldoutAccess);
 
         const experiment = replayEngine.run({
           instrumentId: body.instrumentId,
           timeframe: body.timeframe,
           strategy,
-          fromTs: coverage.earliestOpenTs,
+          fromTs: effectiveFromTs,
           toTs: effectiveToTs,
           allowHoldoutAccess,
           numTrials: trialCount,

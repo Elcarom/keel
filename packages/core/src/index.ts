@@ -131,6 +131,7 @@ export {
   type ExchangeOrderResult,
   type ExperimentRecord,
   type ExperimentRepository,
+  type SaveExperimentOptions,
   type ResearchTrialInput,
   type HoldoutTokenInput,
   type ConsumeHoldoutTokenInput,

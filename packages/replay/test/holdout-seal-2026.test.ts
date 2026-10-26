@@ -59,7 +59,7 @@ describe("T3: Sealed 2026 Holdout Enforcement in ReplayEngine (R4)", () => {
     }
   });
 
-  it("consumes single-use token on authorization; subsequent attempt is rejected", () => {
+  it("consumes single-use token on authorization only when experiment creation succeeds; failure does not consume token (C1)", () => {
     const clock = new ManualClock(1_700_000_000_000);
     const store = createSqliteDataStore({ dbPath: ":memory:", clock });
 
@@ -79,20 +79,50 @@ describe("T3: Sealed 2026 Holdout Enforcement in ReplayEngine (R4)", () => {
       });
       expect(store.experimentRepo.hasUnusedHoldoutToken("2026_holdout")).toBe(true);
 
-      // First run consumes the token (even if data lookup fails afterward)
-      try {
+      // Failing strategy that throws during simulation
+      const failingStrategy = {
+        ...strategy,
+        evaluate: () => {
+          throw new Error("Simulation failure during run");
+        }
+      };
+
+      // Seed market data that touches 2026 start
+      const endCloseTs = SEALED_2026_HOLDOUT_START_TS + 10 * 3600_000;
+      const seeded = seedSyntheticMarketSeries({
+        marketDataRepo: store.marketDataRepo,
+        instrumentId: "BTC-USDT-SWAP",
+        endCloseTs,
+        barCount1H: 150
+      });
+
+      // Attempt run with failing strategy -> throws
+      expect(() =>
         engine.run({
           instrumentId: "BTC-USDT-SWAP",
           timeframe: "1H",
-          strategy,
-          fromTs: 1_700_000_000_000,
-          toTs: SEALED_2026_HOLDOUT_START_TS,
-          allowHoldoutAccess: true
-        });
-      } catch (err) {
-        // Did not fail due to holdout rejection!
-        expect((err as Error).message).not.toMatch(/Sealed 2026 holdout violation/i);
-      }
+          strategy: failingStrategy,
+          fromTs: seeded.fromTs,
+          toTs: endCloseTs,
+          allowHoldoutAccess: true,
+          walkForwardFolds: 0
+        })
+      ).toThrow(/Simulation failure during run/i);
+
+      // On failure, token MUST NOT be consumed (C1)!
+      expect(store.experimentRepo.hasUnusedHoldoutToken("2026_holdout")).toBe(true);
+
+      // Successful run consuming the token in the same transaction as experiment creation
+      const result = engine.run({
+        instrumentId: "BTC-USDT-SWAP",
+        timeframe: "1H",
+        strategy,
+        fromTs: seeded.fromTs,
+        toTs: endCloseTs,
+        allowHoldoutAccess: true,
+        walkForwardFolds: 0
+      });
+      expect(result.experimentId).toBeDefined();
 
       // Token is now consumed
       expect(store.experimentRepo.hasUnusedHoldoutToken("2026_holdout")).toBe(false);
@@ -103,9 +133,10 @@ describe("T3: Sealed 2026 Holdout Enforcement in ReplayEngine (R4)", () => {
           instrumentId: "BTC-USDT-SWAP",
           timeframe: "1H",
           strategy,
-          fromTs: 1_700_000_000_000,
-          toTs: SEALED_2026_HOLDOUT_START_TS,
-          allowHoldoutAccess: true
+          fromTs: seeded.fromTs,
+          toTs: endCloseTs,
+          allowHoldoutAccess: true,
+          walkForwardFolds: 0
         })
       ).toThrow(/No unused single-use authorization token found for partition '2026_holdout'/i);
     } finally {

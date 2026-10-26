@@ -4,11 +4,13 @@ import { join } from "node:path";
 import {
   CONFIG_FIELD_REGISTRY,
   ManualClock,
+  SEALED_2026_HOLDOUT_START_TS,
   ScaledDecimal,
   computeConfigHash,
   createDefaultConfig
 } from "@keel/core";
 import { OkxBroker } from "@keel/broker";
+import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer, redactLogObject } from "../src/index.js";
 
@@ -500,6 +502,120 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           ScaledDecimal.fromString("10000.00000000")
         )
       ).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("C1: in-sample replay succeeds without holdout token even when stored coverage extends into 2026", async () => {
+    const clock = new ManualClock(1_730_000_000_000);
+    const config = createDefaultConfig();
+    let bootstrapToken = "";
+
+    const store = createSqliteDataStore({
+      dbPath: join(tempDir, "keel.sqlite"),
+      clock,
+      initialConfig: config
+    });
+
+    // Seed confirmed bars in 2024 (in-sample)
+    seedSyntheticMarketSeries({
+      marketDataRepo: store.marketDataRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: 1_730_000_000_000,
+      barCount1H: 200
+    });
+
+    // Also seed confirmed bars into 2026 holdout (e.g. live ingested data)
+    seedSyntheticMarketSeries({
+      marketDataRepo: store.marketDataRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: SEALED_2026_HOLDOUT_START_TS + 10 * 3600_000,
+      barCount1H: 50
+    });
+
+    const app = await createKeelServer({
+      config,
+      clock,
+      dataStore: store,
+      masterKeyMaterial: "a-secure-master-key-with-at-least-32-chars!",
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    try {
+      // 1. Bootstrap and Login
+      const bootRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/bootstrap",
+        payload: {
+          bootstrapToken,
+          username: "captain",
+          password: "correct-horse-battery-staple"
+        }
+      });
+      expect(bootRes.statusCode).toBe(200);
+
+      const loginRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: {
+          username: "captain",
+          password: "correct-horse-battery-staple"
+        }
+      });
+      expect(loginRes.statusCode).toBe(200);
+      const cookieHeader = loginRes.headers["set-cookie"] as string;
+
+      // 2. Run backtest without token. The effective range should be truncated to SEALED_HOLDOUT_START_TS,
+      // so it must NOT fail with 2026 holdout violation!
+      const replayRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: {
+          strategyId: "donchian-trend-v1",
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H"
+        }
+      });
+
+      expect(replayRes.statusCode).toBe(200);
+      expect(replayRes.json().experiment).toBeDefined();
+
+      // 4. Request reaching into 2026 without allowHoldoutAccess -> 400
+      const outOfBoundsRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: {
+          strategyId: "donchian-trend-v1",
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H",
+          toTs: SEALED_2026_HOLDOUT_START_TS + 3600_000
+        }
+      });
+      expect(outOfBoundsRes.statusCode).toBe(400);
+      expect(outOfBoundsRes.json().error).toMatch(
+        /Sealed 2026 holdout violation.*allowHoldoutAccess/i
+      );
+
+      // 5. Request reaching into 2026 with allowHoldoutAccess: true but NO token -> 400
+      const noTokenRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: {
+          strategyId: "donchian-trend-v1",
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H",
+          toTs: SEALED_2026_HOLDOUT_START_TS + 3600_000,
+          allowHoldoutAccess: true
+        }
+      });
+      expect(noTokenRes.statusCode).toBe(400);
+      expect(noTokenRes.json().error).toMatch(/unused holdout token/i);
     } finally {
       await app.close();
     }
