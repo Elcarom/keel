@@ -198,6 +198,12 @@
     "testName": "C2: newly enabled (instrument, strategy) anchors at latest confirmed bar and excludes quarantined 2026 bars (zero ticks on 20,000 history bars)"
   },
   {
+    "id": "CLAIM-A1-SCHEDULER-STALE-GAP-EXCLUSION",
+    "claim": "A1 Scheduler Stale Gap Exclusion: Newly enabled strategy anchors to floor(clock.nowMs()/1h)*1h and never ticks 30-day stale gap bars.",
+    "testFile": "packages/api/test/scheduler.test.ts",
+    "testName": "A1: newly enabled strategy anchors to floor(clock.nowMs()/1h)*1h and never ticks 30-day stale gap bars"
+  },
+  {
     "id": "CLAIM-ADR-0017-BAR-IDEMPOTENCY",
     "claim": "ADR-0017 Scheduler Idempotency: Steps repeatedly on the same confirmed bar idempotently without duplicating ticks.",
     "testFile": "packages/api/test/scheduler.test.ts",

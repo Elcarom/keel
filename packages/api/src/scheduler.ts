@@ -103,7 +103,10 @@ export class UnattendedScheduler {
     const errors: string[] = [];
 
     try {
-      // 0. Anchor newly enabled (instrument, strategy) pairs at the latest confirmed bar at enabling time (C2)
+      // 0. Anchor newly enabled (instrument, strategy) pairs at the scheduler's current time (A1)
+      // anchor_close_ts = floor(clock.nowMs()/1h)*1h (the close of the most recent fully closed bar).
+      // Bars with closeTs <= anchor are never evaluated, regardless of stored coverage.
+      // Anchor creation must not depend on whether the DB has any bars. Existing anchors are never moved.
       for (const instId of this.instruments) {
         for (const stratId of this.strategies) {
           const existingAnchor = this.dataStore.paperAccountRepo.getSchedulerAnchor({
@@ -111,26 +114,18 @@ export class UnattendedScheduler {
             strategyId: stratId
           });
           if (existingAnchor === null) {
-            const latestBars = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
+            const anchorCloseTs = Math.floor(nowMs / 3600_000) * 3600_000;
+            this.dataStore.paperAccountRepo.setSchedulerAnchor({
               instrumentId: instId,
-              timeframe: "1H",
-              asOfMs: nowMs,
-              limit: 1
+              strategyId: stratId,
+              anchorCloseTs,
+              createdAtMs: nowMs
             });
-            const latest = latestBars[0] ?? null;
-            if (latest !== null) {
-              this.dataStore.paperAccountRepo.setSchedulerAnchor({
-                instrumentId: instId,
-                strategyId: stratId,
-                anchorCloseTs: latest.closeTs,
-                createdAtMs: nowMs
-              });
-              this.dataStore.paperAccountRepo.recordProcessedBar({
-                instrumentId: instId,
-                strategyId: stratId,
-                closeTs: latest.closeTs
-              });
-            }
+            this.dataStore.paperAccountRepo.recordProcessedBar({
+              instrumentId: instId,
+              strategyId: stratId,
+              closeTs: anchorCloseTs
+            });
           }
         }
       }
@@ -197,9 +192,12 @@ export class UnattendedScheduler {
                 continue;
               }
 
-              // Scheduler never evaluates bars with openTs >= SEALED_2026_HOLDOUT_START_TS
-              // unless that is the live present (closeTs within 2 hours of clock.nowMs()) (C2)
-              if (bar.openTs >= SEALED_2026_HOLDOUT_START_TS) {
+              // Scheduler never evaluates bars with closeTs >= SEALED_2026_HOLDOUT_START_TS
+              // unless that is the live present (closeTs within 2 hours of clock.nowMs()) (C2, A1)
+              if (
+                bar.closeTs >= SEALED_2026_HOLDOUT_START_TS ||
+                bar.openTs >= SEALED_2026_HOLDOUT_START_TS
+              ) {
                 const isLivePresent = Math.abs(nowMs - bar.closeTs) <= 2 * 3600_000;
                 if (!isLivePresent) {
                   this.dataStore.paperAccountRepo.recordProcessedBar({
