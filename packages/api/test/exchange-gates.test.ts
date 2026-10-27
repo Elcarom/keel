@@ -83,7 +83,7 @@ async function setup(mode: ExecutionMode, strategyStage: PromotionStage | null) 
       }
     });
 
-  return { app, order, fake, okxBroker, cookie, config: configInMode };
+  return { app, order, fake, okxBroker, cookie, config: configInMode, dataStore, clock };
 }
 
 const placedOrders = (fake: ReturnType<typeof createFakeOkx>) =>
@@ -170,6 +170,88 @@ describe("Execution Mode changes cannot strand exchange positions (audit-3 H5)",
 
       expect(res.statusCode).toBe(403);
       expect(res.json().error).toMatch(/open exchange position/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Kill Switch flattens both books and locks until a stepped-up reset (audit-3 H9)", () => {
+  const paperPosition = {
+    positionId: "pos_paper_1",
+    strategyId: "donchian-trend-v1",
+    instrumentId: "ETH-USDT-SWAP",
+    side: "long" as const,
+    contracts: "1",
+    entryPrice: "3000",
+    protectiveStopPrice: "2900",
+    takeProfitPrice: null,
+    initialRiskUsdt: "1.00",
+    unrealizedPnlUsdt: "0.00000000",
+    realizedPnlUsdt: "0.00000000",
+    feesPaidUsdt: "0.00000000",
+    fundingPaidUsdt: "0.00000000",
+    openedAtMs: 1_730_000_000_000,
+    lastFundingSettledTs: 1_730_000_000_000,
+    status: "OPEN" as const,
+    closedAtMs: null,
+    exitPrice: null,
+    exitReason: null
+  };
+
+  it("cancels and flattens every paper and exchange position and vetoes new entries", async () => {
+    const { app, order, cookie, okxBroker, dataStore } = await setup("Demo", "Demo");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+      dataStore.paperAccountRepo.savePosition(paperPosition);
+
+      const trip = await app.inject({
+        method: "POST",
+        url: "/api/v1/paper/circuit-breaker",
+        headers: { cookie },
+        payload: { status: "MANUAL_KILL_SWITCH", reason: "operator drill" }
+      });
+
+      expect(trip.statusCode).toBe(200);
+      expect(trip.json().killSwitch).toMatchObject({ paperFlat: true, exchangeFlat: true });
+      expect(okxBroker.getOpenPositions()).toHaveLength(0);
+      expect(dataStore.paperAccountRepo.listOpenPositions()).toHaveLength(0);
+
+      const blocked = await order({ stepUpPassword: PASSWORD });
+      expect(blocked.statusCode).toBe(403);
+      expect(blocked.json().error).toMatch(/CIRCUIT_BREAKER_ACTIVE/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires a step-up to re-arm after a kill switch", async () => {
+    const { app, cookie, clock } = await setup("Demo", "Demo");
+    try {
+      const trip = await app.inject({
+        method: "POST",
+        url: "/api/v1/paper/circuit-breaker",
+        headers: { cookie },
+        payload: { status: "MANUAL_KILL_SWITCH", reason: "operator drill" }
+      });
+      expect(trip.statusCode).toBe(200);
+      clock.advanceMs(10 * 60 * 1000);
+
+      const rearm = (extra: Record<string, unknown> = {}) =>
+        app.inject({
+          method: "POST",
+          url: "/api/v1/paper/circuit-breaker",
+          headers: { cookie },
+          payload: { status: "NORMAL", reason: "drill complete", ...extra }
+        });
+
+      const denied = await rearm();
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json().requiresStepUp).toBe(true);
+
+      const ok = await rearm({ stepUpPassword: PASSWORD });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().circuitBreaker.status).toBe("NORMAL");
     } finally {
       await app.close();
     }

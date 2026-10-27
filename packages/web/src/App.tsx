@@ -1400,11 +1400,19 @@ export function App() {
                         reason:
                           newStatus === "NORMAL"
                             ? "Operator re-armed system"
-                            : "Manual operator emergency halt"
+                            : "Manual operator emergency halt",
+                        // Re-arming after a Kill Switch requires step-up (audit-3 H9)
+                        stepUpPassword: stepUpPassword || undefined
                       }
                     });
                     if (res.status === 200) {
-                      setGovMessage(`Circuit breaker updated to ${res.body.circuitBreaker.status}`);
+                      const ks = res.body.killSwitch;
+                      setGovMessage(
+                        `Circuit breaker updated to ${res.body.circuitBreaker.status}` +
+                          (ks
+                            ? ` — flattened ${ks.paperFlattenedCount} paper / ${ks.exchangeFlattenedCount} exchange positions${ks.paperFlat && ks.exchangeFlat ? "" : " (INCOMPLETE: positions remain open)"}`
+                            : "")
+                      );
                       await refreshGovernanceData();
                     } else {
                       setGovError(extractApiError(res.body, "Failed to toggle kill switch"));

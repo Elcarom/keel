@@ -40,6 +40,10 @@ _Avoid_: Warmup window, history length
 The actual periodic funding payment exchanged between long and short perpetual holders at a Venue's settlement timestamp (e.g., 00:00, 08:00, 16:00 UTC), distinct from the intra-period predicted funding rate.
 _Avoid_: Funding fee, current funding
 
+**Trading Book**:
+The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills) or the **Exchange Book** (real fills on a Venue, Demo or real-money). Books never share positions or equity; only the system-wide halt state spans both.
+_Avoid_: Account, portfolio (when meaning one book)
+
 **Execution Mode**:
 The operating environment binding a strategy and risk engine to a market data source and a Broker adapter: **Replay** (historical event-driven simulation), **Paper** (live market data with simulated fills via `SimBroker`), **Demo** (live market data with orders routed to a Venue's sandbox/demo environment), or **Live** (real capital on a Venue).
 _Avoid_: Dry run, backtest mode, sim mode
@@ -111,11 +115,11 @@ The highest peak equity reached by a Strategy or the Portfolio over its active l
 _Avoid_: Peak balance, max equity
 
 **Kill Switch**:
-An immediate, deterministic emergency command (triggered manually from Mission Control or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions at market, and locks the system against new entries until manually reset.
+An immediate, deterministic emergency command (triggered manually from Mission Control or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions in both Trading Books at market, and locks the system against new entries until an operator resets it with step-up authentication.
 _Avoid_: Panic button, emergency stop, halt
 
 **Kill Switch Flatten**:
-The verified double-action execution of a Kill Switch event: issuing a cancel-all on resting orders (`cancel-all-after`), submitting market `reduceOnly=true` closing orders for 100% of open net positions across all venues, asserting exchange positions reach zero, and locking the circuit breaker in `KILL_SWITCH_HALT`.
+The verified execution of a Kill Switch event: locking out new entries first, then market-closing 100% of every open position in both Trading Books and confirming each book is flat. A position's Protective Stop is withdrawn only after its close is confirmed, so a failed close is never left unprotected.
 _Avoid_: Soft flatten, local close
 
 **Sealed Holdout Period**:
