@@ -298,5 +298,17 @@
     "claim": "Emergency flatten keeps each Protective Stop resting until that position's close fill is confirmed; failed closes keep their stop and the DMS stays armed.",
     "testFile": "packages/broker/test/flatten-protection.test.ts",
     "testName": "keeps the exchange-side stop resting when the market close is rejected"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H6-REDUCE-ONLY",
+    "claim": "Reduce-only exchange orders fully close the matching open position with a confirmed fill and never open a phantom position or attach a new stop.",
+    "testFile": "packages/broker/test/submit-truthfulness.test.ts",
+    "testName": "closes the matching position without a stop, opens no phantom position, and cancels its stop"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H7-NO-FABRICATED-FILLS",
+    "claim": "The exchange broker refuses to submit or close without credentials and records orders at the confirmed exchange fill.",
+    "testFile": "packages/broker/test/submit-truthfulness.test.ts",
+    "testName": "refuses to submit when exchange credentials are not configured"
   }
 ]

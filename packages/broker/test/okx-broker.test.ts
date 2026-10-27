@@ -9,6 +9,7 @@ import {
   type PaperPositionRecord
 } from "@keel/core";
 import { OkxBroker, buildOkxHeaders } from "../src/index.js";
+import { createFakeOkx } from "./fake-okx.js";
 
 describe("OkxBroker & Attached Protective Stops (M5)", () => {
   const credentials = {
@@ -406,10 +407,15 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
     const alerts: unknown[] = [];
+    const fake = createFakeOkx({
+      positions: [{ instId: "BTC-USDT-SWAP", pos: "1", posSide: "net" }]
+    });
 
     const broker = new OkxBroker({
       clock,
       getRiskConfig: () => config.risk,
+      getCredentials: () => credentials,
+      fetchFn: fake.fetchFn,
       notificationChannel: {
         send: async (msg) => {
           alerts.push(msg);
@@ -1076,15 +1082,8 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     const clock = new ManualClock(1_750_000_000_000);
     const unlinkedBroker = new OkxBroker({
       clock,
-      fetchFn: async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          code: "0",
-          data: [{ ordId: "ord_unlinked", clOrdId: "cl_unlinked", sCode: "0" }]
-        }),
-        text: async () => ""
-      })
+      getCredentials: () => credentials,
+      fetchFn: createFakeOkx().fetchFn
     });
 
     await unlinkedBroker.submitOrder({

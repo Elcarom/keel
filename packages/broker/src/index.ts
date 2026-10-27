@@ -330,6 +330,16 @@ export class OkxBroker implements ExchangeBroker {
   }
 
   public async submitOrder(input: ExchangeOrderInput): Promise<ExchangeOrderResult> {
+    // Never simulate an exchange fill (audit-3 H7): no credentials means no order
+    const creds = this.getCredentials();
+    if (!creds || !creds.apiKey) {
+      throw new Error("OKX credentials are not configured; refusing to submit exchange order");
+    }
+
+    if (input.reduceOnly) {
+      return this.submitReduceOnlyClose(input);
+    }
+
     // ADR-0006 strict requirement: atomic protective stop is mandatory on all entry orders
     if (!input.protectiveStopPrice || input.protectiveStopPrice.trim() === "") {
       throw new Error(
@@ -411,7 +421,6 @@ export class OkxBroker implements ExchangeBroker {
       orderPayload["posSide"] = input.posSide;
     }
 
-    const creds = this.getCredentials();
     const path = "/api/v5/trade/order";
     const bodyStr = JSON.stringify(orderPayload);
 
@@ -703,8 +712,8 @@ export class OkxBroker implements ExchangeBroker {
       instrumentId: input.instrumentId,
       side: input.side,
       orderRole: "ENTRY",
-      contracts: String(input.sizeLots),
-      fillPrice: input.entryPrice,
+      contracts: String(actualSizeLots),
+      fillPrice: fillPriceStr,
       protectiveStopPrice: input.protectiveStopPrice,
       feeUsdt: entryFee.toFixed(8),
       status: "FILLED",
@@ -717,6 +726,57 @@ export class OkxBroker implements ExchangeBroker {
     }
 
     return orderResult;
+  }
+
+  /**
+   * Reduce-only orders fully close the matching open position (audit-3 H6). They never open a
+   * position or attach a stop; partial reduction is refused because resizing the resting stop
+   * is not modelled.
+   */
+  private async submitReduceOnlyClose(input: ExchangeOrderInput): Promise<ExchangeOrderResult> {
+    const closingSide = input.side === "long" ? "short" : "long";
+    const pos = Array.from(this.localPositions.values()).find(
+      (p) => p.status === "OPEN" && p.instrumentId === input.instrumentId && p.side === closingSide
+    );
+    if (!pos) {
+      throw new Error(
+        `Reduce-only ${input.side} rejected: no open ${closingSide} position on ${input.instrumentId}`
+      );
+    }
+    if (
+      !ScaledDecimal.fromString(String(input.sizeLots)).equals(
+        ScaledDecimal.fromString(pos.contracts)
+      )
+    ) {
+      throw new Error(
+        `Reduce-only orders must close the full position (${pos.contracts} lots); partial reduction is not supported`
+      );
+    }
+
+    const [closed] = await this.closePositionsWhere(
+      "Reduce-only close",
+      (p) => p.positionId === pos.positionId,
+      false
+    );
+    if (!closed || closed.closedAtMs === null || closed.exitPrice === null) {
+      throw new Error(
+        `Reduce-only close of ${pos.positionId} could not be confirmed on OKX; position remains OPEN with its protective stop`
+      );
+    }
+
+    const orderId = `flat_${pos.positionId}_${closed.closedAtMs}`;
+    return {
+      orderId,
+      clOrdId: orderId,
+      algoOrderId: "",
+      instrumentId: input.instrumentId,
+      side: input.side,
+      fillPrice: closed.exitPrice,
+      sizeLots: input.sizeLots,
+      protectiveStopPrice: pos.protectiveStopPrice,
+      status: "FILLED",
+      submittedAtMs: closed.closedAtMs
+    };
   }
 
   /**
@@ -1201,6 +1261,18 @@ export class OkxBroker implements ExchangeBroker {
   }
 
   public async flattenAllPositions(reason: string): Promise<readonly PaperPositionRecord[]> {
+    return this.closePositionsWhere(reason, () => true, true);
+  }
+
+  /**
+   * Market-closes the selected open positions with confirmed fills. `sweepForeign` also closes
+   * untracked exchange positions and disarms the DMS once everything is flat (full flatten only).
+   */
+  private async closePositionsWhere(
+    reason: string,
+    include: (pos: PaperPositionRecord) => boolean,
+    sweepForeign: boolean
+  ): Promise<readonly PaperPositionRecord[]> {
     const creds = this.getCredentials();
     const nowMs = this.clock.nowMs();
     const failedPositionIds = new Set<string>();
@@ -1208,7 +1280,20 @@ export class OkxBroker implements ExchangeBroker {
 
     let foreignFailures = 0;
 
-    if (creds && creds.apiKey) {
+    if (!creds || !creds.apiKey) {
+      // Never fabricate exits (audit-3 H7): without exchange access nothing can be closed truthfully
+      const stranded = Array.from(this.localPositions.values()).filter(
+        (p) => p.status === "OPEN" && include(p)
+      );
+      if (stranded.length > 0) {
+        throw new Error(
+          `OKX credentials are not configured; cannot close ${stranded.length} open exchange position(s)`
+        );
+      }
+      return [];
+    }
+
+    {
       // Protective stops stay resting until each position's close is confirmed (audit-3 C1):
       // they are cancelled per instrument after the fill, never up front.
 
@@ -1275,7 +1360,7 @@ export class OkxBroker implements ExchangeBroker {
 
       // 2. Submit market reduceOnly orders for all open local positions
       for (const pos of this.localPositions.values()) {
-        if (pos.status === "OPEN") {
+        if (pos.status === "OPEN" && include(pos)) {
           const flatClOrdId =
             `kflat${nowMs.toString(36)}${sha256Hex(pos.positionId).slice(0, 10)}`.slice(0, 32);
 
@@ -1412,7 +1497,7 @@ export class OkxBroker implements ExchangeBroker {
       }
 
       // 3. Dispose of untracked foreign exchange positions not present in local state
-      for (const exPos of exchangePositions) {
+      for (const exPos of sweepForeign ? exchangePositions : []) {
         const matchingLocal = Array.from(this.localPositions.values()).find(
           (lp) => lp.status === "OPEN" && lp.instrumentId === exPos.instId
         );
@@ -1510,7 +1595,7 @@ export class OkxBroker implements ExchangeBroker {
       }
 
       // 4. Disarm the dead-man's switch only once every position is confirmed flat
-      if (failedPositionIds.size === 0 && foreignFailures === 0) {
+      if (sweepForeign && failedPositionIds.size === 0 && foreignFailures === 0) {
         const cancelPath = "/api/v5/trade/cancel-all-after";
         const cancelBody = JSON.stringify({ timeOut: "0" });
         try {
@@ -1535,42 +1620,13 @@ export class OkxBroker implements ExchangeBroker {
     const closed: PaperPositionRecord[] = [];
 
     for (const [id, pos] of this.localPositions.entries()) {
-      if (pos.status === "OPEN" && !failedPositionIds.has(pos.positionId)) {
-        let exitPriceDec: ScaledDecimal;
-        let exitFee: ScaledDecimal;
-
-        if (creds && creds.apiKey) {
-          const confirmed = confirmedFills.get(pos.positionId);
-          if (!confirmed) {
-            continue;
-          }
-          exitPriceDec = ScaledDecimal.fromString(confirmed.exitPrice);
-          exitFee = confirmed.fee;
-        } else {
-          // Offline / mock mode fallback
-          exitPriceDec = ScaledDecimal.fromString(pos.entryPrice);
-          if (this.marketDataRepo) {
-            try {
-              const bars = this.marketDataRepo.getConfirmedBarsAsOf({
-                instrumentId: pos.instrumentId,
-                timeframe: "1H",
-                asOfMs: nowMs,
-                limit: 1
-              });
-              if (bars && bars.length > 0 && bars[0]) {
-                exitPriceDec = ScaledDecimal.fromString(bars[0].close);
-              }
-            } catch {
-              // fallback to entryPrice
-            }
-          }
-          const contractsDecFallback = ScaledDecimal.fromString(pos.contracts);
-          const specFallback = defaultInstrumentSpec(pos.instrumentId);
-          const exitNotional = contractsDecFallback
-            .mul(specFallback.contractValue)
-            .mul(exitPriceDec);
-          exitFee = exitNotional.mul(ScaledDecimal.fromString("0.0006"));
+      if (pos.status === "OPEN" && include(pos) && !failedPositionIds.has(pos.positionId)) {
+        const confirmed = confirmedFills.get(pos.positionId);
+        if (!confirmed) {
+          continue;
         }
+        const exitPriceDec = ScaledDecimal.fromString(confirmed.exitPrice);
+        const exitFee = confirmed.fee;
 
         const entryPriceDec = ScaledDecimal.fromString(pos.entryPrice);
         const contractsDec = ScaledDecimal.fromString(pos.contracts);
