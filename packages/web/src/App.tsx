@@ -2476,6 +2476,16 @@ export function App() {
                       required
                     />
                   </div>
+                  <div>
+                    <label className="mb-1 block opacity-70">Step-Up Password (G2/G3)</label>
+                    <input
+                      data-testid="order-step-up-password-input"
+                      type="password"
+                      value={stepUpPassword}
+                      onChange={(e) => setStepUpPassword(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
                 </div>
 
                 <div className="mt-3 flex justify-end">
@@ -2496,7 +2506,8 @@ export function App() {
                             entryPrice: orderEntryPrice,
                             protectiveStopPrice: orderStopPrice,
                             takeProfitPrice: orderTakeProfitPrice,
-                            reduceOnly: false
+                            reduceOnly: false,
+                            stepUpPassword: stepUpPassword || undefined
                           }
                         });
                         if (res.status === 200) {

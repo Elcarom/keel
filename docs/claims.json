@@ -316,5 +316,11 @@
     "claim": "Exchange (real venue) positions, orders and ledger are stored apart from the paper book; only the circuit breaker is shared.",
     "testFile": "packages/data/test/exchange-book.test.ts",
     "testName": "keeps exchange positions out of the paper account and vice versa"
+  },
+  {
+    "id": "CLAIM-AUDIT3-C3-EXCHANGE-GATES",
+    "claim": "Direct exchange orders require an exchange Execution Mode, a fresh step-up (G2/G3), and a Promotion Ladder stage authorizing the venue; unpromoted manual orders are Demo-only.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "requires step-up authentication before any entry order (G2)"
   }
 ]

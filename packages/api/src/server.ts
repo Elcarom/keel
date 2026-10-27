@@ -245,11 +245,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   app.addHook("onClose", async () => {
     scheduler.stop();
     const active = getActiveSnapshot();
-    if (active.config.system.shutdownPolicy === "flatten") {
-      await paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
-      await okxBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+    try {
+      if (active.config.system.shutdownPolicy === "flatten") {
+        await paperBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+        await okxBroker.flattenAllPositions("Container shutdown with shutdownPolicy=flatten");
+      }
+    } finally {
+      dataStore.close();
     }
-    dataStore.close();
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -2044,6 +2047,57 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const nowMs = clock.nowMs();
         const strategyId = body.strategyId ?? "manual-execution";
         const spec = defaultInstrumentSpec(body.instrumentId);
+        const { stepUpPassword, stepUpTotpCode, ...orderInput } = body;
+
+        // Exchange orders exist only in exchange Execution Modes (audit-3 C3)
+        const mode = active.config.system.executionMode;
+        if (mode !== "Demo" && mode !== "Live-Ramp" && mode !== "Live") {
+          return {
+            status: 403,
+            body: { error: `Exchange orders are disabled in the ${mode} Execution Mode` }
+          };
+        }
+
+        if (!body.reduceOnly) {
+          // Human gates G2 (any exchange account) and G3 (real money) require a fresh step-up
+          const stepUpOk = authManager.verifyStepUp({
+            sessionToken: ingress.sessionToken,
+            password: stepUpPassword,
+            totpCode: stepUpTotpCode,
+            clientIp: ingress.clientIp
+          });
+          if (!stepUpOk) {
+            return {
+              status: 403,
+              body: {
+                error: `Step-up authentication required for exchange orders (Gate ${mode === "Demo" ? "G2" : "G3"})`,
+                requiresStepUp: true
+              }
+            };
+          }
+
+          // The strategy's Promotion Ladder stage must authorize this venue; unpromoted manual
+          // orders are confined to the Demo account
+          const authorizedStages: Record<"Demo" | "Live-Ramp" | "Live", readonly string[]> = {
+            Demo: ["Demo", "Live-Ramp", "Live"],
+            "Live-Ramp": ["Live-Ramp", "Live"],
+            Live: ["Live"]
+          };
+          const stage =
+            strategyId === "manual-execution"
+              ? mode === "Demo"
+                ? "Demo"
+                : null
+              : (dataStore.promotionRepo.getPromotion(strategyId)?.currentStage ?? null);
+          if (stage === null || !authorizedStages[mode].includes(stage)) {
+            return {
+              status: 403,
+              body: {
+                error: `Promotion Ladder: strategy ${strategyId} (stage ${stage ?? "none"}) is not authorized to trade in ${mode}`
+              }
+            };
+          }
+        }
 
         let evaluatedInitialRiskUsdt: string | undefined;
         if (!body.reduceOnly) {
@@ -2182,7 +2236,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         try {
           const order = await okxBroker.submitOrder({
-            ...body,
+            ...orderInput,
             protectiveStopPrice: body.protectiveStopPrice ?? "",
             strategyId,
             ...(evaluatedInitialRiskUsdt !== undefined
