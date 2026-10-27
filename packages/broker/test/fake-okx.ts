@@ -19,7 +19,12 @@ export interface FakeOkxOptions {
  */
 export function createFakeOkx(options: FakeOkxOptions = {}) {
   const algos: FakeAlgo[] = [];
-  const requests: Array<{ method: string; path: string; body: unknown }> = [];
+  const requests: Array<{
+    method: string;
+    path: string;
+    body: unknown;
+    headers: Record<string, string>;
+  }> = [];
   const filledPx = new Map<string, string>();
   const filledSz = new Map<string, string>();
   let seq = 0;
@@ -34,7 +39,7 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
   const fetchFn: OkxFetchFn = async (url, init) => {
     const path = url.replace("https://www.okx.com", "");
     const body: unknown = init.body ? JSON.parse(init.body) : undefined;
-    requests.push({ method: init.method, path, body });
+    requests.push({ method: init.method, path, body, headers: init.headers });
 
     if (path === "/api/v5/trade/order" && init.method === "POST") {
       const order = body as {

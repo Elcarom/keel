@@ -322,5 +322,23 @@
     "claim": "Direct exchange orders require an exchange Execution Mode, a fresh step-up (G2/G3), and a Promotion Ladder stage authorizing the venue; unpromoted manual orders are Demo-only.",
     "testFile": "packages/api/test/exchange-gates.test.ts",
     "testName": "requires step-up authentication before any entry order (G2)"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H5-VENUE-BINDING",
+    "claim": "The OKX venue (demo vs real money) is re-evaluated from the Execution Mode on every request; only Live-Ramp and Live reach the real account.",
+    "testFile": "packages/broker/test/venue-binding.test.ts",
+    "testName": "re-evaluates the venue on every request instead of freezing it at startup"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H5-LIVE-RAMP-DMS",
+    "claim": "The scheduler maintains DMS heartbeats and reconciliation in Live-Ramp as well as Demo and Live.",
+    "testFile": "packages/api/test/scheduler-venues.test.ts",
+    "testName": "maintains the DMS heartbeat and reconciliation in Live-Ramp, not just Demo and Live"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H5-NO-STRANDING",
+    "claim": "Execution Mode changes that switch between the demo and real-money venues are refused while exchange positions are open.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses switching between the Demo and real-money venues while exchange positions are open"
   }
 ]

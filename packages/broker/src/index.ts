@@ -11,6 +11,7 @@ import {
   type ExchangeBroker,
   type ExchangeOrderInput,
   type ExchangeOrderResult,
+  type ExecutionMode,
   type NotificationChannel,
   type PaperOrderRecord,
   type PaperPositionRecord,
@@ -48,7 +49,8 @@ export interface OkxBrokerOptions {
   readonly clock: Clock;
   readonly getRiskConfig?: (() => RiskConfig) | undefined;
   readonly getCredentials?: (() => OkxCredentials | null) | undefined;
-  readonly isDemo?: boolean | undefined;
+  /** Static flag, or a getter re-evaluated per request so the venue tracks the Execution Mode. */
+  readonly isDemo?: boolean | (() => boolean) | undefined;
   readonly fetchFn?: OkxFetchFn | undefined;
   readonly notificationChannel?: NotificationChannel | undefined;
   readonly accountRepo?: PaperAccountRepository | undefined;
@@ -82,11 +84,19 @@ export function buildOkxHeaders(params: {
   return headers;
 }
 
+/**
+ * Only real-money Execution Modes reach the live OKX account; every other mode signs requests
+ * for the demo venue (audit-3 H5).
+ */
+export function okxDemoVenueFor(mode: ExecutionMode): boolean {
+  return mode !== "Live-Ramp" && mode !== "Live";
+}
+
 export class OkxBroker implements ExchangeBroker {
   private readonly clock: Clock;
   private readonly getRiskConfig: () => RiskConfig;
   private readonly getCredentials: () => OkxCredentials | null;
-  private readonly isDemo: boolean;
+  private readonly isDemoVenue: () => boolean;
   private readonly fetchFn: OkxFetchFn;
   private readonly notificationChannel: NotificationChannel | null;
   private accountRepo: PaperAccountRepository | null;
@@ -109,7 +119,8 @@ export class OkxBroker implements ExchangeBroker {
     this.clock = options.clock;
     this.getRiskConfig = options.getRiskConfig ?? (() => createDefaultConfig().risk);
     this.getCredentials = options.getCredentials ?? (() => null);
-    this.isDemo = options.isDemo ?? true;
+    const isDemo = options.isDemo ?? true;
+    this.isDemoVenue = typeof isDemo === "function" ? isDemo : () => isDemo;
     this.notificationChannel = options.notificationChannel ?? null;
     this.accountRepo = options.accountRepo ?? null;
     this.ledgerRepo = options.ledgerRepo ?? null;
@@ -266,7 +277,7 @@ export class OkxBroker implements ExchangeBroker {
         body,
         credentials: creds,
         timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
+        isDemo: this.isDemoVenue()
       });
 
       const baseUrl = "https://www.okx.com";
@@ -438,7 +449,7 @@ export class OkxBroker implements ExchangeBroker {
         body: bodyStr,
         credentials: creds,
         timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
+        isDemo: this.isDemoVenue()
       });
 
       const res = await this.fetchFn(`https://www.okx.com${path}`, {
@@ -492,7 +503,7 @@ export class OkxBroker implements ExchangeBroker {
         path: orderQueryPath,
         credentials: creds,
         timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
+        isDemo: this.isDemoVenue()
       });
 
       try {
@@ -573,7 +584,7 @@ export class OkxBroker implements ExchangeBroker {
           path: algoPath,
           credentials: creds,
           timestampIso: new Date(nowMs).toISOString(),
-          isDemo: this.isDemo
+          isDemo: this.isDemoVenue()
         });
 
         try {
@@ -804,7 +815,7 @@ export class OkxBroker implements ExchangeBroker {
         body: bodyStr,
         credentials: creds,
         timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
+        isDemo: this.isDemoVenue()
       });
 
       const res = await this.fetchFn(`https://www.okx.com${path}`, {
@@ -851,7 +862,7 @@ export class OkxBroker implements ExchangeBroker {
         path: posPath,
         credentials: creds,
         timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
+        isDemo: this.isDemoVenue()
       });
 
       const posRes = await this.fetchFn(`https://www.okx.com${posPath}`, {
@@ -952,7 +963,7 @@ export class OkxBroker implements ExchangeBroker {
           path: algoPath,
           credentials: creds,
           timestampIso: new Date(nowMs).toISOString(),
-          isDemo: this.isDemo
+          isDemo: this.isDemoVenue()
         });
 
         const algoRes = await this.fetchFn(`https://www.okx.com${algoPath}`, {
@@ -997,7 +1008,7 @@ export class OkxBroker implements ExchangeBroker {
               path: fillsPath,
               credentials: creds,
               timestampIso: new Date(nowMs).toISOString(),
-              isDemo: this.isDemo
+              isDemo: this.isDemoVenue()
             });
             const fillsRes = await this.fetchFn(`https://www.okx.com${fillsPath}`, {
               method: "GET",
@@ -1216,7 +1227,7 @@ export class OkxBroker implements ExchangeBroker {
             path: queryPath,
             credentials: creds,
             timestampIso: new Date(nowMs).toISOString(),
-            isDemo: this.isDemo
+            isDemo: this.isDemoVenue()
           })
         });
         if (res.ok) {
@@ -1251,7 +1262,7 @@ export class OkxBroker implements ExchangeBroker {
           body: cancelBody,
           credentials: creds,
           timestampIso: new Date(nowMs).toISOString(),
-          isDemo: this.isDemo
+          isDemo: this.isDemoVenue()
         }),
         body: cancelBody
       });
@@ -1311,7 +1322,7 @@ export class OkxBroker implements ExchangeBroker {
           path: posPath,
           credentials: creds,
           timestampIso: new Date(nowMs).toISOString(),
-          isDemo: this.isDemo
+          isDemo: this.isDemoVenue()
         });
         const posRes = await this.fetchFn(`https://www.okx.com${posPath}`, {
           method: "GET",
@@ -1391,7 +1402,7 @@ export class OkxBroker implements ExchangeBroker {
             body: flatBody,
             credentials: creds,
             timestampIso: new Date(nowMs).toISOString(),
-            isDemo: this.isDemo
+            isDemo: this.isDemoVenue()
           });
 
           let orderSuccess = false;
@@ -1444,7 +1455,7 @@ export class OkxBroker implements ExchangeBroker {
                 path: fillQueryPath,
                 credentials: creds,
                 timestampIso: new Date(nowMs).toISOString(),
-                isDemo: this.isDemo
+                isDemo: this.isDemoVenue()
               });
               const fillRes = await this.fetchFn(`https://www.okx.com${fillQueryPath}`, {
                 method: "GET",
@@ -1543,7 +1554,7 @@ export class OkxBroker implements ExchangeBroker {
             body: foreignBody,
             credentials: creds,
             timestampIso: new Date(nowMs).toISOString(),
-            isDemo: this.isDemo
+            isDemo: this.isDemoVenue()
           });
 
           let foreignSuccess = false;
@@ -1607,7 +1618,7 @@ export class OkxBroker implements ExchangeBroker {
               body: cancelBody,
               credentials: creds,
               timestampIso: new Date(nowMs).toISOString(),
-              isDemo: this.isDemo
+              isDemo: this.isDemoVenue()
             }),
             body: cancelBody
           });

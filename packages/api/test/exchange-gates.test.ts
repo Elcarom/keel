@@ -83,7 +83,7 @@ async function setup(mode: ExecutionMode, strategyStage: PromotionStage | null) 
       }
     });
 
-  return { app, order, fake, okxBroker };
+  return { app, order, fake, okxBroker, cookie, config: configInMode };
 }
 
 const placedOrders = (fake: ReturnType<typeof createFakeOkx>) =>
@@ -147,6 +147,31 @@ describe("Human gates G2/G3 guard direct exchange orders (audit-3 C3)", () => {
       expect(placedOrders(live.fake)).toHaveLength(0);
     } finally {
       await live.app.close();
+    }
+  });
+});
+
+describe("Execution Mode changes cannot strand exchange positions (audit-3 H5)", () => {
+  it("refuses switching between the Demo and real-money venues while exchange positions are open", async () => {
+    const { app, order, cookie, config } = await setup("Demo", "Live");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/v1/config",
+        headers: { cookie },
+        payload: {
+          config: { ...config, system: { ...config.system, executionMode: "Live" } },
+          reason: "go live",
+          stepUpPassword: PASSWORD
+        }
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/open exchange position/i);
+    } finally {
+      await app.close();
     }
   });
 });

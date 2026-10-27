@@ -331,7 +331,11 @@ export class UnattendedScheduler {
       // 3. In Demo and Live modes, maintain honest DMS heartbeat and position reconciliation
       if (this.exchangeBroker) {
         const sys = this.getSystemConfig();
-        if (sys.executionMode === "Demo" || sys.executionMode === "Live") {
+        if (
+          sys.executionMode === "Demo" ||
+          sys.executionMode === "Live-Ramp" ||
+          sys.executionMode === "Live"
+        ) {
           try {
             await this.exchangeBroker.sendDmsHeartbeat();
           } catch (err) {
