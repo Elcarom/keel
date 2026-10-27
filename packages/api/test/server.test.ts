@@ -498,7 +498,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         expect(ScaledDecimal.fromString(pos.feesPaidUsdt).isPositive()).toBe(true);
       }
 
-      // 5. Verify LedgerRepository reflects exchange entry fees (cash reduced, feesExpense increased)
+      // 5. Exchange fees land in the exchange book; the paper book is untouched (audit-3 C2)
       const paperStatusRes = await app.inject({
         method: "GET",
         url: "/api/v1/paper/status",
@@ -507,12 +507,17 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(paperStatusRes.statusCode).toBe(200);
       const trialBalance = paperStatusRes.json().trialBalance;
       expect(trialBalance.isBalanced).toBe(true);
-      expect(ScaledDecimal.fromString(trialBalance.feesExpenseUsdt).isPositive()).toBe(true);
-      expect(
-        ScaledDecimal.fromString(trialBalance.cashBalanceUsdt).lt(
-          ScaledDecimal.fromString("10000.00000000")
-        )
-      ).toBe(true);
+      expect(ScaledDecimal.fromString(trialBalance.feesExpenseUsdt).isZero()).toBe(true);
+
+      // 6. A paper flatten never closes a real exchange position (audit-3 C2)
+      const paperFlattenRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/paper/flatten",
+        headers: { cookie: cookieHeader },
+        payload: { reason: "paper drill" }
+      });
+      expect(paperFlattenRes.statusCode).toBe(200);
+      expect(okxBroker.getOpenPositions()).toHaveLength(1);
     } finally {
       await app.close();
     }

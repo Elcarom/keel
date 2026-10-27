@@ -50,6 +50,7 @@ import {
 } from "./market.js";
 import {
   PAPER_SCHEMA_SQL,
+  bookSchemaSql,
   createLedgerRepository,
   createPaperAccountRepository,
   createPromotionRepository,
@@ -100,6 +101,9 @@ export interface SqliteDataStore extends BackupService {
   readonly experimentRepo: ExperimentRepository;
   readonly ledgerRepo: LedgerRepository;
   readonly paperAccountRepo: PaperAccountRepository;
+  /** Real-venue book: positions, orders and ledger kept apart from paper simulation (audit-3 C2). */
+  readonly exchangeLedgerRepo: LedgerRepository;
+  readonly exchangeAccountRepo: PaperAccountRepository;
   readonly promotionRepo: PromotionRepository;
   readonly shadowRepo: ShadowRepository;
   readonly strategySpecRepo: StrategySpecRepository;
@@ -242,6 +246,8 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   } catch {
     // Column already exists
   }
+  db.exec(bookSchemaSql("paper"));
+  db.exec(bookSchemaSql("exchange"));
   db.exec(PAPER_SCHEMA_SQL);
   db.exec(SPEC_SCHEMA_SQL);
   try {
@@ -258,6 +264,12 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     options.initialPaperCapitalUsdt ?? "10000.00000000"
   );
   const paperAccountRepo = createPaperAccountRepository(db);
+  const exchangeLedgerRepo = createLedgerRepository(
+    db,
+    options.initialPaperCapitalUsdt ?? "10000.00000000",
+    "exchange"
+  );
+  const exchangeAccountRepo = createPaperAccountRepository(db, "exchange");
   const promotionRepo = createPromotionRepository(db);
   const shadowRepo = createShadowRepository(db);
 
@@ -660,6 +672,8 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     experimentRepo,
     ledgerRepo,
     paperAccountRepo,
+    exchangeLedgerRepo,
+    exchangeAccountRepo,
     promotionRepo,
     shadowRepo,
     strategySpecRepo,
