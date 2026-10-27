@@ -24,6 +24,12 @@ export interface UnattendedSchedulerOptions {
   readonly intervalMs?: number | undefined;
 }
 
+/**
+ * DMS heartbeat cadence: 4 beats per 60s cancel-all-after countdown, on a timer of its own so a
+ * slow bar step can never let the switch fire on a healthy engine (audit-3 H8).
+ */
+export const DMS_HEARTBEAT_INTERVAL_MS = 15_000;
+
 export interface SchedulerStepResult {
   readonly ok: boolean;
   readonly timestampMs: number;
@@ -51,7 +57,9 @@ export class UnattendedScheduler {
   private readonly intervalMs: number;
 
   private timer: NodeJS.Timeout | null = null;
+  private dmsTimer: NodeJS.Timeout | null = null;
   private isStepping = false;
+  private isBeating = false;
 
   public constructor(options: UnattendedSchedulerOptions) {
     this.clock = options.clock;
@@ -76,12 +84,47 @@ export class UnattendedScheduler {
     this.timer = setInterval(() => {
       void this.stepOnce().catch(() => {});
     }, this.intervalMs);
+    this.dmsTimer = setInterval(() => {
+      void this.heartbeatOnce();
+    }, DMS_HEARTBEAT_INTERVAL_MS);
+  }
+
+  /** Refreshes the exchange DMS countdown in exchange Execution Modes; alerts on failure. */
+  public async heartbeatOnce(): Promise<void> {
+    if (!this.exchangeBroker || !this.isExchangeMode() || this.isBeating) {
+      return;
+    }
+    this.isBeating = true;
+    try {
+      await this.exchangeBroker.sendDmsHeartbeat();
+    } catch (err) {
+      if (this.notificationChannel) {
+        const nowMs = this.clock.nowMs();
+        void this.notificationChannel.send({
+          severity: "CRITICAL",
+          title: "DEAD-MAN SWITCH HEARTBEAT FAILED",
+          body: `DMS heartbeat failed: ${String(err)}`,
+          dedupKey: `dms-beat-fail-${Math.floor(nowMs / 300_000)}`
+        });
+      }
+    } finally {
+      this.isBeating = false;
+    }
+  }
+
+  private isExchangeMode(): boolean {
+    const mode = this.getSystemConfig().executionMode;
+    return mode === "Demo" || mode === "Live-Ramp" || mode === "Live";
   }
 
   public stop(): void {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.dmsTimer !== null) {
+      clearInterval(this.dmsTimer);
+      this.dmsTimer = null;
     }
   }
 
@@ -330,12 +373,7 @@ export class UnattendedScheduler {
 
       // 3. In Demo and Live modes, maintain honest DMS heartbeat and position reconciliation
       if (this.exchangeBroker) {
-        const sys = this.getSystemConfig();
-        if (
-          sys.executionMode === "Demo" ||
-          sys.executionMode === "Live-Ramp" ||
-          sys.executionMode === "Live"
-        ) {
+        if (this.isExchangeMode()) {
           try {
             await this.exchangeBroker.sendDmsHeartbeat();
           } catch (err) {
