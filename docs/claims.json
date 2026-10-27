@@ -292,5 +292,11 @@
     "claim": "A3 / T2 Strategy Spec Bounds: Pre-parse structural budget validator rejects 3,000-deep nesting without RangeError.",
     "testFile": "packages/spec/test/spec-bounds.test.ts",
     "testName": "rejects 3,000-deep nested AST with clean validation error without throwing RangeError"
+  },
+  {
+    "id": "CLAIM-AUDIT3-C1-FLATTEN-KEEPS-STOPS",
+    "claim": "Emergency flatten keeps each Protective Stop resting until that position's close fill is confirmed; failed closes keep their stop and the DMS stays armed.",
+    "testFile": "packages/broker/test/flatten-protection.test.ts",
+    "testName": "keeps the exchange-side stop resting when the market close is rejected"
   }
 ]

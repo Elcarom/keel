@@ -1139,91 +1139,80 @@ export class OkxBroker implements ExchangeBroker {
     };
   }
 
+  /** Cancels resting stop/TP algos for one instrument; only call once its position is flat. */
+  private async cancelProtectiveAlgos(
+    instId: string,
+    creds: OkxCredentials,
+    nowMs: number
+  ): Promise<void> {
+    const cancelPayload: Array<{ algoId: string; instId: string }> = [];
+    for (const ordType of ["conditional", "oco"]) {
+      const queryPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(instId)}&ordType=${ordType}`;
+      try {
+        const res = await this.fetchFn(`https://www.okx.com${queryPath}`, {
+          method: "GET",
+          headers: buildOkxHeaders({
+            method: "GET",
+            path: queryPath,
+            credentials: creds,
+            timestampIso: new Date(nowMs).toISOString(),
+            isDemo: this.isDemo
+          })
+        });
+        if (res.ok) {
+          const resJson = (await res.json()) as {
+            code?: string;
+            data?: Array<{ algoId?: string; instId?: string }>;
+          };
+          if (resJson.code === "0" && Array.isArray(resJson.data)) {
+            for (const a of resJson.data) {
+              if (a.algoId && a.instId === instId) {
+                cancelPayload.push({ algoId: a.algoId, instId });
+              }
+            }
+          }
+        }
+      } catch {
+        // An orphaned reduce-only stop on a flat instrument is harmless; reconciliation re-checks
+      }
+    }
+    if (cancelPayload.length === 0) {
+      return;
+    }
+
+    const cancelPath = "/api/v5/trade/cancel-algo-orders";
+    const cancelBody = JSON.stringify(cancelPayload);
+    try {
+      await this.fetchFn(`https://www.okx.com${cancelPath}`, {
+        method: "POST",
+        headers: buildOkxHeaders({
+          method: "POST",
+          path: cancelPath,
+          body: cancelBody,
+          credentials: creds,
+          timestampIso: new Date(nowMs).toISOString(),
+          isDemo: this.isDemo
+        }),
+        body: cancelBody
+      });
+    } catch {
+      // See above: leaving the algo resting is the safe failure mode
+    }
+  }
+
   public async flattenAllPositions(reason: string): Promise<readonly PaperPositionRecord[]> {
     const creds = this.getCredentials();
     const nowMs = this.clock.nowMs();
     const failedPositionIds = new Set<string>();
     const confirmedFills = new Map<string, { exitPrice: string; fee: ScaledDecimal }>();
 
+    let foreignFailures = 0;
+
     if (creds && creds.apiKey) {
-      // 1. Explicitly cancel all resting algo orders (stops, take-profits) on exchange (M-C / ADR-0018)
-      try {
-        const cancelAlgoPath = "/api/v5/trade/cancel-algo-orders";
-        const cancelPayload: Array<{ algoId?: string | undefined; instId: string }> = [];
+      // Protective stops stay resting until each position's close is confirmed (audit-3 C1):
+      // they are cancelled per instrument after the fill, never up front.
 
-        for (const ordType of ["conditional", "oco"]) {
-          try {
-            const queryAlgosPath = `/api/v5/trade/orders-algo-pending?ordType=${ordType}`;
-            const queryHeaders = buildOkxHeaders({
-              method: "GET",
-              path: queryAlgosPath,
-              credentials: creds,
-              timestampIso: new Date(nowMs).toISOString(),
-              isDemo: this.isDemo
-            });
-            const algosRes = await this.fetchFn(`https://www.okx.com${queryAlgosPath}`, {
-              method: "GET",
-              headers: queryHeaders
-            });
-            if (algosRes.ok) {
-              const resJson = (await algosRes.json()) as {
-                code?: string;
-                data?: Array<{ algoId?: string; instId?: string }>;
-              };
-              if (resJson.code === "0" && Array.isArray(resJson.data)) {
-                for (const a of resJson.data) {
-                  if (a.instId) {
-                    cancelPayload.push({ algoId: a.algoId, instId: a.instId });
-                  }
-                }
-              }
-            }
-          } catch {
-            // Ignore sub-query error
-          }
-        }
-
-        const cancelAlgoBody = JSON.stringify(cancelPayload);
-        const cancelAlgoHeaders = buildOkxHeaders({
-          method: "POST",
-          path: cancelAlgoPath,
-          body: cancelAlgoBody,
-          credentials: creds,
-          timestampIso: new Date(nowMs).toISOString(),
-          isDemo: this.isDemo
-        });
-        await this.fetchFn(`https://www.okx.com${cancelAlgoPath}`, {
-          method: "POST",
-          headers: cancelAlgoHeaders,
-          body: cancelAlgoBody
-        });
-      } catch {
-        // Continue to market reduceOnly orders
-      }
-
-      // 2. Disarm/clear dead-man switch timer via cancel-all-after timeOut: "0"
-      const cancelPath = "/api/v5/trade/cancel-all-after";
-      const cancelBody = JSON.stringify({ timeOut: "0" });
-      const cancelHeaders = buildOkxHeaders({
-        method: "POST",
-        path: cancelPath,
-        body: cancelBody,
-        credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
-        isDemo: this.isDemo
-      });
-
-      try {
-        await this.fetchFn(`https://www.okx.com${cancelPath}`, {
-          method: "POST",
-          headers: cancelHeaders,
-          body: cancelBody
-        });
-      } catch {
-        // Continue to market reduceOnly orders
-      }
-
-      // 2. Query OKX account positions to detect untracked / foreign positions
+      // 1. Query OKX account positions to detect untracked / foreign positions
       let exchangePositions: Array<{
         instId: string;
         pos: string;
@@ -1284,7 +1273,7 @@ export class OkxBroker implements ExchangeBroker {
         }
       }
 
-      // 3. Submit market reduceOnly orders for all open local positions
+      // 2. Submit market reduceOnly orders for all open local positions
       for (const pos of this.localPositions.values()) {
         if (pos.status === "OPEN") {
           const flatClOrdId =
@@ -1417,11 +1406,12 @@ export class OkxBroker implements ExchangeBroker {
               exitPrice: realExitPxStr,
               fee: realExitFee ?? ScaledDecimal.zero()
             });
+            await this.cancelProtectiveAlgos(pos.instrumentId, creds, nowMs);
           }
         }
       }
 
-      // 4. Dispose of untracked foreign exchange positions not present in local state
+      // 3. Dispose of untracked foreign exchange positions not present in local state
       for (const exPos of exchangePositions) {
         const matchingLocal = Array.from(this.localPositions.values()).find(
           (lp) => lp.status === "OPEN" && lp.instrumentId === exPos.instId
@@ -1503,14 +1493,41 @@ export class OkxBroker implements ExchangeBroker {
             foreignErrMsg = err instanceof Error ? err.message : String(err);
           }
 
-          if (!foreignSuccess && this.notificationChannel) {
-            await this.notificationChannel.send({
-              severity: "CRITICAL",
-              title: "FOREIGN POSITION FLATTEN FAILED",
-              body: `Failed to close untracked foreign exchange position ${exPos.instId} (${foreignSz} lots): ${foreignErrMsg}`,
-              dedupKey: `foreign-flatten-fail-${exPos.instId}-${nowMs}`
-            });
+          if (!foreignSuccess) {
+            foreignFailures += 1;
+            if (this.notificationChannel) {
+              await this.notificationChannel.send({
+                severity: "CRITICAL",
+                title: "FOREIGN POSITION FLATTEN FAILED",
+                body: `Failed to close untracked foreign exchange position ${exPos.instId} (${foreignSz} lots): ${foreignErrMsg}`,
+                dedupKey: `foreign-flatten-fail-${exPos.instId}-${nowMs}`
+              });
+            }
+          } else if (!matchingLocal) {
+            await this.cancelProtectiveAlgos(exPos.instId, creds, nowMs);
           }
+        }
+      }
+
+      // 4. Disarm the dead-man's switch only once every position is confirmed flat
+      if (failedPositionIds.size === 0 && foreignFailures === 0) {
+        const cancelPath = "/api/v5/trade/cancel-all-after";
+        const cancelBody = JSON.stringify({ timeOut: "0" });
+        try {
+          await this.fetchFn(`https://www.okx.com${cancelPath}`, {
+            method: "POST",
+            headers: buildOkxHeaders({
+              method: "POST",
+              path: cancelPath,
+              body: cancelBody,
+              credentials: creds,
+              timestampIso: new Date(nowMs).toISOString(),
+              isDemo: this.isDemo
+            }),
+            body: cancelBody
+          });
+        } catch {
+          // Leaving the DMS armed is the safe failure mode
         }
       }
     }

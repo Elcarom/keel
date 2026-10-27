@@ -1882,58 +1882,6 @@ describe("OkxBroker & Attached Protective Stops (M5)", () => {
     ).toBe(true);
   });
 
-  it("M-C: flattenAllPositions explicitly cancels attached algo orders on exchange", async () => {
-    const clock = new ManualClock(1_750_000_000_000);
-    const config = createDefaultConfig();
-    const cancelledAlgos: string[] = [];
-
-    const mockFetch = async (url: string, _init?: { body?: string }) => {
-      if (url.includes("/api/v5/trade/cancel-algo-orders")) {
-        cancelledAlgos.push(url);
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ code: "0", data: [{ sCode: "0" }] }),
-          text: async () => ""
-        };
-      }
-      if (url.includes("/api/v5/account/positions")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ code: "0", data: [] }),
-          text: async () => ""
-        };
-      }
-      if (url.includes("/api/v5/trade/order")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ code: "0", data: [{ ordId: "ord_flat", sCode: "0" }] }),
-          text: async () => ""
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ code: "0", data: [] }),
-        text: async () => ""
-      };
-    };
-
-    const broker = new OkxBroker({
-      clock,
-      getRiskConfig: () => config.risk,
-      getCredentials: () => credentials,
-      isDemo: true,
-      fetchFn: mockFetch
-    });
-
-    await broker.flattenAllPositions("Emergency flatten");
-    // Must call cancel-algo-orders to explicitly cancel resting stops/TPs!
-    expect(cancelledAlgos.length).toBeGreaterThan(0);
-  });
-
   it("Reconciliation: queries both conditional and oco ordTypes and matches long/short and net mode positions", async () => {
     const clock = new ManualClock(1_750_000_000_000);
     const config = createDefaultConfig();
