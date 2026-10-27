@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  BarTimeframeSchema,
   ScaledDecimal,
   sha256Hex,
   type ConfirmedBar,
@@ -12,8 +11,151 @@ import {
 import type { Strategy } from "@keel/strategy";
 
 // ============================================================================
-// 1. AST Expressions & Zod Schema
+// 1. AST Expressions, Structural Budget Validator, & Zod Schema (ADR-0020 & T2/A3)
 // ============================================================================
+
+export interface AstBudgetCheckResult {
+  readonly valid: boolean;
+  readonly error?: string;
+  readonly totalNodes?: number;
+  readonly maxDepth?: number;
+}
+
+export function validateSpecAstBudget(raw: unknown): AstBudgetCheckResult {
+  if (typeof raw !== "object" || raw === null) {
+    return { valid: false, error: "Spec must be a non-null object" };
+  }
+
+  const spec = raw as Record<string, unknown>;
+
+  // 1. Check general JSON nesting depth across the whole object using an iterative DFS
+  // Max depth budget: 8 for any branch.
+  const generalStack: Array<{ val: unknown; depth: number }> = [{ val: raw, depth: 1 }];
+  while (generalStack.length > 0) {
+    const item = generalStack.pop();
+    if (!item) break;
+    if (item.depth > 8) {
+      return {
+        valid: false,
+        error: `JSON nesting depth exceeds maximum allowed limit of 8 (found depth > ${item.depth})`
+      };
+    }
+    if (typeof item.val === "object" && item.val !== null) {
+      if (Array.isArray(item.val)) {
+        for (let i = 0; i < item.val.length; i++) {
+          generalStack.push({ val: item.val[i], depth: item.depth + 1 });
+        }
+      } else {
+        const obj = item.val as Record<string, unknown>;
+        const keys = Object.keys(obj);
+        for (let i = 0; i < keys.length; i++) {
+          const key = keys[i];
+          if (key !== undefined) {
+            generalStack.push({ val: obj[key], depth: item.depth + 1 });
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Count AST nodes and check AST depth specifically within rules (longEntry, shortEntry)
+  // Max AST depth: 6
+  // Max AST total nodes: 32
+  let totalAstNodes = 0;
+  let maxAstDepthFound = 0;
+
+  const rulesObj = spec["rules"];
+  if (typeof rulesObj === "object" && rulesObj !== null) {
+    const rules = rulesObj as Record<string, unknown>;
+    const entryRules = [rules["longEntry"], rules["shortEntry"]].filter(
+      (r): r is Record<string, unknown> => typeof r === "object" && r !== null
+    );
+
+    for (const entryRule of entryRules) {
+      const astStack: Array<{ node: Record<string, unknown>; depth: number }> = [
+        { node: entryRule, depth: 1 }
+      ];
+
+      while (astStack.length > 0) {
+        const item = astStack.pop();
+        if (!item) break;
+        const { node, depth } = item;
+        totalAstNodes++;
+
+        if (depth > maxAstDepthFound) {
+          maxAstDepthFound = depth;
+        }
+
+        if (depth > 6) {
+          return {
+            valid: false,
+            error: `AST expression depth ${depth} exceeds maximum limit of 6`
+          };
+        }
+
+        if (totalAstNodes > 32) {
+          return {
+            valid: false,
+            error: `Total AST node count ${totalAstNodes} exceeds budget limit of 32`
+          };
+        }
+
+        const nodeType = typeof node["type"] === "string" ? node["type"] : undefined;
+
+        if (nodeType === "logical_op") {
+          const operands = node["operands"];
+          if (Array.isArray(operands)) {
+            for (const op of operands) {
+              if (typeof op === "object" && op !== null) {
+                astStack.push({ node: op as Record<string, unknown>, depth: depth + 1 });
+              }
+            }
+          }
+        } else if (nodeType === "comparison") {
+          if (typeof node["left"] === "object" && node["left"] !== null) {
+            astStack.push({ node: node["left"] as Record<string, unknown>, depth: depth + 1 });
+          }
+          if (typeof node["right"] === "object" && node["right"] !== null) {
+            astStack.push({ node: node["right"] as Record<string, unknown>, depth: depth + 1 });
+          }
+        } else if (nodeType === "binary_op") {
+          if (typeof node["left"] === "object" && node["left"] !== null) {
+            astStack.push({ node: node["left"] as Record<string, unknown>, depth: depth + 1 });
+          }
+          if (typeof node["right"] === "object" && node["right"] !== null) {
+            astStack.push({ node: node["right"] as Record<string, unknown>, depth: depth + 1 });
+          }
+        } else if (nodeType === "crosses_above" || nodeType === "crosses_below") {
+          if (typeof node["seriesA"] === "object" && node["seriesA"] !== null) {
+            astStack.push({ node: node["seriesA"] as Record<string, unknown>, depth: depth + 1 });
+          }
+          if (typeof node["seriesB"] === "object" && node["seriesB"] !== null) {
+            astStack.push({ node: node["seriesB"] as Record<string, unknown>, depth: depth + 1 });
+          }
+        } else {
+          for (const key of Object.keys(node)) {
+            const val = node[key];
+            if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+              astStack.push({ node: val as Record<string, unknown>, depth: depth + 1 });
+            } else if (Array.isArray(val)) {
+              for (const elem of val) {
+                if (typeof elem === "object" && elem !== null) {
+                  astStack.push({ node: elem as Record<string, unknown>, depth: depth + 1 });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    valid: true,
+    totalNodes: totalAstNodes,
+    maxDepth: maxAstDepthFound
+  };
+}
 
 export type NumExpr =
   | { readonly type: "constant"; readonly value: number }
@@ -44,13 +186,13 @@ export const NumExprSchema: z.ZodType<NumExpr> = z.lazy(() =>
     z.object({
       type: z.literal("bar_field"),
       field: z.enum(["open", "high", "low", "close", "volume"]),
-      shift: z.number().int().min(0).optional()
+      shift: z.number().int().min(0).max(500).optional()
     }),
     z.object({
       type: z.literal("indicator"),
       id: z.string().min(1),
       output: z.string().optional(),
-      shift: z.number().int().min(0).optional()
+      shift: z.number().int().min(0).max(500).optional()
     }),
     z.object({
       type: z.literal("binary_op"),
@@ -64,7 +206,7 @@ export const NumExprSchema: z.ZodType<NumExpr> = z.lazy(() =>
 export type Condition =
   | {
       readonly type: "comparison";
-      readonly op: ">" | ">=" | "<" | "<=" | "==" | "!=";
+      readonly op: ">" | ">=" | "<" | "<=";
       readonly left: NumExpr;
       readonly right: NumExpr;
     }
@@ -88,7 +230,7 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
   z.discriminatedUnion("type", [
     z.object({
       type: z.literal("comparison"),
-      op: z.enum([">", ">=", "<", "<=", "==", "!="]),
+      op: z.enum([">", ">=", "<", "<="]),
       left: NumExprSchema,
       right: NumExprSchema
     }),
@@ -113,7 +255,7 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
 export const IndicatorDefSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(["donchian", "atr", "sma", "stddev", "zscore", "momentum"]),
-  period: z.number().int().positive(),
+  period: z.number().int().min(2).max(500),
   params: z.record(z.string(), z.union([z.number(), z.string()])).optional()
 });
 export type IndicatorDef = z.infer<typeof IndicatorDefSchema>;
@@ -122,43 +264,64 @@ export const RiskRulesSchema = z.object({
   stopModel: z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("atr_multiple"),
-      multiplier: z.number().positive(),
-      atrPeriod: z.number().int().positive()
+      multiplier: z.number().min(0.1).max(10),
+      atrPeriod: z.number().int().min(2).max(500)
     }),
     z.object({
       kind: z.literal("channel_bound"),
-      period: z.number().int().positive()
+      period: z.number().int().min(2).max(500)
     }),
     z.object({
       kind: z.literal("fixed_points"),
-      points: z.number().positive()
+      points: z.number().positive().max(1_000_000)
     })
   ]),
   takeProfit: z.object({
-    rewardMultiple: z.number().positive()
-  })
+    rewardMultiple: z.number().min(0.5).max(10)
+  }),
+  timeStopBars: z.number().int().min(1).max(500).optional()
 });
 export type RiskRules = z.infer<typeof RiskRulesSchema>;
 
-export const StrategySpecV1Schema = z.object({
-  name: z.string().min(1),
+export const BaseStrategySpecV1Schema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9._-]+$/, "Name must contain only alphanumeric characters, '.', '_', or '-'"),
   version: z.literal(1),
-  description: z.string(),
-  timeframe: BarTimeframeSchema,
-  lookbacks: z.record(BarTimeframeSchema, z.number().int().positive()),
-  indicators: z.array(IndicatorDefSchema),
+  description: z.string().max(2000),
+  timeframe: z.literal("1H"),
+  lookbacks: z.record(z.literal("1H"), z.number().int().min(1).max(500)),
+  indicators: z.array(IndicatorDefSchema).max(8),
   rules: z.object({
     longEntry: ConditionSchema,
     shortEntry: ConditionSchema
   }),
   risk: RiskRulesSchema,
+  cooldownBars: z.number().int().min(0).max(200).default(0),
+  timeStopBars: z.number().int().min(1).max(500).optional(),
   synthetic: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
 });
-export type StrategySpecV1 = z.infer<typeof StrategySpecV1Schema>;
+
+export type StrategySpecV1 = z.infer<typeof BaseStrategySpecV1Schema>;
+
+export const StrategySpecV1Schema: z.ZodType<StrategySpecV1, z.ZodTypeDef, unknown> = z
+  .unknown()
+  .superRefine((val, ctx) => {
+    const budget = validateSpecAstBudget(val);
+    if (!budget.valid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: budget.error ?? "Spec AST resource budget exceeded"
+      });
+    }
+  })
+  .pipe(BaseStrategySpecV1Schema);
 
 // ============================================================================
-// 2. Canonical JSON Serialization & Parameter Hashing (ADR-0020)
+// 2. Canonical JSON Serialization & Parameter Hashing (ADR-0020 & T2)
 // ============================================================================
 
 export function sortObjectKeys(value: unknown): unknown {
@@ -180,7 +343,9 @@ export function sortObjectKeys(value: unknown): unknown {
 }
 
 export function computeSpecHash(spec: StrategySpecV1): string {
-  const canonical = JSON.stringify(sortObjectKeys(spec));
+  // Exclude metadata from canonical hash calculation (ADR-0020 & Ticket T2)
+  const { metadata: _omittedMetadata, ...hashableSpec } = spec;
+  const canonical = JSON.stringify(sortObjectKeys(hashableSpec));
   return sha256Hex(canonical);
 }
 
@@ -484,10 +649,6 @@ function evaluateCondition(
           return l < r;
         case "<=":
           return l <= r;
-        case "==":
-          return l === r;
-        case "!=":
-          return l !== r;
       }
       return false;
     }
@@ -547,6 +708,8 @@ export class SpecStrategy implements Strategy {
   public readonly lookbacks: LookbackRequirement;
   public readonly lookbackRequirements: LookbackRequirement;
   public readonly isSynthetic: boolean;
+  public readonly cooldownBars: number;
+  public readonly timeStopBars?: number | undefined;
   private readonly spec: StrategySpecV1;
 
   public constructor(spec: StrategySpecV1) {
@@ -560,6 +723,8 @@ export class SpecStrategy implements Strategy {
     this.lookbacks = this.spec.lookbacks;
     this.lookbackRequirements = this.lookbacks;
     this.isSynthetic = Boolean(this.spec.synthetic);
+    this.cooldownBars = this.spec.cooldownBars ?? 0;
+    this.timeStopBars = this.spec.timeStopBars ?? this.spec.risk.timeStopBars;
   }
 
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {
@@ -790,7 +955,8 @@ export const DONCHIAN_TREND_V1_SPEC: StrategySpecV1 = {
     takeProfit: {
       rewardMultiple: 2.5
     }
-  }
+  },
+  cooldownBars: 0
 };
 
 export const VOL_MEAN_REVERSION_V1_SPEC: StrategySpecV1 = {
@@ -828,7 +994,8 @@ export const VOL_MEAN_REVERSION_V1_SPEC: StrategySpecV1 = {
     takeProfit: {
       rewardMultiple: 1.8
     }
-  }
+  },
+  cooldownBars: 0
 };
 
 export const VOL_MOMENTUM_V1_SPEC: StrategySpecV1 = {
@@ -866,7 +1033,8 @@ export const VOL_MOMENTUM_V1_SPEC: StrategySpecV1 = {
     takeProfit: {
       rewardMultiple: 2.2
     }
-  }
+  },
+  cooldownBars: 0
 };
 
 export const SYNTHETIC_DONCHIAN_FIXTURE_SPEC: StrategySpecV1 = {

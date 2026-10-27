@@ -93,7 +93,8 @@ describe("StrategySpecV1 Schema & Canonical Hash (ADR-0020)", () => {
       rules: specB.rules,
       lookbacks: specB.lookbacks,
       indicators: specB.indicators,
-      timeframe: specB.timeframe
+      timeframe: specB.timeframe,
+      cooldownBars: specB.cooldownBars
     };
 
     const hashA = computeSpecHash(specA);

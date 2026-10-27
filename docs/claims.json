@@ -286,5 +286,11 @@
     "claim": "ADR-0021 Promotion Quarantine: Strictly rejects promotion of synthetic or quarantined strategy specs to Demo or Live with 403.",
     "testFile": "packages/api/test/specs-and-quarantine.test.ts",
     "testName": "strictly rejects promotion of synthetic/quarantined specs to Demo or Live with 403 (ADR-0021)"
+  },
+  {
+    "id": "CLAIM-A3-SPEC-BOUNDS",
+    "claim": "A3 / T2 Strategy Spec Bounds: Pre-parse structural budget validator rejects 3,000-deep nesting without RangeError.",
+    "testFile": "packages/spec/test/spec-bounds.test.ts",
+    "testName": "rejects 3,000-deep nested AST with clean validation error without throwing RangeError"
   }
 ]
