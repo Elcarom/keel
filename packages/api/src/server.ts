@@ -13,13 +13,18 @@ import {
   defaultInstrumentSpec,
   diffConfigs,
   getUtcDayStartMs,
+  isExchangeExecutionMode,
   keelApiContract,
+  type CircuitBreakerRecord,
+  type CircuitBreakerStatus,
   type Clock,
   type ExchangeBroker,
   type KeelConfig,
   type LookbackValidationResult,
   type ExecutionMode,
+  type KillSwitchFlattenOutcome,
   type LlmGateway,
+  type PaperPositionRecord,
   type PortfolioRiskState,
   type PromotionStage,
   type Proposal,
@@ -147,7 +152,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     clock,
     ledgerRepo: dataStore.ledgerRepo,
     paperAccountRepo: dataStore.paperAccountRepo,
-    getRiskConfig: () => getActiveSnapshot().config.risk
+    getRiskConfig: () => getActiveSnapshot().config.risk,
+    // Deferred until the running tick returns so the flatten never re-enters it
+    onCircuitBreakerTripped: (record) => {
+      void Promise.resolve().then(() => onCircuitBreakerTripped(record));
+    }
   });
 
   const llmGateway =
@@ -166,8 +175,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   // Demo and real-money positions live on different OKX accounts: switching venue while the
   // exchange book holds positions would orphan them from the DMS, reconciliation and flatten
+  // Leaving the exchange modes would likewise stop their DMS heartbeat and reconciliation.
   const venueSwitchStrandsPositions = (from: ExecutionMode, to: ExecutionMode): string | null => {
-    if (okxDemoVenueFor(from) === okxDemoVenueFor(to)) {
+    if (isExchangeExecutionMode(to) && okxDemoVenueFor(from) === okxDemoVenueFor(to)) {
       return null;
     }
     const open = dataStore.exchangeAccountRepo.listOpenPositions().length;
@@ -210,6 +220,82 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     });
   }
 
+  /** Demotion flattens must not fail the request after the paper book already flattened. */
+  const flattenExchangeOrAlert = async (
+    reason: string
+  ): Promise<readonly PaperPositionRecord[]> => {
+    try {
+      return await okxBroker.flattenAllPositions(reason);
+    } catch (err) {
+      await notifier.send({
+        severity: "CRITICAL",
+        title: "EXCHANGE FLATTEN FAILED",
+        body: `${reason}: ${err instanceof Error ? err.message : String(err)}`,
+        dedupKey: `exchange-flatten-fail-${clock.nowMs()}`
+      });
+      return [];
+    }
+  };
+
+  const isKillSwitchStatus = (status: CircuitBreakerStatus): boolean =>
+    status === "MANUAL_KILL_SWITCH" || status === "DRAWDOWN_KILL_SWITCH";
+
+  /**
+   * Kill Switch Flatten (audit-3 H9): closes every position in both Trading Books, then verifies
+   * against the venue itself, so untracked positions the flatten could not close count as open.
+   */
+  const runKillSwitchFlatten = async (reason: string): Promise<KillSwitchFlattenOutcome> => {
+    const errors: string[] = [];
+    const paperClosed = paperBroker.flattenAllPositions(`Kill Switch: ${reason}`);
+    let exchangeClosed: readonly PaperPositionRecord[] = [];
+    try {
+      exchangeClosed = await okxBroker.flattenAllPositions(`Kill Switch: ${reason}`);
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+    let exchangeFlat = false;
+    try {
+      const recon = await okxBroker.reconcilePositions();
+      exchangeFlat =
+        okxBroker.getOpenPositions().length === 0 && recon.exchangePositionsCount === 0;
+    } catch (err) {
+      errors.push(`Venue verification failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const outcome: KillSwitchFlattenOutcome = {
+      paperFlattenedCount: paperClosed.length,
+      exchangeFlattenedCount: exchangeClosed.length,
+      paperFlat: dataStore.paperAccountRepo.listOpenPositions().length === 0,
+      exchangeFlat,
+      errors
+    };
+    if (!outcome.paperFlat || !outcome.exchangeFlat) {
+      await notifier.send({
+        severity: "CRITICAL",
+        title: "KILL SWITCH FLATTEN INCOMPLETE",
+        body: `Kill Switch tripped but positions remain open (paper flat: ${outcome.paperFlat}, exchange flat: ${outcome.exchangeFlat}). ${errors.join("; ")}`,
+        dedupKey: `kill-switch-incomplete-${clock.nowMs()}`
+      });
+    }
+    return outcome;
+  };
+
+  /** Risk Engine trips land here: refresh the exchange broker's breaker, flatten on Kill Switch. */
+  const onCircuitBreakerTripped = async (record: CircuitBreakerRecord): Promise<void> => {
+    okxBroker.setCircuitBreaker(record);
+    if (isKillSwitchStatus(record.status)) {
+      const outcome = await runKillSwitchFlatten(record.reason);
+      dataStore.auditRepo.append({
+        ts: clock.nowMs(),
+        actor: record.updatedBy,
+        clientIp: "internal",
+        action: "kill_switch.trip",
+        riskClass: "confirm",
+        configHash: getActiveSnapshot().configHash,
+        details: { status: record.status, reason: record.reason, killSwitch: outcome }
+      });
+    }
+  };
+
   const scheduler =
     options.scheduler ??
     new UnattendedScheduler({
@@ -228,6 +314,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
   if (options.enableScheduler === true) {
     scheduler.start();
+  } else {
+    // The DMS must stay armed in exchange modes even when bar stepping is disabled (audit-3 H8)
+    scheduler.startHeartbeat();
   }
 
   const getUptimeSeconds = (): number =>
@@ -1360,12 +1449,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
 
-        const isKillSwitch = (s: string) =>
-          s === "MANUAL_KILL_SWITCH" || s === "DRAWDOWN_KILL_SWITCH";
         const current = dataStore.paperAccountRepo.getCircuitBreaker();
 
         // A Kill Switch locks until a manual, stepped-up reset (audit-3 H9)
-        if (isKillSwitch(current.status) && body.status !== current.status) {
+        if (isKillSwitchStatus(current.status) && body.status !== current.status) {
           const stepUpOk = authManager.verifyStepUp({
             sessionToken: ingress.sessionToken,
             password: body.stepUpPassword,
@@ -1385,7 +1472,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         // Lock first so no entry can slip in while positions are being flattened. The breaker
         // table is shared by both books; the exchange broker's cached copy is refreshed too.
-        const tripping = isKillSwitch(body.status);
+        const tripping = isKillSwitchStatus(body.status);
         const updated = paperBroker.setCircuitBreaker({
           status: body.status,
           reason: body.reason,
@@ -1396,40 +1483,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         okxBroker.setCircuitBreaker(updated);
 
         // Kill Switch Flatten: close every paper and exchange position and verify both are flat
-        let killSwitch:
-          | {
-              paperFlattenedCount: number;
-              exchangeFlattenedCount: number;
-              paperFlat: boolean;
-              exchangeFlat: boolean;
-              errors: string[];
-            }
-          | undefined;
-        if (tripping) {
-          const errors: string[] = [];
-          const paperClosed = paperBroker.flattenAllPositions(`Kill Switch: ${body.reason}`);
-          let exchangeClosed: readonly unknown[] = [];
-          try {
-            exchangeClosed = await okxBroker.flattenAllPositions(`Kill Switch: ${body.reason}`);
-          } catch (err) {
-            errors.push(err instanceof Error ? err.message : String(err));
-          }
-          killSwitch = {
-            paperFlattenedCount: paperClosed.length,
-            exchangeFlattenedCount: exchangeClosed.length,
-            paperFlat: dataStore.paperAccountRepo.listOpenPositions().length === 0,
-            exchangeFlat: okxBroker.getOpenPositions().length === 0,
-            errors
-          };
-          if (!killSwitch.paperFlat || !killSwitch.exchangeFlat) {
-            await notifier.send({
-              severity: "CRITICAL",
-              title: "KILL SWITCH FLATTEN INCOMPLETE",
-              body: `Kill Switch tripped but positions remain open (paper flat: ${killSwitch.paperFlat}, exchange flat: ${killSwitch.exchangeFlat}). ${errors.join("; ")}`,
-              dedupKey: `kill-switch-incomplete-${clock.nowMs()}`
-            });
-          }
-        }
+        const killSwitch = tripping ? await runKillSwitchFlatten(body.reason) : undefined;
 
         dataStore.auditRepo.append({
           ts: clock.nowMs(),
@@ -1535,7 +1589,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           const paperClosed = await paperBroker.flattenAllPositions(
             `Auto-Demotion: ${evaluated.demotionReason}`
           );
-          const exchangeClosed = await okxBroker.flattenAllPositions(
+          const exchangeClosed = await flattenExchangeOrAlert(
             `Auto-Demotion: ${evaluated.demotionReason}`
           );
           const flattenedCount = paperClosed.length + exchangeClosed.length;
@@ -1753,7 +1807,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         // Auto-flatten any open positions for that strategy across brokers
         const paperClosed = await paperBroker.flattenAllPositions(`Demotion: ${body.reason}`);
-        const exchangeClosed = await okxBroker.flattenAllPositions(`Demotion: ${body.reason}`);
+        const exchangeClosed = await flattenExchangeOrAlert(`Demotion: ${body.reason}`);
         const flattenedCount = paperClosed.length + exchangeClosed.length;
 
         const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
@@ -2145,7 +2199,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         // Exchange orders exist only in exchange Execution Modes (audit-3 C3)
         const mode = active.config.system.executionMode;
-        if (mode !== "Demo" && mode !== "Live-Ramp" && mode !== "Live") {
+        if (!isExchangeExecutionMode(mode)) {
           return {
             status: 403,
             body: { error: `Exchange orders are disabled in the ${mode} Execution Mode` }
@@ -2172,18 +2226,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
           // The strategy's Promotion Ladder stage must authorize this venue; unpromoted manual
           // orders are confined to the Demo account
-          const authorizedStages: Record<"Demo" | "Live-Ramp" | "Live", readonly string[]> = {
+          const authorizedStages: Partial<Record<ExecutionMode, readonly PromotionStage[]>> = {
             Demo: ["Demo", "Live-Ramp", "Live"],
             "Live-Ramp": ["Live-Ramp", "Live"],
             Live: ["Live"]
           };
-          const stage =
+          const stage: PromotionStage | null =
             strategyId === "manual-execution"
               ? mode === "Demo"
                 ? "Demo"
                 : null
               : (dataStore.promotionRepo.getPromotion(strategyId)?.currentStage ?? null);
-          if (stage === null || !authorizedStages[mode].includes(stage)) {
+          if (stage === null || !(authorizedStages[mode] ?? []).includes(stage)) {
             return {
               status: 403,
               body: {
@@ -2299,6 +2353,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           if (!decision.approved) {
             if (decision.triggeredCircuitBreaker) {
               dataStore.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
+              await onCircuitBreakerTripped(decision.triggeredCircuitBreaker);
             }
             return {
               status: 403,

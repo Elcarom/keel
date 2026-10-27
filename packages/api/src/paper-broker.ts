@@ -33,6 +33,8 @@ export interface PaperBrokerOptions {
   readonly takerFeeBps?: number | undefined;
   readonly halfSpreadBps?: number | undefined;
   readonly slippageBps?: number | undefined;
+  /** Notified after the Risk Engine trips the circuit breaker (e.g. to run a Kill Switch Flatten). */
+  readonly onCircuitBreakerTripped?: ((record: CircuitBreakerRecord) => void) | undefined;
 }
 
 export { type PaperTickResult };
@@ -51,6 +53,7 @@ export class PaperBroker implements Broker {
   private readonly ledgerRepo: LedgerRepository;
   private readonly paperAccountRepo: PaperAccountRepository;
   private readonly getRiskConfig: () => RiskConfig;
+  private readonly onCircuitBreakerTripped: ((record: CircuitBreakerRecord) => void) | undefined;
   private readonly chooser = new BaselineChooser();
   private readonly totalFeeRateBps: number;
   private readonly slippageBps: number;
@@ -60,6 +63,7 @@ export class PaperBroker implements Broker {
     this.ledgerRepo = options.ledgerRepo;
     this.paperAccountRepo = options.paperAccountRepo;
     this.getRiskConfig = options.getRiskConfig;
+    this.onCircuitBreakerTripped = options.onCircuitBreakerTripped;
     const taker = options.takerFeeBps ?? 5;
     const spread = options.halfSpreadBps ?? 2;
     const slippage = options.slippageBps ?? 3;
@@ -248,6 +252,7 @@ export class PaperBroker implements Broker {
           vetoedProposals.push({ proposal: adjustedProp, reason: decision.vetoReason });
           if (decision.triggeredCircuitBreaker) {
             this.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
+            this.onCircuitBreakerTripped?.(decision.triggeredCircuitBreaker);
           }
         } else {
           const entryPrice = exec.entryPrice;
@@ -605,6 +610,7 @@ export class PaperBroker implements Broker {
             vetoedProposals.push({ proposal: prop, reason: decision.vetoReason });
             if (decision.triggeredCircuitBreaker) {
               this.paperAccountRepo.setCircuitBreaker(decision.triggeredCircuitBreaker);
+              this.onCircuitBreakerTripped?.(decision.triggeredCircuitBreaker);
             }
           } else {
             this.paperAccountRepo.savePendingProposal({

@@ -28,7 +28,7 @@ const entry = {
 };
 
 describe("Emergency flatten never leaves a position without its Protective Stop (audit-3 C1)", () => {
-  it("keeps the exchange-side stop resting when the market close is rejected", async () => {
+  it("keeps the Protective Stop resting when the market close is rejected", async () => {
     const fake = createFakeOkx({ closeOrdersSucceed: false });
     const broker = brokerOn(fake);
     await broker.submitOrder(entry);
@@ -81,5 +81,25 @@ describe("Emergency flatten never leaves a position without its Protective Stop 
       const instIds = new Set((cancel.body as Array<{ instId: string }>).map((c) => c.instId));
       expect(instIds.size).toBe(1);
     }
+  });
+});
+
+describe("Closing one position never removes another position's Protective Stop (audit-3 review)", () => {
+  it("keeps the stop of a second open position on the same instrument after a reduce-only close", async () => {
+    const fake = createFakeOkx();
+    const broker = brokerOn(fake);
+    await broker.submitOrder({ ...entry, strategyId: "strategy-a", clOrdId: "entryA" });
+    await broker.submitOrder({ ...entry, strategyId: "strategy-b", clOrdId: "entryB" });
+    expect(fake.pendingAlgos()).toHaveLength(2);
+
+    await broker.submitOrder({
+      ...entry,
+      side: "short",
+      reduceOnly: true,
+      strategyId: "strategy-a"
+    });
+
+    expect(broker.getOpenPositions()).toHaveLength(1);
+    expect(fake.pendingAlgos().length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -4,6 +4,7 @@ import {
   defaultInstrumentSpec,
   sha256Hex,
   ScaledDecimal,
+  isRealMoneyExecutionMode,
   type Clock,
   type CircuitBreakerRecord,
   type ConfirmedBar,
@@ -89,7 +90,7 @@ export function buildOkxHeaders(params: {
  * for the demo venue (audit-3 H5).
  */
 export function okxDemoVenueFor(mode: ExecutionMode): boolean {
-  return mode !== "Live-Ramp" && mode !== "Live";
+  return !isRealMoneyExecutionMode(mode);
 }
 
 export class OkxBroker implements ExchangeBroker {
@@ -1502,7 +1503,17 @@ export class OkxBroker implements ExchangeBroker {
               exitPrice: realExitPxStr,
               fee: realExitFee ?? ScaledDecimal.zero()
             });
-            await this.cancelProtectiveAlgos(pos.instrumentId, creds, nowMs);
+            // Algos are cancelled per instrument, so wait until no other open position on it
+            // still relies on its stop; an orphaned reduce-only stop is the safe leftover
+            const instrumentStillProtecting = Array.from(this.localPositions.values()).some(
+              (other) =>
+                other.status === "OPEN" &&
+                other.instrumentId === pos.instrumentId &&
+                !confirmedFills.has(other.positionId)
+            );
+            if (!instrumentStillProtecting) {
+              await this.cancelProtectiveAlgos(pos.instrumentId, creds, nowMs);
+            }
           }
         }
       }

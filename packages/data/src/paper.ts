@@ -37,7 +37,7 @@ import {
 /**
  * Paper (simulated) and exchange (real venue) trading are kept in separate ledger, position and
  * order tables so simulated fills can never touch real positions or the equity live risk sizes
- * against (audit-3 C2). The circuit breaker stays shared: one halt stops both books.
+ * against (audit-3 C2). The circuit breaker stays shared: one Kill Switch stops both books.
  */
 export type TradingBook = "paper" | "exchange";
 
