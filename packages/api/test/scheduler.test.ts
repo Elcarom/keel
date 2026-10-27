@@ -28,15 +28,22 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
       ledgerRepo: dataStore.ledgerRepo
     });
 
+    // Strategy was enabled prior to the new confirmed bar
+    dataStore.paperAccountRepo.setSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1",
+      anchorCloseTs: 1_730_000_000_000 - 3600_000
+    });
+
     // Seed mock confirmed bars returned by OkxPublicIngestor
     let ingestedCount = 0;
     const ingestor = new OkxPublicIngestor({
       marketDataRepo: dataStore.marketDataRepo,
-      fetchHistoryCandles: async ({ fromOpenTs }) => {
+      fetchHistoryCandles: async () => {
         ingestedCount++;
         return [
           {
-            openTs: fromOpenTs,
+            openTs: 1_730_000_000_000 - 3600_000,
             open: "50000.00",
             high: "51000.00",
             low: "49500.00",
@@ -223,6 +230,13 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
 
     const nowMs = clock.nowMs();
     const confirmedOpenTs = Math.floor(nowMs / 3600_000) * 3600_000 - 3600_000;
+
+    // Strategy was enabled prior to the confirmed bar
+    dataStore.paperAccountRepo.setSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1",
+      anchorCloseTs: confirmedOpenTs
+    });
 
     const ingestor = new OkxPublicIngestor({
       marketDataRepo: dataStore.marketDataRepo,
@@ -552,15 +566,116 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     expect(step1.ok).toBe(true);
     expect(step1.ticksExecuted).toBe(0);
 
-    // Verify anchor was stored in the new scheduler_anchors table
+    // Verify anchor was stored in the scheduler_anchors table at floor(clock.nowMs()/1h)*1h (A1)
     const anchorCloseTs = dataStore.paperAccountRepo.getSchedulerAnchor({
       instrumentId: "BTC-USDT-SWAP",
       strategyId: "donchian-trend-v1"
     });
-    expect(anchorCloseTs).toBe(latestBarCloseTs);
+    expect(anchorCloseTs).toBe(Math.floor(clock.nowMs() / 3600_000) * 3600_000);
 
     // No paper trades or positions were opened on ancient history
     const allPositions = dataStore.paperAccountRepo.listAllPositions();
     expect(allPositions).toHaveLength(0);
+  });
+
+  it("A1: newly enabled strategy anchors to floor(clock.nowMs()/1h)*1h and never ticks 30-day stale gap bars", async () => {
+    // Current time is 2025-01-31 12:34:56 UTC
+    const nowMs = 1_738_326_896_000;
+    const expectedAnchorCloseTs = Math.floor(nowMs / 3600_000) * 3600_000; // 2025-01-31 12:00:00 UTC
+    const clock = new ManualClock(nowMs);
+    const config = createDefaultConfig();
+    const dataStore = createSqliteDataStore({
+      dbPath: ":memory:",
+      clock,
+      initialConfig: config
+    });
+
+    const paperBroker = new PaperBroker({
+      clock,
+      dataStore,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      paperAccountRepo: dataStore.paperAccountRepo,
+      ledgerRepo: dataStore.ledgerRepo
+    });
+
+    // DB has stale stored bars ending 30 days ago (2025-01-01 12:00:00 UTC)
+    const staleEndTs = expectedAnchorCloseTs - 30 * 24 * 3600_000;
+    const staleCandles = [];
+    for (let i = 0; i < 20; i++) {
+      const openTs = staleEndTs - (20 - i) * 3600_000;
+      staleCandles.push({
+        openTs,
+        open: "50000.00",
+        high: "51000.00",
+        low: "49000.00",
+        close: "50500.00",
+        volumeContracts: "10",
+        volumeQuote: "505000.00",
+        confirm: "1" as const
+      });
+    }
+    dataStore.marketDataRepo.ingestOkxCandles({
+      instrumentId: "BTC-USDT-SWAP",
+      timeframe: "1H",
+      candles: staleCandles
+    });
+
+    // Fake ingestor returns all 720 gap bars up to the bar before now
+    const ingestor = new OkxPublicIngestor({
+      marketDataRepo: dataStore.marketDataRepo,
+      fetchHistoryCandles: async ({ fromOpenTs, toOpenTs }) => {
+        const gapCandles = [];
+        let cur = fromOpenTs;
+        while (cur <= toOpenTs) {
+          gapCandles.push({
+            openTs: cur,
+            open: "50000.00",
+            high: "52000.00",
+            low: "48000.00",
+            close: "51000.00",
+            volumeContracts: "10",
+            volumeQuote: "510000.00",
+            confirm: "1" as const
+          });
+          cur += 3600_000;
+        }
+        return gapCandles;
+      }
+    });
+
+    const scheduler = new UnattendedScheduler({
+      clock,
+      dataStore,
+      paperBroker,
+      ingestor,
+      getRiskConfig: () => config.risk,
+      getSystemConfig: () => config.system,
+      instruments: ["BTC-USDT-SWAP"],
+      strategies: ["donchian-trend-v1"]
+    });
+
+    // Step once on newly enabled strategy:
+    // It must anchor to expectedAnchorCloseTs and execute 0 ticks on the 720 gap bars!
+    const step1 = await scheduler.stepOnce();
+    expect(step1.ok).toBe(true);
+    expect(step1.barsIngested).toBeGreaterThanOrEqual(700);
+    expect(step1.ticksExecuted).toBe(0);
+
+    const anchor = dataStore.paperAccountRepo.getSchedulerAnchor({
+      instrumentId: "BTC-USDT-SWAP",
+      strategyId: "donchian-trend-v1"
+    });
+    expect(anchor).toBe(expectedAnchorCloseTs);
+
+    const positionsAfterGap = dataStore.paperAccountRepo.listAllPositions();
+    expect(positionsAfterGap).toHaveLength(0);
+
+    // Now advance clock past the next bar close (2025-01-31 13:00:00 UTC)
+    clock.advanceMs(3600_000);
+    // Ingestor returns 1 newly closed bar closing at expectedAnchorCloseTs + 3600_000
+    const step2 = await scheduler.stepOnce();
+    expect(step2.ok).toBe(true);
+    expect(step2.ticksExecuted).toBe(1);
   });
 });
