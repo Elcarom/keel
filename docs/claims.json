@@ -346,5 +346,17 @@
     "claim": "The DMS heartbeat runs on its own 15s timer in exchange Execution Modes, independent of the 60s bar step and well inside the 60s countdown.",
     "testFile": "packages/api/test/scheduler-venues.test.ts",
     "testName": "beats at least every 15s, independent of the 60s bar step, well inside the 60s countdown"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H9-KILL-SWITCH-FLATTEN",
+    "claim": "Tripping the Kill Switch locks entries, flattens every paper and exchange position, and reports whether both books are flat.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "cancels and flattens every paper and exchange position and vetoes new entries"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H9-STEPPED-UP-RESET",
+    "claim": "Leaving a Kill Switch state requires step-up authentication.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "requires a step-up to re-arm after a kill switch"
   }
 ]

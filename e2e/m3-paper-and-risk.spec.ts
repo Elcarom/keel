@@ -6,7 +6,8 @@ test.describe("Keel M3 — End-to-End Two-Tier Risk Guardian, Paper Execution, &
   }) => {
     await page.goto("/");
 
-    // 1. Authenticate (bootstrap or login)
+    // 1. Authenticate (bootstrap or login) once the auth form has rendered
+    await page.getByTestId("bootstrap-username-input").waitFor();
     const bootstrapPanel = page.getByTestId("bootstrap-panel");
     if (await bootstrapPanel.isVisible()) {
       await page.getByTestId("bootstrap-token-input").fill("keel-e2e-bootstrap-token-2026");
@@ -46,6 +47,8 @@ test.describe("Keel M3 — End-to-End Two-Tier Risk Guardian, Paper Execution, &
       "Circuit breaker updated to MANUAL_KILL_SWITCH"
     );
 
+    // Re-arming after a Kill Switch requires step-up (audit-3 H9)
+    await page.getByTestId("promote-step-up-password-input").fill("correct-horse-battery-staple");
     await page.getByTestId("trip-kill-switch-btn").click();
     await expect(page.getByTestId("circuit-breaker-badge")).toContainText("CB: NORMAL");
 

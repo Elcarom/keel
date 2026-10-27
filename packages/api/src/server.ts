@@ -1360,31 +1360,96 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
 
+        const isKillSwitch = (s: string) =>
+          s === "MANUAL_KILL_SWITCH" || s === "DRAWDOWN_KILL_SWITCH";
+        const current = dataStore.paperAccountRepo.getCircuitBreaker();
+
+        // A Kill Switch locks until a manual, stepped-up reset (audit-3 H9)
+        if (isKillSwitch(current.status) && body.status !== current.status) {
+          const stepUpOk = authManager.verifyStepUp({
+            sessionToken: ingress.sessionToken,
+            password: body.stepUpPassword,
+            totpCode: body.stepUpTotpCode,
+            clientIp: ingress.clientIp
+          });
+          if (!stepUpOk) {
+            return {
+              status: 403,
+              body: {
+                error: `Step-up authentication required to leave ${current.status}`,
+                requiresStepUp: true
+              }
+            };
+          }
+        }
+
+        // Lock first so no entry can slip in while positions are being flattened. The breaker
+        // table is shared by both books; the exchange broker's cached copy is refreshed too.
+        const tripping = isKillSwitch(body.status);
         const updated = paperBroker.setCircuitBreaker({
           status: body.status,
           reason: body.reason,
           triggeredAtMs: clock.nowMs(),
-          cooldownUntilMs: body.status === "NORMAL" ? null : clock.nowMs() + 3600_000,
+          cooldownUntilMs: body.status === "NORMAL" || tripping ? null : clock.nowMs() + 3600_000,
           updatedBy: ingress.session.username ?? "system"
         });
+        okxBroker.setCircuitBreaker(updated);
+
+        // Kill Switch Flatten: close every paper and exchange position and verify both are flat
+        let killSwitch:
+          | {
+              paperFlattenedCount: number;
+              exchangeFlattenedCount: number;
+              paperFlat: boolean;
+              exchangeFlat: boolean;
+              errors: string[];
+            }
+          | undefined;
+        if (tripping) {
+          const errors: string[] = [];
+          const paperClosed = paperBroker.flattenAllPositions(`Kill Switch: ${body.reason}`);
+          let exchangeClosed: readonly unknown[] = [];
+          try {
+            exchangeClosed = await okxBroker.flattenAllPositions(`Kill Switch: ${body.reason}`);
+          } catch (err) {
+            errors.push(err instanceof Error ? err.message : String(err));
+          }
+          killSwitch = {
+            paperFlattenedCount: paperClosed.length,
+            exchangeFlattenedCount: exchangeClosed.length,
+            paperFlat: dataStore.paperAccountRepo.listOpenPositions().length === 0,
+            exchangeFlat: okxBroker.getOpenPositions().length === 0,
+            errors
+          };
+          if (!killSwitch.paperFlat || !killSwitch.exchangeFlat) {
+            await notifier.send({
+              severity: "CRITICAL",
+              title: "KILL SWITCH FLATTEN INCOMPLETE",
+              body: `Kill Switch tripped but positions remain open (paper flat: ${killSwitch.paperFlat}, exchange flat: ${killSwitch.exchangeFlat}). ${errors.join("; ")}`,
+              dedupKey: `kill-switch-incomplete-${clock.nowMs()}`
+            });
+          }
+        }
 
         dataStore.auditRepo.append({
           ts: clock.nowMs(),
           actor: ingress.session.username ?? "system",
           clientIp: ingress.clientIp,
-          action: "paper.set_circuit_breaker",
+          action: tripping ? "kill_switch.trip" : "paper.set_circuit_breaker",
           riskClass: "confirm",
           configHash: getActiveSnapshot().configHash,
           details: {
             status: body.status,
-            reason: body.reason
+            reason: body.reason,
+            ...(killSwitch ? { killSwitch } : {})
           }
         });
 
         return {
           status: 200,
           body: {
-            circuitBreaker: updated
+            circuitBreaker: updated,
+            ...(killSwitch ? { killSwitch } : {})
           }
         };
       }

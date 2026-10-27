@@ -503,13 +503,27 @@ export const keelApiContract = c.router({
           "DRAWDOWN_KILL_SWITCH",
           "MANUAL_KILL_SWITCH"
         ]),
-        reason: z.string().min(3).max(500)
+        reason: z.string().min(3).max(500),
+        // Re-arming after a Kill Switch requires step-up (audit-3 H9)
+        stepUpPassword: z.string().optional(),
+        stepUpTotpCode: z.string().optional()
       }),
       responses: {
         200: z.object({
-          circuitBreaker: CircuitBreakerRecordSchema
+          circuitBreaker: CircuitBreakerRecordSchema,
+          // Present when a Kill Switch was tripped: outcome of the Kill Switch Flatten
+          killSwitch: z
+            .object({
+              paperFlattenedCount: z.number().int(),
+              exchangeFlattenedCount: z.number().int(),
+              paperFlat: z.boolean(),
+              exchangeFlat: z.boolean(),
+              errors: z.array(z.string())
+            })
+            .optional()
         }),
-        401: ApiErrorSchema
+        401: ApiErrorSchema,
+        403: ApiErrorSchema
       },
       summary: "Manually arm or trip the system CircuitBreaker / Kill Switch"
     }
