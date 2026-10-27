@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Keel M5 — End-to-End Exchange Broker Connectivity & Attached Protective Stops", () => {
-  test("authenticates, sends DMS heartbeat, submits entry with atomic attached stop, and reconciles positions", async ({
+// The e2e server runs in the default Paper Execution Mode with no OKX credentials, so the
+// exchange panel must refuse orders rather than simulate fills (audit-3 C3, H7).
+test.describe("Keel M5 — Exchange Broker panel refuses orders outside exchange Execution Modes", () => {
+  test("authenticates, shows an idle DMS, and refuses a protected order in Paper mode", async ({
     page
   }) => {
     await page.goto("/");
 
-    // 1. Authenticate (bootstrap or login)
+    // 1. Authenticate (bootstrap or login) once the auth form has rendered
+    await page.getByTestId("bootstrap-username-input").waitFor();
     const bootstrapPanel = page.getByTestId("bootstrap-panel");
     if (await bootstrapPanel.isVisible()) {
       await page.getByTestId("bootstrap-token-input").fill("keel-e2e-bootstrap-token-2026");
@@ -19,35 +22,21 @@ test.describe("Keel M5 — End-to-End Exchange Broker Connectivity & Attached Pr
       await page.getByTestId("bootstrap-submit-btn").click();
     }
 
-    // 2. Verify M5 Exchange Broker Panel is visible
+    // 2. Exchange broker panel is visible; without credentials the DMS cannot be armed
     await expect(page.getByTestId("exchange-broker-panel")).toBeVisible();
     await expect(page.getByTestId("broker-venue-badge")).toContainText("OKX-EEA");
+    await expect(page.getByTestId("broker-dms-badge")).toContainText("IDLE");
 
-    // 3. Send DMS heartbeat and verify active status
-    await page.getByTestId("send-dms-btn").click();
-    await expect(page.getByTestId("broker-dms-badge")).toContainText("ACTIVE");
-
-    // 4. Fill and submit protected order
+    // 3. A fully specified, stepped-up order is still refused in Paper mode
     await page.getByTestId("order-instrument-input").fill("BTC-USDT-SWAP");
     await page.getByTestId("order-side-select").selectOption("long");
     await page.getByTestId("order-size-input").fill("1");
     await page.getByTestId("order-entry-price-input").fill("50000");
     await page.getByTestId("order-stop-price-input").fill("48500");
+    await page.getByTestId("order-step-up-password-input").fill("correct-horse-battery-staple");
     await page.getByTestId("submit-exchange-order-btn").click();
 
-    // 5. Verify order placed with attached stop ID and shows in orders table
-    await expect(page.getByTestId("exchange-orders-table")).toContainText("BTC-USDT-SWAP");
-    await expect(page.getByTestId("exchange-orders-table")).toContainText("algo");
-
-    // 6. Run position reconciliation
-    await page.getByTestId("reconcile-positions-btn").click();
-    await expect(page.getByTestId("reconciliation-status-badge")).toContainText("MATCHED");
-
-    // 7. Test Emergency Flatten button
-    await page.getByTestId("emergency-flatten-btn").click();
-
-    // 8. Verify Audit Log contains broker actions
-    const auditTable = page.getByTestId("audit-log-table");
-    await expect(auditTable).toContainText(/broker\.submit_order|broker\.dms_heartbeat/);
+    await expect(page.getByTestId("gov-error-banner")).toContainText("Execution Mode");
+    await expect(page.getByTestId("exchange-orders-table")).not.toContainText("BTC-USDT-SWAP");
   });
 });

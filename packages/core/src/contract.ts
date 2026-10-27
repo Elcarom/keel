@@ -717,7 +717,11 @@ export const keelApiContract = c.router({
     submitOrder: {
       method: "POST",
       path: "/api/v1/broker/orders",
-      body: ExchangeOrderInputSchema,
+      // Step-up credentials satisfy human gates G2/G3; omit them to reuse a recent step-up window
+      body: ExchangeOrderInputSchema.extend({
+        stepUpPassword: z.string().optional(),
+        stepUpTotpCode: z.string().optional()
+      }),
       responses: {
         200: z.object({
           order: ExchangeOrderResultSchema

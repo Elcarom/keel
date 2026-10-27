@@ -397,9 +397,30 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       getCredentials: () => TEST_OKX_CREDENTIALS,
       fetchFn: createFakeOkx().fetchFn
     });
+    // Exchange orders need an exchange Execution Mode and a strategy promoted to it (audit-3 C3)
+    const baseConfig = createDefaultConfig();
+    const demoConfig = {
+      ...baseConfig,
+      system: { ...baseConfig.system, executionMode: "Demo" as const }
+    };
+    const dataStore = createSqliteDataStore({ dbPath, clock, initialConfig: demoConfig });
+    dataStore.promotionRepo.upsertPromotion({
+      strategyId: "donchian-trend-v1",
+      currentStage: "Demo",
+      latestExperimentId: "exp-1",
+      replayGatePassed: true,
+      paperTradesCount: 50,
+      paperDrawdownPct: 1.0,
+      rampAllocationPct: 100,
+      eligibleNextStage: null,
+      demotionReason: null,
+      promotedAtMs: clock.nowMs(),
+      updatedAtMs: clock.nowMs()
+    });
     const app = await createKeelServer({
+      config: demoConfig,
       clock,
-      dbPath,
+      dataStore,
       exchangeBroker: okxBroker,
       onBootstrapToken: (t) => {
         bootstrapToken = t;
@@ -435,7 +456,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           side: "long",
           sizeLots: 10_000, // Massive size exceeding leverage and 1R budget
           entryPrice: "50000.00",
-          protectiveStopPrice: "49000.00"
+          protectiveStopPrice: "49000.00",
+          stepUpPassword: "correct-horse-battery-staple"
         }
       });
       expect(breachRes.statusCode).toBe(403);
@@ -451,7 +473,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           strategyId: "donchian-trend-v1",
           side: "long",
           sizeLots: 1,
-          entryPrice: "50000.00"
+          entryPrice: "50000.00",
+          stepUpPassword: "correct-horse-battery-staple"
         }
       });
       expect(missingStopRes.statusCode).toBe(403);
@@ -470,7 +493,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           side: "long",
           sizeLots: 1,
           entryPrice: "50000.00",
-          protectiveStopPrice: "49000.00"
+          protectiveStopPrice: "49000.00",
+          stepUpPassword: "correct-horse-battery-staple"
         }
       });
       expect(validRes.statusCode).toBe(200);
