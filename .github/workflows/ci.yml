@@ -38,11 +38,12 @@ jobs:
       - name: Lint (ESLint strict, zero any)
         run: pnpm lint
 
-      - name: Typecheck (TypeScript strict)
-        run: pnpm typecheck
-
+      # Build first: packages typecheck against their dependencies' emitted declarations.
       - name: Build packages
         run: pnpm build
+
+      - name: Typecheck (TypeScript strict)
+        run: pnpm typecheck
 
       - name: Run unit & fast-check property tests (Vitest)
         run: pnpm test
