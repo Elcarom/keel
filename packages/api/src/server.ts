@@ -18,6 +18,7 @@ import {
   type ExchangeBroker,
   type KeelConfig,
   type LookbackValidationResult,
+  type ExecutionMode,
   type LlmGateway,
   type PortfolioRiskState,
   type PromotionStage,
@@ -39,7 +40,7 @@ import {
   NarrativeClusterTagger,
   ShadowAdvisor
 } from "@keel/ai";
-import { OkxBroker } from "@keel/broker";
+import { OkxBroker, okxDemoVenueFor } from "@keel/broker";
 import { ReplayEngine } from "@keel/replay";
 import { StrategySpecV1Schema, computeSpecHash, describeSpec } from "@keel/spec";
 import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
@@ -163,6 +164,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   const narrativeClusterTagger = new NarrativeClusterTagger(llmGateway);
   const markoutForensicsAnalyst = new MarkoutForensicsAnalyst(llmGateway);
 
+  // Demo and real-money positions live on different OKX accounts: switching venue while the
+  // exchange book holds positions would orphan them from the DMS, reconciliation and flatten
+  const venueSwitchStrandsPositions = (from: ExecutionMode, to: ExecutionMode): string | null => {
+    if (okxDemoVenueFor(from) === okxDemoVenueFor(to)) {
+      return null;
+    }
+    const open = dataStore.exchangeAccountRepo.listOpenPositions().length;
+    return open > 0
+      ? `Cannot switch Execution Mode from ${from} to ${to} with ${open} open exchange position(s); flatten them first`
+      : null;
+  };
+
   const okxBroker =
     options.exchangeBroker ??
     new OkxBroker({
@@ -180,7 +193,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         return { apiKey, secretKey, passphrase };
       },
-      isDemo: getActiveSnapshot().config.system.executionMode !== "Live",
+      // Re-evaluated per request so a mode change can never leave orders on the wrong venue
+      isDemo: () => okxDemoVenueFor(getActiveSnapshot().config.system.executionMode),
       notificationChannel: notifier,
       accountRepo: dataStore.exchangeAccountRepo,
       ledgerRepo: dataStore.exchangeLedgerRepo,
@@ -694,6 +708,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
         const active = getActiveSnapshot();
+        const strandError = venueSwitchStrandsPositions(
+          active.config.system.executionMode,
+          body.config.system.executionMode
+        );
+        if (strandError) {
+          return { status: 403, body: { error: strandError } };
+        }
         const diff = diffConfigs(active.config, body.config, active.config.system.executionMode);
 
         if (!diff.allowed) {
@@ -807,6 +828,14 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             status: 404,
             body: { error: `Version ${body.targetVersion} does not exist` }
           };
+        }
+
+        const strandError = venueSwitchStrandsPositions(
+          active.config.system.executionMode,
+          target.config.system.executionMode
+        );
+        if (strandError) {
+          return { status: 403, body: { error: strandError } };
         }
 
         const diff = diffConfigs(active.config, target.config, active.config.system.executionMode);
