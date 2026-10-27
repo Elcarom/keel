@@ -34,8 +34,40 @@ import {
   type StrategyPromotionRecord
 } from "@keel/core";
 
-export const PAPER_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS ledger_entries (
+/**
+ * Paper (simulated) and exchange (real venue) trading are kept in separate ledger, position and
+ * order tables so simulated fills can never touch real positions or the equity live risk sizes
+ * against (audit-3 C2). The circuit breaker stays shared: one halt stops both books.
+ */
+export type TradingBook = "paper" | "exchange";
+
+export interface BookTables {
+  readonly ledger: string;
+  readonly equitySnapshots: string;
+  readonly positions: string;
+  readonly orders: string;
+}
+
+export function bookTables(book: TradingBook): BookTables {
+  return book === "paper"
+    ? {
+        ledger: "ledger_entries",
+        equitySnapshots: "ledger_equity_snapshots",
+        positions: "paper_positions",
+        orders: "paper_orders"
+      }
+    : {
+        ledger: "exchange_ledger_entries",
+        equitySnapshots: "exchange_ledger_equity_snapshots",
+        positions: "exchange_positions",
+        orders: "exchange_orders"
+      };
+}
+
+export function bookSchemaSql(book: TradingBook): string {
+  const t = bookTables(book);
+  return `
+CREATE TABLE IF NOT EXISTS ${t.ledger} (
   entry_id TEXT PRIMARY KEY,
   tx_group_id TEXT NOT NULL,
   ts INTEGER NOT NULL,
@@ -47,10 +79,10 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   description TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_ledger_entries_ts ON ledger_entries(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_ledger_entries_tx_group ON ledger_entries(tx_group_id);
+CREATE INDEX IF NOT EXISTS idx_${t.ledger}_ts ON ${t.ledger}(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_${t.ledger}_tx_group ON ${t.ledger}(tx_group_id);
 
-CREATE TABLE IF NOT EXISTS paper_positions (
+CREATE TABLE IF NOT EXISTS ${t.positions} (
   position_id TEXT PRIMARY KEY,
   strategy_id TEXT NOT NULL,
   instrument_id TEXT NOT NULL,
@@ -72,9 +104,9 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   exit_reason TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_paper_positions_status ON paper_positions(status);
+CREATE INDEX IF NOT EXISTS idx_${t.positions}_status ON ${t.positions}(status);
 
-CREATE TABLE IF NOT EXISTS paper_orders (
+CREATE TABLE IF NOT EXISTS ${t.orders} (
   order_id TEXT PRIMARY KEY,
   position_id TEXT NOT NULL,
   proposal_id TEXT NOT NULL,
@@ -90,8 +122,19 @@ CREATE TABLE IF NOT EXISTS paper_orders (
   created_at_ms INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_paper_orders_created ON paper_orders(created_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_${t.orders}_created ON ${t.orders}(created_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS ${t.equitySnapshots} (
+  strategy_id TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  equity_usdt TEXT NOT NULL,
+  PRIMARY KEY (strategy_id, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_${t.equitySnapshots} ON ${t.equitySnapshots}(strategy_id, ts ASC);
+`;
+}
+
+export const PAPER_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS circuit_breaker_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   status TEXT NOT NULL,
@@ -127,14 +170,6 @@ CREATE TABLE IF NOT EXISTS paper_pending_proposals (
   proposal_json TEXT NOT NULL,
   PRIMARY KEY (strategy_id, instrument_id)
 );
-
-CREATE TABLE IF NOT EXISTS ledger_equity_snapshots (
-  strategy_id TEXT NOT NULL DEFAULT '',
-  ts INTEGER NOT NULL,
-  equity_usdt TEXT NOT NULL,
-  PRIMARY KEY (strategy_id, ts)
-);
-CREATE INDEX IF NOT EXISTS idx_ledger_equity_snapshots ON ledger_equity_snapshots(strategy_id, ts ASC);
 
 CREATE TABLE IF NOT EXISTS shadow_decisions (
   decision_id TEXT PRIMARY KEY,
@@ -222,14 +257,16 @@ function mapOrderRow(row: Record<string, unknown>): PaperOrderRecord {
 
 export function createLedgerRepository(
   db: DatabaseSync,
-  initialEquityUsdt = "10000.00000000"
+  initialEquityUsdt = "10000.00000000",
+  book: TradingBook = "paper"
 ): LedgerRepository {
+  const t = bookTables(book);
   // Seed initial equity capital if ledger is completely empty
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM ledger_entries").get();
+  const countRow = db.prepare(`SELECT COUNT(*) AS cnt FROM ${t.ledger}`).get();
   const count = Number(countRow?.["cnt"] ?? 0);
   if (count === 0) {
     db.prepare(
-      `INSERT INTO ledger_entries (
+      `INSERT INTO ${t.ledger} (
         entry_id, tx_group_id, ts, strategy_id, instrument_id, debit_account, credit_account, amount_usdt, description
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
@@ -241,7 +278,9 @@ export function createLedgerRepository(
       "cash:usdt",
       "equity_capital:usdt",
       initialEquityUsdt,
-      "Initial paper portfolio capital seed"
+      book === "paper"
+        ? "Initial paper portfolio capital seed"
+        : "Initial exchange book capital seed (configured, reconcile to venue balance)"
     );
   }
 
@@ -251,11 +290,11 @@ export function createLedgerRepository(
       if (!amountDec.isPositive()) {
         throw new Error("Ledger journal amount must be strictly positive");
       }
-      const seqRow = db.prepare("SELECT COUNT(*) AS cnt FROM ledger_entries").get();
+      const seqRow = db.prepare(`SELECT COUNT(*) AS cnt FROM ${t.ledger}`).get();
       const seq = Number(seqRow?.["cnt"] ?? 0) + 1;
       const entryId = `entry-${input.txGroupId}-${input.ts}-${seq}`;
       db.prepare(
-        `INSERT INTO ledger_entries (
+        `INSERT INTO ${t.ledger} (
           entry_id, tx_group_id, ts, strategy_id, instrument_id, debit_account, credit_account, amount_usdt, description
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
@@ -287,7 +326,7 @@ export function createLedgerRepository(
       const rows = db
         .prepare(
           `SELECT entry_id, tx_group_id, ts, strategy_id, instrument_id, debit_account, credit_account, amount_usdt, description
-           FROM ledger_entries ORDER BY ts DESC, entry_id DESC LIMIT ?`
+           FROM ${t.ledger} ORDER BY ts DESC, entry_id DESC LIMIT ?`
         )
         .all(limit);
       return rows.map((r) => mapLedgerRow(r as Record<string, unknown>));
@@ -295,7 +334,7 @@ export function createLedgerRepository(
 
     getTrialBalance(): LedgerTrialBalance {
       const rows = db
-        .prepare(`SELECT debit_account, credit_account, amount_usdt FROM ledger_entries`)
+        .prepare(`SELECT debit_account, credit_account, amount_usdt FROM ${t.ledger}`)
         .all() as { debit_account: string; credit_account: string; amount_usdt: string }[];
 
       let totalDebits = ScaledDecimal.zero();
@@ -350,7 +389,7 @@ export function createLedgerRepository(
       const weekStartMs = getUtcWeekStartMs(asOfMs);
 
       let query = `SELECT ts, strategy_id, debit_account, credit_account, amount_usdt
-                   FROM ledger_entries
+                   FROM ${t.ledger}
                    WHERE ts <= ?`;
       const queryParams: unknown[] = [asOfMs];
       if (strategyId) {
@@ -416,7 +455,7 @@ export function createLedgerRepository(
       // Query historical equity snapshots up to asOfMs strictly segregated by strategyKey
       const snapshotRows = db
         .prepare(
-          `SELECT equity_usdt FROM ledger_equity_snapshots
+          `SELECT equity_usdt FROM ${t.equitySnapshots}
            WHERE strategy_id = ? AND ts <= ?`
         )
         .all(snapshotStrategyKey, asOfMs) as {
@@ -436,7 +475,7 @@ export function createLedgerRepository(
       // Check if snapshots exist for dayStart and weekStart to capture intra-period equity peaks
       const dayStartSnapshot = db
         .prepare(
-          `SELECT equity_usdt FROM ledger_equity_snapshots
+          `SELECT equity_usdt FROM ${t.equitySnapshots}
            WHERE strategy_id = ? AND ts <= ?
            ORDER BY ts DESC LIMIT 1`
         )
@@ -447,7 +486,7 @@ export function createLedgerRepository(
 
       const weekStartSnapshot = db
         .prepare(
-          `SELECT equity_usdt FROM ledger_equity_snapshots
+          `SELECT equity_usdt FROM ${t.equitySnapshots}
            WHERE strategy_id = ? AND ts <= ?
            ORDER BY ts DESC LIMIT 1`
         )
@@ -479,7 +518,7 @@ export function createLedgerRepository(
     }): void {
       const snapshotStrategyKey = params.strategyId ?? "";
       db.prepare(
-        `INSERT INTO ledger_equity_snapshots (strategy_id, ts, equity_usdt)
+        `INSERT INTO ${t.equitySnapshots} (strategy_id, ts, equity_usdt)
          VALUES (?, ?, ?)
          ON CONFLICT(strategy_id, ts) DO UPDATE SET equity_usdt = excluded.equity_usdt`
       ).run(snapshotStrategyKey, params.ts, params.equityUsdt.toFixed(8));
@@ -487,9 +526,13 @@ export function createLedgerRepository(
   };
 }
 
-export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepository {
+export function createPaperAccountRepository(
+  db: DatabaseSync,
+  book: TradingBook = "paper"
+): PaperAccountRepository {
+  const t = bookTables(book);
   // Initialize default CircuitBreaker state if empty
-  const cbRow = db.prepare("SELECT COUNT(*) AS cnt FROM circuit_breaker_state").get();
+  const cbRow = db.prepare(`SELECT COUNT(*) AS cnt FROM circuit_breaker_state`).get();
   if (Number(cbRow?.["cnt"] ?? 0) === 0) {
     db.prepare(
       `INSERT INTO circuit_breaker_state (id, status, reason, triggered_at_ms, cooldown_until_ms, updated_by)
@@ -500,7 +543,7 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
   return {
     savePosition(position: PaperPositionRecord): PaperPositionRecord {
       db.prepare(
-        `INSERT INTO paper_positions (
+        `INSERT INTO ${t.positions} (
           position_id, strategy_id, instrument_id, side, contracts, entry_price, protective_stop_price,
           take_profit_price, initial_risk_usdt, unrealized_pnl_usdt, realized_pnl_usdt, fees_paid_usdt,
           funding_paid_usdt, opened_at_ms, last_funding_settled_ts, status, closed_at_ms, exit_price, exit_reason
@@ -545,27 +588,27 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
     },
 
     getPosition(positionId: string): PaperPositionRecord | null {
-      const row = db.prepare(`SELECT * FROM paper_positions WHERE position_id = ?`).get(positionId);
+      const row = db.prepare(`SELECT * FROM ${t.positions} WHERE position_id = ?`).get(positionId);
       return row ? mapPositionRow(row as Record<string, unknown>) : null;
     },
 
     listOpenPositions(): readonly PaperPositionRecord[] {
       const rows = db
-        .prepare(`SELECT * FROM paper_positions WHERE status = 'OPEN' ORDER BY opened_at_ms DESC`)
+        .prepare(`SELECT * FROM ${t.positions} WHERE status = 'OPEN' ORDER BY opened_at_ms DESC`)
         .all();
       return rows.map((r) => mapPositionRow(r as Record<string, unknown>));
     },
 
     listAllPositions(limit = 100): readonly PaperPositionRecord[] {
       const rows = db
-        .prepare(`SELECT * FROM paper_positions ORDER BY opened_at_ms DESC LIMIT ?`)
+        .prepare(`SELECT * FROM ${t.positions} ORDER BY opened_at_ms DESC LIMIT ?`)
         .all(limit);
       return rows.map((r) => mapPositionRow(r as Record<string, unknown>));
     },
 
     saveOrder(order: PaperOrderRecord): PaperOrderRecord {
       db.prepare(
-        `INSERT INTO paper_orders (
+        `INSERT INTO ${t.orders} (
           order_id, position_id, proposal_id, strategy_id, instrument_id, side, order_role,
           contracts, fill_price, protective_stop_price, fee_usdt, status, created_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -589,7 +632,7 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
 
     listOrders(limit = 100): readonly PaperOrderRecord[] {
       const rows = db
-        .prepare(`SELECT * FROM paper_orders ORDER BY created_at_ms DESC LIMIT ?`)
+        .prepare(`SELECT * FROM ${t.orders} ORDER BY created_at_ms DESC LIMIT ?`)
         .all(limit);
       return rows.map((r) => mapOrderRow(r as Record<string, unknown>));
     },
@@ -598,7 +641,7 @@ export function createPaperAccountRepository(db: DatabaseSync): PaperAccountRepo
       readonly sinceMs: number;
       readonly strategyId?: string | null | undefined;
     }): number {
-      let query = `SELECT COUNT(*) AS cnt FROM paper_orders WHERE status = 'FILLED' AND order_role = 'ENTRY' AND created_at_ms >= ?`;
+      let query = `SELECT COUNT(*) AS cnt FROM ${t.orders} WHERE status = 'FILLED' AND order_role = 'ENTRY' AND created_at_ms >= ?`;
       const queryParams: unknown[] = [params.sinceMs];
       if (params.strategyId) {
         query += ` AND strategy_id = ?`;

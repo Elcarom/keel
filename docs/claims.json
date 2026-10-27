@@ -310,5 +310,11 @@
     "claim": "The exchange broker refuses to submit or close without credentials and records orders at the confirmed exchange fill.",
     "testFile": "packages/broker/test/submit-truthfulness.test.ts",
     "testName": "refuses to submit when exchange credentials are not configured"
+  },
+  {
+    "id": "CLAIM-AUDIT3-C2-SEPARATE-BOOKS",
+    "claim": "Exchange (real venue) positions, orders and ledger are stored apart from the paper book; only the circuit breaker is shared.",
+    "testFile": "packages/data/test/exchange-book.test.ts",
+    "testName": "keeps exchange positions out of the paper account and vice versa"
   }
 ]

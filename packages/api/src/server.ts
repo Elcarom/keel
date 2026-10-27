@@ -182,15 +182,16 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       },
       isDemo: getActiveSnapshot().config.system.executionMode !== "Live",
       notificationChannel: notifier,
-      accountRepo: dataStore.paperAccountRepo,
-      ledgerRepo: dataStore.ledgerRepo,
+      accountRepo: dataStore.exchangeAccountRepo,
+      ledgerRepo: dataStore.exchangeLedgerRepo,
       marketDataRepo: dataStore.marketDataRepo
     });
 
   if (okxBroker instanceof OkxBroker) {
+    // Real-venue positions and journals live in the exchange book, never the paper book (audit-3 C2)
     okxBroker.setRepositories({
-      accountRepo: dataStore.paperAccountRepo,
-      ledgerRepo: dataStore.ledgerRepo,
+      accountRepo: dataStore.exchangeAccountRepo,
+      ledgerRepo: dataStore.exchangeLedgerRepo,
       marketDataRepo: dataStore.marketDataRepo
     });
   }
@@ -2102,17 +2103,17 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           }
 
           const dayStartMs = getUtcDayStartMs(nowMs);
-          const strategyMetrics = dataStore.ledgerRepo.getRiskMetrics({
+          const strategyMetrics = dataStore.exchangeLedgerRepo.getRiskMetrics({
             asOfMs: nowMs,
             strategyId,
             openUnrealizedPnlUsdt: strategyUnrealizedPnl
           });
-          const portfolioMetrics = dataStore.ledgerRepo.getRiskMetrics({
+          const portfolioMetrics = dataStore.exchangeLedgerRepo.getRiskMetrics({
             asOfMs: nowMs,
             strategyId: null,
             openUnrealizedPnlUsdt: totalUnrealizedPnl
           });
-          const tradesTodayCount = dataStore.paperAccountRepo.countFilledOrdersToday({
+          const tradesTodayCount = dataStore.exchangeAccountRepo.countFilledOrdersToday({
             sinceMs: dayStartMs,
             strategyId
           });
