@@ -340,5 +340,11 @@
     "claim": "Execution Mode changes that switch between the demo and real-money venues are refused while exchange positions are open.",
     "testFile": "packages/api/test/exchange-gates.test.ts",
     "testName": "refuses switching between the Demo and real-money venues while exchange positions are open"
+  },
+  {
+    "id": "CLAIM-AUDIT3-H8-DMS-CADENCE",
+    "claim": "The DMS heartbeat runs on its own 15s timer in exchange Execution Modes, independent of the 60s bar step and well inside the 60s countdown.",
+    "testFile": "packages/api/test/scheduler-venues.test.ts",
+    "testName": "beats at least every 15s, independent of the 60s bar step, well inside the 60s countdown"
   }
 ]
