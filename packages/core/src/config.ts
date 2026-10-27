@@ -3,6 +3,16 @@ import { z } from "zod";
 export const ExecutionModeSchema = z.enum(["Replay", "Paper", "Demo", "Live-Ramp", "Live"]);
 export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 
+/** Modes that route orders to a Venue (Demo account or real money). */
+export function isExchangeExecutionMode(mode: ExecutionMode): boolean {
+  return mode === "Demo" || mode === "Live-Ramp" || mode === "Live";
+}
+
+/** Modes that put real capital at risk on the Venue's live account. */
+export function isRealMoneyExecutionMode(mode: ExecutionMode): boolean {
+  return mode === "Live-Ramp" || mode === "Live";
+}
+
 export const ConfigRiskClassSchema = z.enum([
   "safe",
   "confirm",

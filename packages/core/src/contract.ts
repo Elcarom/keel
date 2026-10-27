@@ -31,6 +31,16 @@ import {
 
 const c = initContract();
 
+/** Outcome of a Kill Switch Flatten across the paper and exchange Trading Books (audit-3 H9). */
+export const KillSwitchFlattenOutcomeSchema = z.object({
+  paperFlattenedCount: z.number().int(),
+  exchangeFlattenedCount: z.number().int(),
+  paperFlat: z.boolean(),
+  exchangeFlat: z.boolean(),
+  errors: z.array(z.string())
+});
+export type KillSwitchFlattenOutcome = z.infer<typeof KillSwitchFlattenOutcomeSchema>;
+
 export const ApiErrorSchema = z.object({
   error: z.string(),
   blockedPaths: z.array(z.string()).optional(),
@@ -512,15 +522,7 @@ export const keelApiContract = c.router({
         200: z.object({
           circuitBreaker: CircuitBreakerRecordSchema,
           // Present when a Kill Switch was tripped: outcome of the Kill Switch Flatten
-          killSwitch: z
-            .object({
-              paperFlattenedCount: z.number().int(),
-              exchangeFlattenedCount: z.number().int(),
-              paperFlat: z.boolean(),
-              exchangeFlat: z.boolean(),
-              errors: z.array(z.string())
-            })
-            .optional()
+          killSwitch: KillSwitchFlattenOutcomeSchema.optional()
         }),
         401: ApiErrorSchema,
         403: ApiErrorSchema

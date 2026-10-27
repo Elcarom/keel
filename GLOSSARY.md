@@ -41,7 +41,7 @@ The actual periodic funding payment exchanged between long and short perpetual h
 _Avoid_: Funding fee, current funding
 
 **Trading Book**:
-The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills) or the **Exchange Book** (real fills on a Venue, Demo or real-money). Books never share positions or equity; only the system-wide halt state spans both.
+The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills) or the **Venue Book** (real fills on a Venue's Demo or real-money account). Books never share positions or equity; only the circuit breaker and Kill Switch state span both.
 _Avoid_: Account, portfolio (when meaning one book)
 
 **Execution Mode**:
@@ -119,7 +119,7 @@ An immediate, deterministic emergency command (triggered manually from Mission C
 _Avoid_: Panic button, emergency stop, halt
 
 **Kill Switch Flatten**:
-The verified execution of a Kill Switch event: locking out new entries first, then market-closing 100% of every open position in both Trading Books and confirming each book is flat. A position's Protective Stop is withdrawn only after its close is confirmed, so a failed close is never left unprotected.
+The verified execution of a Kill Switch event: locking out new entries first, then cancelling non-protective resting orders, market-closing 100% of every open position in both Trading Books, and confirming against the Venue that each book is flat. A position's Protective Stop is withdrawn only after its close is confirmed, so a failed close is never left unprotected.
 _Avoid_: Soft flatten, local close
 
 **Sealed Holdout Period**:

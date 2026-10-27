@@ -297,7 +297,7 @@
     "id": "CLAIM-AUDIT3-C1-FLATTEN-KEEPS-STOPS",
     "claim": "Emergency flatten keeps each Protective Stop resting until that position's close fill is confirmed; failed closes keep their stop and the DMS stays armed.",
     "testFile": "packages/broker/test/flatten-protection.test.ts",
-    "testName": "keeps the exchange-side stop resting when the market close is rejected"
+    "testName": "keeps the Protective Stop resting when the market close is rejected"
   },
   {
     "id": "CLAIM-AUDIT3-H6-REDUCE-ONLY",
@@ -358,5 +358,23 @@
     "claim": "Leaving a Kill Switch state requires step-up authentication.",
     "testFile": "packages/api/test/exchange-gates.test.ts",
     "testName": "requires a step-up to re-arm after a kill switch"
+  },
+  {
+    "id": "CLAIM-AUDIT3-REVIEW-SHARED-INSTRUMENT-STOP",
+    "claim": "Closing one position never cancels the Protective Stop of another open position on the same instrument.",
+    "testFile": "packages/broker/test/flatten-protection.test.ts",
+    "testName": "keeps the stop of a second open position on the same instrument after a reduce-only close"
+  },
+  {
+    "id": "CLAIM-AUDIT3-REVIEW-AUTO-KILL-SWITCH",
+    "claim": "A Risk Engine drawdown Kill Switch trip runs the same Kill Switch Flatten as the manual one.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "flattens the exchange book when the Risk Engine trips the drawdown Kill Switch on its own"
+  },
+  {
+    "id": "CLAIM-AUDIT3-REVIEW-VENUE-VERIFIED-FLAT",
+    "claim": "Kill Switch flatness is verified against the venue, not only the local book.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "reports the exchange book as not flat while the venue still holds a position it could not close"
   }
 ]

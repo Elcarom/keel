@@ -103,6 +103,19 @@ describe("Dead-Man's Switch heartbeat cadence (audit-3 H8)", () => {
     }
   });
 
+  it("can beat without the bar-step scheduler running", async () => {
+    vi.useFakeTimers();
+    const { scheduler, calls } = buildScheduler("Live");
+    scheduler.startHeartbeat();
+    try {
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(scheduler.isRunning()).toBe(false);
+      expect(calls.filter((c) => c === "dms").length).toBeGreaterThanOrEqual(3);
+    } finally {
+      scheduler.stop();
+    }
+  });
+
   it("does not beat in non-exchange Execution Modes", async () => {
     vi.useFakeTimers();
     const { scheduler, calls } = buildScheduler("Paper");

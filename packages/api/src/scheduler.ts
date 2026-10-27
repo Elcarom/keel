@@ -1,5 +1,6 @@
 import {
   SEALED_2026_HOLDOUT_START_TS,
+  isExchangeExecutionMode,
   type Clock,
   type RiskConfig,
   type SystemConfig,
@@ -84,9 +85,16 @@ export class UnattendedScheduler {
     this.timer = setInterval(() => {
       void this.stepOnce().catch(() => {});
     }, this.intervalMs);
+    this.startHeartbeat();
+  }
+
+  /** Starts only the DMS heartbeat timer; idempotent, and stopped by stop(). */
+  public startHeartbeat(): void {
+    if (this.dmsTimer !== null) return;
     this.dmsTimer = setInterval(() => {
       void this.heartbeatOnce();
     }, DMS_HEARTBEAT_INTERVAL_MS);
+    this.dmsTimer.unref();
   }
 
   /** Refreshes the exchange DMS countdown in exchange Execution Modes; alerts on failure. */
@@ -113,8 +121,7 @@ export class UnattendedScheduler {
   }
 
   private isExchangeMode(): boolean {
-    const mode = this.getSystemConfig().executionMode;
-    return mode === "Demo" || mode === "Live-Ramp" || mode === "Live";
+    return isExchangeExecutionMode(this.getSystemConfig().executionMode);
   }
 
   public stop(): void {

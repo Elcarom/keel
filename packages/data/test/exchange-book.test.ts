@@ -53,7 +53,7 @@ describe("Exchange and paper books are separate ledgers (audit-3 C2)", () => {
     expect(store.exchangeLedgerRepo.getTrialBalance().feesExpenseUsdt).toBe("0.30000000");
   });
 
-  it("shares one circuit breaker so a halt stops both books", () => {
+  it("shares one circuit breaker so a Kill Switch stops both books", () => {
     const store = createSqliteDataStore({ dbPath: ":memory:", clock: new ManualClock(0) });
 
     store.paperAccountRepo.setCircuitBreaker({

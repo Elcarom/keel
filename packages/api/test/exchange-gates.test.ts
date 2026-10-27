@@ -12,7 +12,11 @@ import { createFakeOkx } from "../../broker/test/fake-okx.js";
 
 const PASSWORD = "correct-horse-battery-staple";
 
-async function setup(mode: ExecutionMode, strategyStage: PromotionStage | null) {
+async function setup(
+  mode: ExecutionMode,
+  strategyStage: PromotionStage | null,
+  fakeOptions: Parameters<typeof createFakeOkx>[0] = {}
+) {
   const clock = new ManualClock(1_730_000_000_000);
   const config = createDefaultConfig();
   const configInMode = { ...config, system: { ...config.system, executionMode: mode } };
@@ -21,7 +25,7 @@ async function setup(mode: ExecutionMode, strategyStage: PromotionStage | null) 
     clock,
     initialConfig: configInMode
   });
-  const fake = createFakeOkx();
+  const fake = createFakeOkx(fakeOptions);
   const okxBroker = new OkxBroker({
     clock,
     getCredentials: () => ({
@@ -252,6 +256,76 @@ describe("Kill Switch flattens both books and locks until a stepped-up reset (au
       const ok = await rearm({ stepUpPassword: PASSWORD });
       expect(ok.statusCode).toBe(200);
       expect(ok.json().circuitBreaker.status).toBe("NORMAL");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Kill Switch review follow-ups (audit-3 H9)", () => {
+  it("flattens the exchange book when the Risk Engine trips the drawdown Kill Switch on its own", async () => {
+    const { app, order, okxBroker, dataStore, clock } = await setup("Demo", "Demo");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+      // A 15% realised loss breaches the default 12% portfolio drawdown kill switch
+      dataStore.exchangeLedgerRepo.recordJournal({
+        txGroupId: "loss-1",
+        ts: clock.nowMs(),
+        strategyId: "donchian-trend-v1",
+        instrumentId: "ETH-USDT-SWAP",
+        debitAccount: "realized_pnl:usdt",
+        creditAccount: "cash:usdt",
+        amountUsdt: "1500.00000000",
+        description: "Realised loss"
+      });
+
+      const vetoed = await order({ instrumentId: "ETH-USDT-SWAP", stepUpPassword: PASSWORD });
+
+      expect(vetoed.statusCode).toBe(403);
+      expect(dataStore.paperAccountRepo.getCircuitBreaker().status).toBe("DRAWDOWN_KILL_SWITCH");
+      expect(okxBroker.getOpenPositions()).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reports the exchange book as not flat while the venue still holds a position it could not close", async () => {
+    const { app, cookie } = await setup("Demo", "Demo", {
+      positions: [{ instId: "SOL-USDT-SWAP", pos: "3", posSide: "net" }],
+      closeOrdersSucceed: false
+    });
+    try {
+      const trip = await app.inject({
+        method: "POST",
+        url: "/api/v1/paper/circuit-breaker",
+        headers: { cookie },
+        payload: { status: "MANUAL_KILL_SWITCH", reason: "operator drill" }
+      });
+      expect(trip.statusCode).toBe(200);
+      expect(trip.json().killSwitch.exchangeFlat).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Leaving exchange Execution Modes cannot strand positions (audit-3 H5 review)", () => {
+  it("refuses Demo to Paper while exchange positions are open", async () => {
+    const { app, order, cookie, config } = await setup("Demo", "Demo");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/v1/config",
+        headers: { cookie },
+        payload: {
+          config: { ...config, system: { ...config.system, executionMode: "Paper" } },
+          reason: "back to paper",
+          stepUpPassword: PASSWORD
+        }
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/open exchange position/i);
     } finally {
       await app.close();
     }
