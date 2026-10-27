@@ -21,6 +21,7 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
   const algos: FakeAlgo[] = [];
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   const filledPx = new Map<string, string>();
+  const filledSz = new Map<string, string>();
   let seq = 0;
 
   const ok = (data: unknown) => ({
@@ -38,6 +39,7 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
     if (path === "/api/v5/trade/order" && init.method === "POST") {
       const order = body as {
         instId: string;
+        sz: string;
         reduceOnly?: boolean;
         attachAlgoOrds?: Array<{ attachAlgoClOrdId: string }>;
       };
@@ -47,6 +49,7 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
       seq += 1;
       const ordId = `ord${seq}`;
       filledPx.set(ordId, order.reduceOnly === true ? "49000" : "50000");
+      filledSz.set(ordId, order.sz);
       const attached = order.attachAlgoOrds?.[0];
       if (attached) {
         algos.push({
@@ -61,7 +64,9 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
     if (path.startsWith("/api/v5/trade/order?") && init.method === "GET") {
       const ordId = new URL(`https://x${path}`).searchParams.get("ordId") ?? "";
       const px = filledPx.get(ordId);
-      return ok(px ? [{ state: "filled", avgPx: px, accFillSz: "1", fee: "-0.3" }] : []);
+      return ok(
+        px ? [{ state: "filled", avgPx: px, accFillSz: filledSz.get(ordId), fee: "-0.3" }] : []
+      );
     }
 
     if (path.startsWith("/api/v5/trade/orders-algo-pending")) {

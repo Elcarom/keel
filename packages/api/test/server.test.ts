@@ -13,6 +13,13 @@ import { OkxBroker } from "@keel/broker";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer, redactLogObject } from "../src/index.js";
+import { createFakeOkx } from "../../broker/test/fake-okx.js";
+
+const TEST_OKX_CREDENTIALS = {
+  apiKey: "test-api-key",
+  secretKey: "test-secret-key-32-bytes-long-super-secret",
+  passphrase: "test-passphrase"
+};
 
 describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, Vault, & Audit (M0 + M1)", () => {
   let tempDir: string;
@@ -385,7 +392,11 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
     const clock = new ManualClock(1_730_000_000_000);
     const dbPath = join(tempDir, "keel-broker.sqlite");
     let bootstrapToken = "";
-    const okxBroker = new OkxBroker({ clock });
+    const okxBroker = new OkxBroker({
+      clock,
+      getCredentials: () => TEST_OKX_CREDENTIALS,
+      fetchFn: createFakeOkx().fetchFn
+    });
     const app = await createKeelServer({
       clock,
       dbPath,
