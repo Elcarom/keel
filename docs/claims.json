@@ -376,5 +376,11 @@
     "claim": "Kill Switch flatness is verified against the venue, not only the local book.",
     "testFile": "packages/api/test/exchange-gates.test.ts",
     "testName": "reports the exchange book as not flat while the venue still holds a position it could not close"
+  },
+  {
+    "id": "CLAIM-AUDIT3-SEED-IN-SAMPLE",
+    "claim": "Synthetic seed data is anchored in the in-sample period, so a default replay never reaches a sealed holdout even when the clock is in 2026 (ADR-0011)",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "anchors synthetic seed data in the in-sample period so a default replay never touches a sealed holdout, even when the clock is in 2026 (ADR-0011)"
   }
 ]

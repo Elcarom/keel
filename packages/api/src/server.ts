@@ -1153,10 +1153,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
         const active = getActiveSnapshot();
+        // Synthetic bars stay in the in-sample period so research on them never reaches a sealed holdout (ADR-0011)
         const snapshot = seedSyntheticMarketSeries({
           marketDataRepo: dataStore.marketDataRepo,
           instrumentId: body.instrumentId,
-          endCloseTs: clock.nowMs(),
+          endCloseTs: Math.min(clock.nowMs(), SEALED_HOLDOUT_START_TS),
           barCount1H: body.barCount1H
         });
 
