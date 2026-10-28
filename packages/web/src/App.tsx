@@ -282,8 +282,22 @@ export function App() {
       setStepUpPassword(password);
       await refreshSystemAndSession();
       await refreshGovernanceData();
+      await explainDroppedSession();
     } else {
       setAuthError(extractApiError(res.body));
+    }
+  };
+
+  // The server accepted the credentials; if the browser then reports no session, it refused the
+  // cookie, which happens when a Secure cookie is served to a plain-HTTP page
+  const explainDroppedSession = async () => {
+    const session = await apiClient.auth.getSession();
+    if (session.status === 200 && !session.body.authenticated) {
+      setAuthError(
+        window.location.protocol === "http:"
+          ? "Signed in, but your browser refused the session cookie over plain HTTP. Set KEEL_ALLOW_INSECURE_HTTP=true on the container for LAN testing, or open Keel over HTTPS."
+          : "Signed in, but your browser did not keep the session cookie. Check that cookies are allowed for this site."
+      );
     }
   };
 
@@ -297,6 +311,7 @@ export function App() {
       setStepUpPassword(password);
       await refreshSystemAndSession();
       await refreshGovernanceData();
+      await explainDroppedSession();
     } else {
       setAuthError(extractApiError(res.body));
     }

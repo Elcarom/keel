@@ -392,7 +392,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header(
       "content-security-policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     );
     reply.header("x-content-type-options", "nosniff");
     reply.header("x-frame-options", "DENY");

@@ -97,6 +97,11 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       const res = await app.inject({ method: "GET", url: "/healthz" });
       expect(res.headers["content-security-policy"]).toContain("default-src 'self'");
       expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      // The dashboard's Google Fonts stylesheet and font files must not be blocked
+      expect(res.headers["content-security-policy"]).toContain("https://fonts.googleapis.com");
+      expect(res.headers["content-security-policy"]).toContain(
+        "font-src 'self' https://fonts.gstatic.com"
+      );
       expect(res.headers["x-content-type-options"]).toBe("nosniff");
       expect(res.headers["x-frame-options"]).toBe("DENY");
       expect(res.headers["referrer-policy"]).toBe("no-referrer");
