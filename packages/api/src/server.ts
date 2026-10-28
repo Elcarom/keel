@@ -3,6 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
+  MANUAL_EXECUTION_STRATEGY_ID,
   PromotionLadderEvaluator,
   RiskGuardian,
   ScaledDecimal,
@@ -384,6 +385,24 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       nowMs: clock.nowMs()
     });
   };
+
+  // One step-up check for every human-gated action; rate limiting always keys on the request IP
+  const stepUpDenied = (
+    ingress: IngressContext,
+    credentials: {
+      readonly stepUpPassword?: string | undefined;
+      readonly stepUpTotpCode?: string | undefined;
+    },
+    error: string
+  ) =>
+    authManager.verifyStepUp({
+      sessionToken: ingress.sessionToken,
+      password: credentials.stepUpPassword,
+      totpCode: credentials.stepUpTotpCode,
+      clientIp: ingress.clientIp
+    })
+      ? null
+      : { status: 403 as const, body: { error, requiresStepUp: true } };
 
   const requireAuthenticatedIngress = (
     req: FastifyRequest
@@ -829,12 +848,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         if (diff.requiresStepUp) {
-          const stepUpOk = authManager.verifyStepUp({
-            sessionToken: ingress.sessionToken,
-            password: body.stepUpPassword,
-            totpCode: body.stepUpTotpCode
-          });
-          if (!stepUpOk) {
+          const stepUpDenial = stepUpDenied(
+            ingress,
+            body,
+            "Step-up authentication (password or TOTP code) required for this change"
+          );
+          if (stepUpDenial) {
             dataStore.auditRepo.append({
               ts: clock.nowMs(),
               actor: ingress.session.username,
@@ -847,13 +866,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
                 highestRiskClass: diff.highestRiskClass
               }
             });
-            return {
-              status: 403,
-              body: {
-                error: "Step-up authentication (password or TOTP code) required for this change",
-                requiresStepUp: true
-              }
-            };
+            return stepUpDenial;
           }
         }
 
@@ -939,19 +952,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           };
         }
 
-        const stepUpOk = authManager.verifyStepUp({
-          sessionToken: ingress.sessionToken,
-          password: body.stepUpPassword,
-          totpCode: body.stepUpTotpCode
-        });
-        if (!stepUpOk) {
-          return {
-            status: 403,
-            body: {
-              error: "Step-up authentication required for configuration rollback",
-              requiresStepUp: true
-            }
-          };
+        const stepUpDenial = stepUpDenied(
+          ingress,
+          body,
+          "Step-up authentication required for configuration rollback"
+        );
+        if (stepUpDenial) {
+          return stepUpDenial;
         }
 
         const snapshot = dataStore.configRepo.rollbackToVersion({
@@ -1009,19 +1016,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         if (!ingress.session.authenticated || !ingress.session.username) {
           return { status: 401, body: { error: "Authentication required" } };
         }
-        const stepUpOk = authManager.verifyStepUp({
-          sessionToken: ingress.sessionToken,
-          password: body.stepUpPassword,
-          totpCode: body.stepUpTotpCode
-        });
-        if (!stepUpOk) {
-          return {
-            status: 403,
-            body: {
-              error: "Step-up authentication required to update vault secrets",
-              requiresStepUp: true
-            }
-          };
+        const stepUpDenial = stepUpDenied(
+          ingress,
+          body,
+          "Step-up authentication required to update vault secrets"
+        );
+        if (stepUpDenial) {
+          return stepUpDenial;
         }
 
         const active = getActiveSnapshot();
@@ -1454,20 +1455,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         // A Kill Switch locks until a manual, stepped-up reset (audit-3 H9)
         if (isKillSwitchStatus(current.status) && body.status !== current.status) {
-          const stepUpOk = authManager.verifyStepUp({
-            sessionToken: ingress.sessionToken,
-            password: body.stepUpPassword,
-            totpCode: body.stepUpTotpCode,
-            clientIp: ingress.clientIp
-          });
-          if (!stepUpOk) {
-            return {
-              status: 403,
-              body: {
-                error: `Step-up authentication required to leave ${current.status}`,
-                requiresStepUp: true
-              }
-            };
+          const stepUpDenial = stepUpDenied(
+            ingress,
+            body,
+            `Step-up authentication required to leave ${current.status}`
+          );
+          if (stepUpDenial) {
+            return stepUpDenial;
           }
         }
 
@@ -1649,20 +1643,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
               }
             };
           }
-          const stepUpOk = authManager.verifyStepUp({
-            sessionToken: ingress.sessionToken,
-            password: body.stepUpPassword,
-            totpCode: body.stepUpTotpCode
-          });
-          if (!stepUpOk) {
-            return {
-              status: 403,
-              body: {
-                error:
-                  "Step-up authentication failed for Demo (Gate G2), Live-Ramp (Gate G2), or Live (Gate G3)",
-                requiresStepUp: true
-              }
-            };
+          const stepUpDenial = stepUpDenied(
+            ingress,
+            body,
+            "Step-up authentication failed for Demo (Gate G2), Live-Ramp (Gate G2), or Live (Gate G3)"
+          );
+          if (stepUpDenial) {
+            return stepUpDenial;
           }
         }
 
@@ -2194,7 +2181,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         const active = getActiveSnapshot();
         const nowMs = clock.nowMs();
-        const strategyId = body.strategyId ?? "manual-execution";
+        const strategyId = body.strategyId ?? MANUAL_EXECUTION_STRATEGY_ID;
         const spec = defaultInstrumentSpec(body.instrumentId);
         const { stepUpPassword, stepUpTotpCode, ...orderInput } = body;
 
@@ -2209,20 +2196,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         if (!body.reduceOnly) {
           // Human gates G2 (any exchange account) and G3 (real money) require a fresh step-up
-          const stepUpOk = authManager.verifyStepUp({
-            sessionToken: ingress.sessionToken,
-            password: stepUpPassword,
-            totpCode: stepUpTotpCode,
-            clientIp: ingress.clientIp
-          });
-          if (!stepUpOk) {
-            return {
-              status: 403,
-              body: {
-                error: `Step-up authentication required for exchange orders (Gate ${mode === "Demo" ? "G2" : "G3"})`,
-                requiresStepUp: true
-              }
-            };
+          const stepUpDenial = stepUpDenied(
+            ingress,
+            { stepUpPassword, stepUpTotpCode },
+            `Step-up authentication required for exchange orders (Gate ${mode === "Demo" ? "G2" : "G3"})`
+          );
+          if (stepUpDenial) {
+            return stepUpDenial;
           }
 
           // The strategy's Promotion Ladder stage must authorize this venue; unpromoted manual
@@ -2233,7 +2213,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             Live: ["Live"]
           };
           const stage: PromotionStage | null =
-            strategyId === "manual-execution"
+            strategyId === MANUAL_EXECUTION_STRATEGY_ID
               ? mode === "Demo"
                 ? "Demo"
                 : null

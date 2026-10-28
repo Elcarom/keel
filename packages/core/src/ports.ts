@@ -718,6 +718,9 @@ export interface Broker {
   }): PaperTickResult;
 }
 
+/** Strategy ID recorded for operator-placed orders; unpromoted, so confined to the Demo account. */
+export const MANUAL_EXECUTION_STRATEGY_ID = "manual-execution";
+
 export const ExchangeOrderInputSchema = z.object({
   instrumentId: z.string().min(1),
   side: z.enum(["long", "short"]),
@@ -741,7 +744,7 @@ export const ExchangeOrderResultSchema = z.object({
   instrumentId: z.string(),
   side: z.enum(["long", "short"]),
   fillPrice: z.string(),
-  sizeLots: z.number(),
+  sizeLots: z.string(), // exact decimal contract quantity as confirmed by the venue
   protectiveStopPrice: z.string(),
   status: z.enum(["SUBMITTED", "FILLED", "REJECTED"]),
   submittedAtMs: z.number().int()

@@ -11,6 +11,8 @@ export interface FakeOkxOptions {
   readonly closeOrdersSucceed?: boolean;
   /** Pre-existing exchange positions returned by /account/positions. */
   readonly positions?: ReadonlyArray<{ instId: string; pos: string; posSide?: string }>;
+  /** Overrides the accFillSz reported for entry orders (e.g. a fractional partial fill). */
+  readonly entryFillSz?: string;
 }
 
 /**
@@ -54,7 +56,10 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
       seq += 1;
       const ordId = `ord${seq}`;
       filledPx.set(ordId, order.reduceOnly === true ? "49000" : "50000");
-      filledSz.set(ordId, order.sz);
+      filledSz.set(
+        ordId,
+        order.reduceOnly !== true && options.entryFillSz ? options.entryFillSz : order.sz
+      );
       const attached = order.attachAlgoOrds?.[0];
       if (attached) {
         algos.push({

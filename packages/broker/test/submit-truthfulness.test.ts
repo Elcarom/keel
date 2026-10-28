@@ -97,4 +97,15 @@ describe("Exchange broker never fabricates fills (audit-3 H7)", () => {
     expect(order?.status).toBe("FILLED");
     expect(broker.getOpenPositions()[0]?.entryPrice).toBe("50000");
   });
+
+  it("records a fractional partial fill as an exact decimal contract quantity", async () => {
+    const fake = createFakeOkx({ entryFillSz: "0.37" });
+    const broker = brokerOn(fake);
+
+    const result = await broker.submitOrder(entry);
+
+    expect(result.sizeLots).toBe("0.37");
+    expect(broker.getOrders()[0]?.contracts).toBe("0.37");
+    expect(broker.getOpenPositions()[0]?.contracts).toBe("0.37");
+  });
 });
