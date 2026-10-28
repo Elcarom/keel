@@ -16,8 +16,12 @@ async function setup(
   mode: ExecutionMode,
   strategyStage: PromotionStage | null,
   fakeOptions: Parameters<typeof createFakeOkx>[0] = {},
-  // Real-money modes need an enrolled authenticator (Gate G3); enrolled by default there
-  { totp = mode === "Live-Ramp" || mode === "Live" }: { readonly totp?: boolean } = {}
+  // Exchange modes need an enrolled authenticator (Gates G2/G3); enrolled by default there
+  {
+    totp = mode === "Demo" || mode === "Live-Ramp" || mode === "Live"
+  }: {
+    readonly totp?: boolean;
+  } = {}
 ) {
   const clock = new ManualClock(1_730_000_000_000);
   const config = createDefaultConfig();
@@ -72,22 +76,35 @@ async function setup(
   const cookie = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
   // Let any login-time step-up lapse so every gate below must be satisfied explicitly
   clock.advanceMs(10 * 60 * 1000);
+  const secret = String(bootRes.json().totpSecretBase32);
   if (totp) {
-    const secret = String(bootRes.json().totpSecretBase32);
     await app.inject({
       method: "POST",
       url: "/api/v1/auth/totp/verify",
       headers: { cookie },
       payload: { code: TotpEngine.generateCode(secret, clock.nowMs()) }
     });
+    // Enrolment counts as a step-up; let it lapse so each gate is exercised explicitly
+    clock.advanceMs(10 * 60 * 1000);
   }
+
+  // Once TOTP is enrolled a password no longer satisfies step-up, so a request that asks for
+  // step-up gets a code from the next 30s step (codes are single-use)
+  const withStepUp = (payload: Record<string, unknown>): Record<string, unknown> => {
+    if (!totp || payload["stepUpPassword"] === undefined) {
+      return payload;
+    }
+    const { stepUpPassword: _password, ...rest } = payload;
+    clock.advanceMs(30_000);
+    return { ...rest, stepUpTotpCode: TotpEngine.generateCode(secret, clock.nowMs()) };
+  };
 
   const order = (extra: Record<string, unknown> = {}) =>
     app.inject({
       method: "POST",
       url: "/api/v1/broker/orders",
       headers: { cookie },
-      payload: {
+      payload: withStepUp({
         instrumentId: "BTC-USDT-SWAP",
         strategyId: "donchian-trend-v1",
         side: "long",
@@ -95,10 +112,20 @@ async function setup(
         entryPrice: "50000",
         protectiveStopPrice: "49000",
         ...extra
-      }
+      })
     });
 
-  return { app, order, fake, okxBroker, cookie, config: configInMode, dataStore, clock };
+  return {
+    app,
+    order,
+    withStepUp,
+    fake,
+    okxBroker,
+    cookie,
+    config: configInMode,
+    dataStore,
+    clock
+  };
 }
 
 const placedOrders = (fake: ReturnType<typeof createFakeOkx>) =>
@@ -241,7 +268,7 @@ describe("Kill Switch flattens both books and locks until a stepped-up reset (au
   });
 
   it("requires a step-up to re-arm after a kill switch", async () => {
-    const { app, cookie, clock } = await setup("Demo", "Demo");
+    const { app, cookie, clock, withStepUp } = await setup("Demo", "Demo");
     try {
       const trip = await app.inject({
         method: "POST",
@@ -257,7 +284,7 @@ describe("Kill Switch flattens both books and locks until a stepped-up reset (au
           method: "POST",
           url: "/api/v1/paper/circuit-breaker",
           headers: { cookie },
-          payload: { status: "NORMAL", reason: "drill complete", ...extra }
+          payload: withStepUp({ status: "NORMAL", reason: "drill complete", ...extra })
         });
 
       const denied = await rearm();
@@ -344,12 +371,15 @@ describe("Leaving exchange Execution Modes cannot strand positions (audit-3 H5 r
 });
 
 describe("Venue Book equity is reconciled to the OKX balance before sizing", () => {
-  const rebase = (app: Awaited<ReturnType<typeof setup>>["app"], cookie: string, extra = {}) =>
+  const rebase = (
+    { app, cookie, withStepUp }: Awaited<ReturnType<typeof setup>>,
+    extra: Record<string, unknown> = {}
+  ) =>
     app.inject({
       method: "POST",
       url: "/api/v1/broker/venue-capital/rebase",
       headers: { cookie },
-      payload: { reason: "Align Venue Book with OKX balance", ...extra }
+      payload: withStepUp({ reason: "Align Venue Book with OKX balance", ...extra })
     });
 
   it("refuses entry orders while the OKX balance is below the Venue Book equity beyond the drift tolerance", async () => {
@@ -376,13 +406,12 @@ describe("Venue Book equity is reconciled to the OKX balance before sizing", () 
   });
 
   it("rebases the flat Venue Book to the OKX balance with step-up, after which entries are sized from it", async () => {
-    const { app, order, cookie, dataStore, clock } = await setup("Demo", "Demo", {
-      venueEquityUsdt: "5000"
-    });
+    const env = await setup("Demo", "Demo", { venueEquityUsdt: "5000" });
+    const { app, order, dataStore, clock } = env;
     try {
-      expect((await rebase(app, cookie)).statusCode).toBe(403);
+      expect((await rebase(env)).statusCode).toBe(403);
 
-      const res = await rebase(app, cookie, { stepUpPassword: PASSWORD });
+      const res = await rebase(env, { stepUpPassword: PASSWORD });
       expect(res.statusCode).toBe(200);
       expect(res.json().venueEquityUsdt).toBe("5000.00000000");
       expect(
@@ -398,12 +427,13 @@ describe("Venue Book equity is reconciled to the OKX balance before sizing", () 
   });
 
   it("refuses a rebase while the Venue Book holds open positions, but still allows reduce-only closes", async () => {
-    const { app, order, cookie, fake } = await setup("Demo", "Demo");
+    const env = await setup("Demo", "Demo");
+    const { app, order, fake } = env;
     try {
       expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
       fake.setVenueEquityUsdt("5000");
 
-      const res = await rebase(app, cookie, { stepUpPassword: PASSWORD });
+      const res = await rebase(env, { stepUpPassword: PASSWORD });
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toMatch(/open position/i);
 
@@ -533,7 +563,7 @@ describe("Gate G3 requires MFA for real money (audit-4 H4)", () => {
   });
 
   it("refuses switching into a real-money Execution Mode without an enrolled authenticator", async () => {
-    const { app, cookie, config } = await setup("Demo", "Demo");
+    const { app, cookie, config } = await setup("Demo", "Demo", {}, { totp: false });
     try {
       const res = await app.inject({
         method: "PUT",
@@ -547,6 +577,20 @@ describe("Gate G3 requires MFA for real money (audit-4 H4)", () => {
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().error).toMatch(/Gate G3/);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Gate G2 requires MFA for Demo exchange orders (audit-4 decision)", () => {
+  it("refuses Demo orders until a TOTP authenticator is enrolled", async () => {
+    const { app, order, fake } = await setup("Demo", "Demo", {}, { totp: false });
+    try {
+      const res = await order({ stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/Gate G2: enrol a TOTP authenticator/);
+      expect(placedOrders(fake)).toHaveLength(0);
     } finally {
       await app.close();
     }

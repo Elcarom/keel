@@ -484,5 +484,29 @@
     "claim": "Every response carries CSP, nosniff, frame-deny and no-referrer headers.",
     "testFile": "packages/api/test/server.test.ts",
     "testName": "sends browser security headers on every response (audit-4 L2)"
+  },
+  {
+    "id": "CLAIM-AUDIT4-G2-MFA-DEMO",
+    "claim": "Demo exchange orders are refused until a TOTP authenticator is enrolled.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses Demo orders until a TOTP authenticator is enrolled"
+  },
+  {
+    "id": "CLAIM-AUDIT4-TOTP-SINGLE-USE",
+    "claim": "Each TOTP code is accepted at most once.",
+    "testFile": "packages/api/test/security.test.ts",
+    "testName": "accepts each TOTP code at most once, across enrolment, login and step-up"
+  },
+  {
+    "id": "CLAIM-AUDIT4-RAMP-TIERS-CONFIG",
+    "claim": "Live-Ramp tiers follow risk.liveRampMultipliers at 0, 20 and 40 trades.",
+    "testFile": "packages/core/test/risk-and-promotion.test.ts",
+    "testName": "steps the ramp allocation through the configured multipliers at 20 and 40 trades"
+  },
+  {
+    "id": "CLAIM-AUDIT4-BODY-LIMIT",
+    "claim": "Request bodies over 1 MiB are rejected before validation.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "rejects request bodies over 1 MiB before validation runs (zod advisory mitigation)"
   }
 ]

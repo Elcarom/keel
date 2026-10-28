@@ -25,4 +25,4 @@ Keel operates in **Paper** mode by default. Moving any strategy or AI advisor to
 - [ ] **Discord Alert Verification**: Click **Send Test Alert** in UI → Integrations and verify immediate delivery of a `CRITICAL` notification on your phone.
 - [ ] **Kill Switch Drill**: Trigger the **Kill Switch** in `Demo` mode from your phone over the Cloudflare Tunnel and confirm all resting orders cancel and open positions flatten within 3 seconds. Confirm that new entries stay locked afterwards, and that re-arming requires a step-up.
 - [ ] **Backup & Restore Drill**: Trigger a manual backup to `/backups` and verify [`restore-from-backup.md`](./restore-from-backup.md) has been tested.
-- [ ] **Live-Ramp Sizing Tier**: Start at the `0.25x` `Live-Ramp` multiplier (`14 days / 20 trades`) before stepping to `0.50x` and `1.0x`.
+- [ ] **Live-Ramp Sizing Tier**: A strategy promoted to `Live-Ramp` trades the first `risk.liveRampMultipliers` tier (default `0.25x` of 1R). Keel enforces the cap on every entry. Evaluating the strategy steps it to `0.50x` at `20` and `1.0x` at `40` Venue Book trades in stage.

@@ -361,6 +361,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     Math.max(0, Math.floor((clock.nowMs() - startedAtMs) / 1000));
 
   const app = Fastify({
+    // Caps input before zod validates it: zod 3 has an unpatched oversized-input memory advisory,
+    // and ts-rest 3.52 cannot move to zod 4 yet (docs/audit/audit-4.md)
+    bodyLimit: 1_048_576,
     trustProxy: initialConfig.system.trustCloudflareHeaders,
     logger:
       options.logger === true
@@ -453,23 +456,26 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       ? null
       : { status: 403 as const, body: { error, requiresStepUp: true } };
 
-  // Gate G3 is step-up MFA (docs/design/bot-platform.md): no real-money capability is reachable
-  // until a TOTP authenticator is enrolled, after which step-up demands its code (audit-4 H4)
-  const g3MfaDenied = (action: string) =>
+  // Gates G2 and G3 are step-up MFA (docs/design/bot-platform.md): no exchange order (G2, even on
+  // Demo) and no real-money capability (G3) is reachable until a TOTP authenticator is enrolled,
+  // after which step-up demands its code (audit-4 H4)
+  const mfaDenied = (gate: "G2" | "G3", action: string) =>
     authManager.isTotpEnabled()
       ? null
       : {
           status: 403 as const,
           body: {
-            error: `Gate G3: enrol a TOTP authenticator before ${action}`,
+            error: `Gate ${gate}: enrol a TOTP authenticator before ${action}`,
             requiresStepUp: true
           }
         };
+  const exchangeGateFor = (mode: ExecutionMode): "G2" | "G3" =>
+    isRealMoneyExecutionMode(mode) ? "G3" : "G2";
 
   /** Denies a config change that would move into a real-money Execution Mode without G3 MFA. */
   const realMoneySwitchDenied = (from: ExecutionMode, to: ExecutionMode) =>
     isRealMoneyExecutionMode(to) && to !== from
-      ? g3MfaDenied(`switching to the ${to} Execution Mode`)
+      ? mfaDenied("G3", `switching to the ${to} Execution Mode`)
       : null;
 
   const requireAuthenticatedIngress = (
@@ -1642,7 +1648,10 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         const active = getActiveSnapshot();
-        const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
+        const evaluator = new PromotionLadderEvaluator(
+          active.config.promotionLadder,
+          active.config.risk.liveRampMultipliers
+        );
         const existingPromo = dataStore.promotionRepo.getPromotion(body.strategyId);
         const currentStage = existingPromo?.currentStage ?? "Research";
 
@@ -1795,15 +1804,25 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           }
         }
 
-        if (body.targetStage === "Live-Ramp" || body.targetStage === "Live") {
-          const g3Denial = g3MfaDenied(`promoting a strategy to ${body.targetStage}`);
-          if (g3Denial) {
-            return g3Denial;
+        if (
+          body.targetStage === "Demo" ||
+          body.targetStage === "Live-Ramp" ||
+          body.targetStage === "Live"
+        ) {
+          const mfaDenial = mfaDenied(
+            exchangeGateFor(body.targetStage),
+            `promoting a strategy to ${body.targetStage}`
+          );
+          if (mfaDenial) {
+            return mfaDenial;
           }
         }
 
         const active = getActiveSnapshot();
-        const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
+        const evaluator = new PromotionLadderEvaluator(
+          active.config.promotionLadder,
+          active.config.risk.liveRampMultipliers
+        );
         const experiments = dataStore.experimentRepo.listExperiments(50);
         const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
 
@@ -1853,8 +1872,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
 
         let rampAllocationPct = 100;
         if (body.targetStage === "Live-Ramp") {
-          rampAllocationPct =
-            actualPaperTradesCount >= 40 ? 50 : actualPaperTradesCount >= 20 ? 25 : 10;
+          rampAllocationPct = evaluator.liveRampAllocationPct(actualPaperTradesCount);
         }
 
         // Evaluate eligible next stage from the newly entered target stage (C9)
@@ -2312,11 +2330,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         if (!body.reduceOnly) {
-          if (isRealMoneyExecutionMode(mode)) {
-            const g3Denial = g3MfaDenied(`placing ${mode} orders`);
-            if (g3Denial) {
-              return g3Denial;
-            }
+          const mfaDenial = mfaDenied(exchangeGateFor(mode), `placing ${mode} orders`);
+          if (mfaDenial) {
+            return mfaDenial;
           }
           // Human gates G2 (any exchange account) and G3 (real money) require a fresh step-up
           const stepUpDenial = stepUpDenied(
@@ -2584,11 +2600,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             body: { error: `The Venue Book has no venue in the ${mode} Execution Mode` }
           };
         }
-        if (isRealMoneyExecutionMode(mode)) {
-          const g3Denial = g3MfaDenied(`rebasing real-money Venue Book capital`);
-          if (g3Denial) {
-            return g3Denial;
-          }
+        const mfaDenial = mfaDenied(exchangeGateFor(mode), `rebasing ${mode} Venue Book capital`);
+        if (mfaDenial) {
+          return mfaDenial;
         }
         const stepUpDenial = stepUpDenied(
           ingress,

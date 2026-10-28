@@ -97,8 +97,19 @@ export const TotpEngine = {
     windowSteps = 1,
     stepSeconds = 30
   ): boolean {
+    return this.matchStep(secretBase32, code, timestampMs, windowSteps, stepSeconds) !== null;
+  },
+
+  /** The time step whose code matches `code` within the drift window, or null if none does. */
+  matchStep(
+    secretBase32: string,
+    code: string,
+    timestampMs: number,
+    windowSteps = 1,
+    stepSeconds = 30
+  ): number | null {
     if (!/^\d{6}$/.test(code)) {
-      return false;
+      return null;
     }
     const candidateBuf = Buffer.from(code, "utf8");
     for (let delta = -windowSteps; delta <= windowSteps; delta++) {
@@ -109,10 +120,10 @@ export const TotpEngine = {
         candidateBuf.length === expectedBuf.length &&
         timingSafeEqual(candidateBuf, expectedBuf)
       ) {
-        return true;
+        return Math.floor(checkTs / (stepSeconds * 1000));
       }
     }
-    return false;
+    return null;
   }
 };
 
@@ -508,7 +519,7 @@ export class AuthManager {
 
     let stepUpAtMs: number | null = null;
     if (user.totpEnabled && user.totpSecretBase32) {
-      if (!input.totpCode || !TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
+      if (!input.totpCode || !this.acceptTotp(user.totpSecretBase32, input.totpCode, nowMs)) {
         this.authRepo.recordRateLimitAttempt(rateLimitKey, nowMs, 15 * 60 * 1000);
         throw new Error("Invalid or missing TOTP code");
       }
@@ -589,7 +600,7 @@ export class AuthManager {
       throw new Error("No TOTP secret enrolled");
     }
     const nowMs = this.clock.nowMs();
-    if (!TotpEngine.verifyCode(user.totpSecretBase32, code, nowMs)) {
+    if (!this.acceptTotp(user.totpSecretBase32, code, nowMs)) {
       throw new Error("Invalid TOTP verification code");
     }
     this.authRepo.upsertAdminUser({
@@ -598,6 +609,12 @@ export class AuthManager {
       updatedAtMs: nowMs
     });
     this.authRepo.updateSessionStepUp(hashSessionToken(sessionToken), nowMs);
+  }
+
+  /** A valid code is accepted at most once: its time step is consumed atomically. */
+  private acceptTotp(secretBase32: string, code: string, nowMs: number): boolean {
+    const step = TotpEngine.matchStep(secretBase32, code, nowMs);
+    return step !== null && this.authRepo.consumeTotpStep(step);
   }
 
   /** True once the operator has enrolled and verified a TOTP authenticator. */
@@ -630,7 +647,7 @@ export class AuthManager {
     // When TOTP is enabled on the account, password alone cannot bypass TOTP step-up
     if (user.totpEnabled && user.totpSecretBase32) {
       if (input.totpCode) {
-        if (TotpEngine.verifyCode(user.totpSecretBase32, input.totpCode, nowMs)) {
+        if (this.acceptTotp(user.totpSecretBase32, input.totpCode, nowMs)) {
           this.authRepo.resetRateLimit(rateLimitKey);
           this.authRepo.updateSessionStepUp(session.sessionIdHash, nowMs);
           return true;

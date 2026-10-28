@@ -88,6 +88,40 @@ describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-25
     expect(TotpEngine.verifyCode(secret, codeAtT0, t0 + 90_000)).toBe(false);
   });
 
+  it("accepts each TOTP code at most once, across enrolment, login and step-up", () => {
+    let emittedToken = "";
+    const auth = new AuthManager({
+      authRepo: store.authRepo,
+      clock,
+      onBootstrapToken: (token) => {
+        emittedToken = token;
+      }
+    });
+    const boot = auth.bootstrapAdmin({
+      bootstrapToken: emittedToken,
+      username: "admin",
+      password: "correct-horse-battery-staple"
+    });
+    const session = auth.login({
+      username: "admin",
+      password: "correct-horse-battery-staple",
+      clientIp: "198.51.100.7"
+    }).sessionToken;
+
+    const enrolCode = TotpEngine.generateCode(boot.totpSecretBase32, clock.nowMs());
+    auth.enableTotp(session, enrolCode);
+    clock.advanceMs(6 * 60 * 1000);
+
+    // A captured code cannot be replayed, even while it is still inside its validity window
+    const code = TotpEngine.generateCode(boot.totpSecretBase32, clock.nowMs());
+    expect(auth.verifyStepUp({ sessionToken: session, totpCode: code })).toBe(true);
+    expect(auth.verifyStepUp({ sessionToken: session, totpCode: code })).toBe(false);
+
+    clock.advanceMs(30_000);
+    const next = TotpEngine.generateCode(boot.totpSecretBase32, clock.nowMs());
+    expect(auth.verifyStepUp({ sessionToken: session, totpCode: next })).toBe(true);
+  });
+
   it("enforces one-time bootstrap token, Argon2id password hashing, TOTP step-up enforcement, and Cloudflare JWT validation", () => {
     let emittedToken = "";
     const auth = new AuthManager({

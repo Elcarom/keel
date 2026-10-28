@@ -372,9 +372,21 @@ export class RiskGuardian {
  */
 export class PromotionLadderEvaluator {
   private readonly config: PromotionLadderConfig;
+  private readonly liveRampMultipliers: readonly [number, number, number];
 
-  public constructor(config: PromotionLadderConfig) {
+  /** `liveRampMultipliers` is `risk.liveRampMultipliers`: the 1R fractions of the three Live-Ramp tiers. */
+  public constructor(
+    config: PromotionLadderConfig,
+    liveRampMultipliers: readonly [number, number, number] = [0.25, 0.5, 1.0]
+  ) {
     this.config = config;
+    this.liveRampMultipliers = liveRampMultipliers;
+  }
+
+  /** Live-Ramp allocation (% of 1R) for a strategy with `tradesCount` Venue Book trades in stage. */
+  public liveRampAllocationPct(tradesCount: number): number {
+    const tier = tradesCount >= 40 ? 2 : tradesCount >= 20 ? 1 : 0;
+    return Math.round(this.liveRampMultipliers[tier] * 100);
   }
 
   public evaluate(input: {
@@ -462,13 +474,7 @@ export class PromotionLadderEvaluator {
       rampAllocationPct = 100;
       eligibleNextStage = null;
     } else if (input.currentStage === "Live-Ramp") {
-      if (input.paperTradesCount >= 40) {
-        rampAllocationPct = 50;
-      } else if (input.paperTradesCount >= 20) {
-        rampAllocationPct = 25;
-      } else {
-        rampAllocationPct = 10;
-      }
+      rampAllocationPct = this.liveRampAllocationPct(input.paperTradesCount);
       if (
         input.paperTradesCount >= this.config.liveRampPromotionMinTrades &&
         input.paperDrawdownPct < this.config.liveRampDemotionDrawdownPct

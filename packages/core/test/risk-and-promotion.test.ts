@@ -489,7 +489,8 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
       asOfMs: 1_702_900_000_000
     });
     expect(rampEval.eligibleNextStage).toBe("Live");
-    expect(rampEval.rampAllocationPct).toBe(50);
+    // 55 Venue Book trades reach the third risk.liveRampMultipliers tier (default 1.0x)
+    expect(rampEval.rampAllocationPct).toBe(100);
 
     // 4. Automated Demotion on Live-Ramp drawdown breach (> 3%)
     const rampDemoted = evaluator.evaluate({
@@ -514,5 +515,27 @@ describe("PromotionLadderEvaluator (ADR-0007)", () => {
     });
     expect(liveDemoted.currentStage).toBe("Live-Ramp");
     expect(liveDemoted.demotionReason).toContain("live drawdown");
+  });
+});
+
+describe("Live-Ramp tiers come from risk.liveRampMultipliers", () => {
+  it("steps the ramp allocation through the configured multipliers at 20 and 40 trades", () => {
+    const config = createDefaultConfig();
+    const evaluator = new PromotionLadderEvaluator(config.promotionLadder, [0.1, 0.3, 0.6]);
+    const allocationAt = (trades: number) =>
+      evaluator.evaluate({
+        strategyId: "donchian-trend",
+        currentStage: "Live-Ramp",
+        latestExperiment: null,
+        paperTradesCount: trades,
+        paperDrawdownPct: 0,
+        asOfMs: 1_702_900_000_000
+      }).rampAllocationPct;
+
+    expect(allocationAt(0)).toBe(10);
+    expect(allocationAt(19)).toBe(10);
+    expect(allocationAt(20)).toBe(30);
+    expect(allocationAt(40)).toBe(60);
+    expect(evaluator.liveRampAllocationPct(25)).toBe(30);
   });
 });
