@@ -126,6 +126,23 @@ docker run -d \
   ghcr.io/elcarom/psychic-octo-funicular:latest
 ```
 
+#### Environment Variables
+
+| Variable                                          | Default            | Purpose                                                                                                                      |
+| :------------------------------------------------ | :----------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `KEEL_MASTER_KEY`                                 | _(required)_       | Vault master key: at least 32 characters and 12 distinct characters. The vault refuses to run without it                     |
+| `PORT` / `HOST`                                   | `8080` / `0.0.0.0` | Listen address                                                                                                               |
+| `DATA_DIR` or `KEEL_DB_PATH`                      | in-memory          | SQLite location. Without either, all state is lost on restart                                                                |
+| `BACKUPS_DIR` or `KEEL_BACKUPS_DIR`               | unset              | Directory for SQLite backups                                                                                                 |
+| `LOG_LEVEL`                                       | `info`             | Pino log level                                                                                                               |
+| `KEEL_ENABLE_SCHEDULER`                           | `false`            | `true` starts unattended bar ingestion and strategy ticks. The dead-man's switch heartbeat runs in exchange modes either way |
+| `KEEL_BOOTSTRAP_TOKEN`                            | generated          | One-time token for the first admin bootstrap                                                                                 |
+| `KEEL_CF_ACCESS_SECRET`                           | unset              | Cloudflare Access JWT signing secret, when Cloudflare headers are trusted                                                    |
+| `KEEL_AI_SIMULATE_RESPONSES`                      | `false`            | `true` makes the AI layer return deterministic simulated responses instead of calling Gemini (used by the e2e suite)         |
+| `KEEL_GEMINI_API_KEY`, `KEEL_DISCORD_WEBHOOK_URL` | unset              | Fallbacks used only when the vault has no `geminiApiKey` / `discordWebhookUrl`                                               |
+
+OKX trading keys have no environment fallback: store them in the vault (section 5).
+
 ---
 
 ### 3. Cloudflare Tunnel Ingress Setup

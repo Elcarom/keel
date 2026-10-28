@@ -852,7 +852,7 @@ export function resolveIngressContext(input: {
   fallbackIp: string;
   config: KeelConfig;
   authManager: AuthManager;
-  nowMs?: number | undefined;
+  nowMs: number;
 }): IngressContext {
   const trustCf = input.config.system.trustCloudflareHeaders;
   const cfIp = input.headers["cf-connecting-ip"];
@@ -889,7 +889,7 @@ export function resolveIngressContext(input: {
     verifyCloudflareAccessJwt({
       jwt: cfJwt,
       config: input.config,
-      nowMs: input.nowMs ?? Date.now()
+      nowMs: input.nowMs
     });
 
   const sessionToken = parseSessionTokenFromHeaders(input.headers);

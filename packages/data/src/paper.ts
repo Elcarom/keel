@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type Clock,
   CircuitBreakerRecordSchema,
   LedgerAccountSchema,
   LedgerEntryRecordSchema,
@@ -571,6 +572,7 @@ export function createLedgerRepository(
 
 export function createPaperAccountRepository(
   db: DatabaseSync,
+  clock: Clock,
   book: TradingBook = "paper"
 ): PaperAccountRepository {
   const t = bookTables(book);
@@ -811,7 +813,7 @@ export function createPaperAccountRepository(
         params.instrumentId,
         params.strategyId,
         params.anchorCloseTs,
-        params.createdAtMs ?? Date.now()
+        params.createdAtMs ?? clock.nowMs()
       );
     }
   };

@@ -102,6 +102,7 @@ export {
   SEALED_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_END_TS,
+  overlapsSealed2026Holdout,
   SecretKeyNameSchema,
   SecretMetadataRecordSchema,
   SettledFundingRateSchema,

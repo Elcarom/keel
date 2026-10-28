@@ -372,6 +372,11 @@ export const SEALED_HOLDOUT_END_TS = 1_767_225_600_000; // 2026-01-01 00:00:00 U
 export const SEALED_2026_HOLDOUT_START_TS = 1_767_225_600_000; // 2026-01-01 00:00:00 UTC
 export const SEALED_2026_HOLDOUT_END_TS = 1_782_863_999_000; // 2026-06-30 23:59:59 UTC
 
+/** True when [fromTs, toTs] touches the sealed 2026 partition; data after it is not sealed. */
+export function overlapsSealed2026Holdout(fromTs: number, toTs: number): boolean {
+  return fromTs <= SEALED_2026_HOLDOUT_END_TS && toTs >= SEALED_2026_HOLDOUT_START_TS;
+}
+
 export const BenchmarkBaselineSchema = z.object({
   returnPct: z.number(),
   sharpeRatio: z.number(),

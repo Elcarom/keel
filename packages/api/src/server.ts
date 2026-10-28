@@ -9,6 +9,7 @@ import {
   ScaledDecimal,
   SEALED_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_START_TS,
+  overlapsSealed2026Holdout,
   SystemClock,
   createDefaultConfig,
   defaultInstrumentSpec,
@@ -193,11 +194,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     new OkxBroker({
       clock,
       getRiskConfig: () => getActiveSnapshot().config.risk,
+      // Trading keys come only from the encrypted vault, whose writes need step-up and are audited
+      // (audit-4 M4); there is deliberately no plaintext environment fallback
       getCredentials: () => {
-        const apiKey = getSecretSafe("okxApiKey") ?? process.env["OKX_API_KEY"] ?? null;
-        const secretKey = getSecretSafe("okxSecretKey") ?? process.env["OKX_API_SECRET"] ?? null;
-        const passphrase =
-          getSecretSafe("okxPassphrase") ?? process.env["OKX_API_PASSPHRASE"] ?? null;
+        const apiKey = getSecretSafe("okxApiKey");
+        const secretKey = getSecretSafe("okxSecretKey");
+        const passphrase = getSecretSafe("okxPassphrase");
 
         if (!apiKey || !secretKey || !passphrase) {
           return null;
@@ -380,6 +382,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       process.stderr.write(`${errorMsg}\n`);
     }
   }
+
+  // Browser hardening for the dashboard: same-origin everything, no framing, no MIME sniffing
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header(
+      "content-security-policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    reply.header("referrer-policy", "no-referrer");
+    return payload;
+  });
 
   app.addHook("onClose", async () => {
     scheduler.stop();
@@ -1332,9 +1346,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             : coverage.latestCloseTs;
         const effectiveToTs = body.toTs ?? defaultToTs;
 
-        const reaches2026Holdout =
-          effectiveFromTs >= SEALED_2026_HOLDOUT_START_TS ||
-          effectiveToTs >= SEALED_2026_HOLDOUT_START_TS;
+        const reaches2026Holdout = overlapsSealed2026Holdout(effectiveFromTs, effectiveToTs);
 
         if (reaches2026Holdout) {
           if (!body.allowHoldoutAccess) {

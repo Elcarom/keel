@@ -265,19 +265,19 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   }
 
   const marketDataRepo = createMarketDataRepository(db);
-  const experimentRepo = createExperimentRepository(db);
-  const strategySpecRepo = createStrategySpecRepository(db, experimentRepo);
+  const experimentRepo = createExperimentRepository(db, options.clock);
+  const strategySpecRepo = createStrategySpecRepository(db, options.clock, experimentRepo);
   const ledgerRepo = createLedgerRepository(
     db,
     options.initialPaperCapitalUsdt ?? "10000.00000000"
   );
-  const paperAccountRepo = createPaperAccountRepository(db);
+  const paperAccountRepo = createPaperAccountRepository(db, options.clock);
   const exchangeLedgerRepo = createLedgerRepository(
     db,
     options.initialPaperCapitalUsdt ?? "10000.00000000",
     "exchange"
   );
-  const exchangeAccountRepo = createPaperAccountRepository(db, "exchange");
+  const exchangeAccountRepo = createPaperAccountRepository(db, options.clock, "exchange");
   const promotionRepo = createPromotionRepository(db);
   const shadowRepo = createShadowRepository(db);
 

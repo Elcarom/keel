@@ -33,6 +33,23 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("sends browser security headers on every response (audit-4 L2)", async () => {
+    const app = await createKeelServer({
+      config: createDefaultConfig(),
+      clock: new ManualClock(1_730_000_000_000)
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: "/healthz" });
+      expect(res.headers["content-security-policy"]).toContain("default-src 'self'");
+      expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves /healthz, /readyz, and Prometheus /metrics", async () => {
     const clock = new ManualClock(1_730_000_000_000);
     const config = createDefaultConfig();

@@ -466,5 +466,23 @@
     "claim": "Switching into a real-money Execution Mode is refused without an enrolled authenticator.",
     "testFile": "packages/api/test/exchange-gates.test.ts",
     "testName": "refuses switching into a real-money Execution Mode without an enrolled authenticator"
+  },
+  {
+    "id": "CLAIM-AUDIT4-HOLDOUT-END-SEALED",
+    "claim": "A replay range spanning the end of the 2026 holdout is still sealed.",
+    "testFile": "packages/replay/test/holdout-seal-2026.test.ts",
+    "testName": "still seals a range that spans the end of the partition"
+  },
+  {
+    "id": "CLAIM-AUDIT4-HOLDOUT-BOUNDED",
+    "claim": "Data after the 2026 holdout ends is not sealed.",
+    "testFile": "packages/replay/test/holdout-seal-2026.test.ts",
+    "testName": "does not seal a range that starts after the partition ends"
+  },
+  {
+    "id": "CLAIM-AUDIT4-SECURITY-HEADERS",
+    "claim": "Every response carries CSP, nosniff, frame-deny and no-referrer headers.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "sends browser security headers on every response (audit-4 L2)"
   }
 ]

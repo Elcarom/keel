@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ManualClock, SEALED_2026_HOLDOUT_START_TS } from "@keel/core";
+import { ManualClock, SEALED_2026_HOLDOUT_END_TS, SEALED_2026_HOLDOUT_START_TS } from "@keel/core";
 import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { DonchianTrendStrategy } from "@keel/strategy";
 import { ReplayEngine } from "../src/index.js";
@@ -184,6 +184,48 @@ describe("T3: Sealed 2026 Holdout Enforcement in ReplayEngine (R4)", () => {
           walkForwardFolds: 2
         })
       ).toThrow(/Sealed 2026 holdout violation: Walk-forward fold contains bars at or after/i);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("The sealed 2026 holdout is a bounded partition (audit-4 M1)", () => {
+  it("still seals a range that spans the end of the partition", () => {
+    const clock = new ManualClock(1_800_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    try {
+      const engine = new ReplayEngine({ marketDataRepo: store.marketDataRepo, clock });
+      expect(() =>
+        engine.run({
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H",
+          strategy: new DonchianTrendStrategy(),
+          fromTs: SEALED_2026_HOLDOUT_END_TS - 86_400_000,
+          toTs: SEALED_2026_HOLDOUT_END_TS + 86_400_000,
+          allowHoldoutAccess: false
+        })
+      ).toThrow(/Sealed 2026 holdout violation/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("does not seal a range that starts after the partition ends", () => {
+    const clock = new ManualClock(1_800_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    try {
+      const engine = new ReplayEngine({ marketDataRepo: store.marketDataRepo, clock });
+      expect(() =>
+        engine.run({
+          instrumentId: "BTC-USDT-SWAP",
+          timeframe: "1H",
+          strategy: new DonchianTrendStrategy(),
+          fromTs: SEALED_2026_HOLDOUT_END_TS + 1,
+          toTs: SEALED_2026_HOLDOUT_END_TS + 30 * 86_400_000,
+          allowHoldoutAccess: false
+        })
+      ).not.toThrow(/Sealed 2026 holdout/);
     } finally {
       store.close();
     }
