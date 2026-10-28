@@ -204,8 +204,10 @@ export {
   type StrategyRiskState
 } from "./risk.js";
 export {
+  EXCHANGE_INSTRUMENT_IDS,
   INSTRUMENT_SPECS,
   defaultInstrumentSpec,
+  getExchangeInstrumentSpec,
   getInstrumentSpec,
   sizeByStopRisk,
   type InstrumentSpec,

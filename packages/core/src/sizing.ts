@@ -45,8 +45,113 @@ export const INSTRUMENT_SPECS: Readonly<Record<string, InstrumentSpec>> = {
     minOrderSize: ScaledDecimal.fromString("0.1"),
     tickSize: ScaledDecimal.fromString("0.01"),
     maxLeverage: ScaledDecimal.fromString("3")
+  },
+  // Paper-only instruments for Fleet boats (contract specs from OKX public instruments, 2026-10)
+  "SOL-USDT-SWAP": {
+    instrumentId: "SOL-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "SOL",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("1"),
+    lotSize: ScaledDecimal.fromString("0.01"),
+    minOrderSize: ScaledDecimal.fromString("0.01"),
+    tickSize: ScaledDecimal.fromString("0.01"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "XRP-USDT-SWAP": {
+    instrumentId: "XRP-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "XRP",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("100"),
+    lotSize: ScaledDecimal.fromString("0.01"),
+    minOrderSize: ScaledDecimal.fromString("0.01"),
+    tickSize: ScaledDecimal.fromString("0.0001"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "DOGE-USDT-SWAP": {
+    instrumentId: "DOGE-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "DOGE",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("1000"),
+    lotSize: ScaledDecimal.fromString("0.01"),
+    minOrderSize: ScaledDecimal.fromString("0.01"),
+    tickSize: ScaledDecimal.fromString("0.00001"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "BNB-USDT-SWAP": {
+    instrumentId: "BNB-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "BNB",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("0.01"),
+    lotSize: ScaledDecimal.fromString("1"),
+    minOrderSize: ScaledDecimal.fromString("1"),
+    tickSize: ScaledDecimal.fromString("0.01"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "ADA-USDT-SWAP": {
+    instrumentId: "ADA-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "ADA",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("100"),
+    lotSize: ScaledDecimal.fromString("0.1"),
+    minOrderSize: ScaledDecimal.fromString("0.1"),
+    tickSize: ScaledDecimal.fromString("0.0001"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "AVAX-USDT-SWAP": {
+    instrumentId: "AVAX-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "AVAX",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("1"),
+    lotSize: ScaledDecimal.fromString("0.1"),
+    minOrderSize: ScaledDecimal.fromString("0.1"),
+    tickSize: ScaledDecimal.fromString("0.001"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "LINK-USDT-SWAP": {
+    instrumentId: "LINK-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "LINK",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("1"),
+    lotSize: ScaledDecimal.fromString("0.1"),
+    minOrderSize: ScaledDecimal.fromString("0.1"),
+    tickSize: ScaledDecimal.fromString("0.001"),
+    maxLeverage: ScaledDecimal.fromString("3")
+  },
+  "LTC-USDT-SWAP": {
+    instrumentId: "LTC-USDT-SWAP",
+    venue: "OKX_EEA",
+    baseCurrency: "LTC",
+    settlementCurrency: "USDT",
+    contractValue: ScaledDecimal.fromString("1"),
+    lotSize: ScaledDecimal.fromString("0.1"),
+    minOrderSize: ScaledDecimal.fromString("0.1"),
+    tickSize: ScaledDecimal.fromString("0.01"),
+    maxLeverage: ScaledDecimal.fromString("3")
   }
 };
+
+/**
+ * The instruments the exchange broker may trade. Every other spec above is paper-only: widening
+ * this list is an exchange capability change and goes through Gate G2.
+ */
+export const EXCHANGE_INSTRUMENT_IDS: readonly string[] = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
+
+/** The spec for an exchange order or position; refuses paper-only instruments. */
+export function getExchangeInstrumentSpec(instrumentId: string): InstrumentSpec {
+  if (!EXCHANGE_INSTRUMENT_IDS.includes(instrumentId)) {
+    throw new Error(
+      `${instrumentId} is paper-only: exchange orders are limited to ${EXCHANGE_INSTRUMENT_IDS.join(", ")}`
+    );
+  }
+  return getInstrumentSpec(instrumentId);
+}
 
 export function getInstrumentSpec(instrumentId: string): InstrumentSpec {
   const spec = INSTRUMENT_SPECS[instrumentId];

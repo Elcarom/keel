@@ -12,7 +12,8 @@ import {
   overlapsSealed2026Holdout,
   SystemClock,
   createDefaultConfig,
-  defaultInstrumentSpec,
+  EXCHANGE_INSTRUMENT_IDS,
+  getExchangeInstrumentSpec,
   diffConfigs,
   getUtcDayStartMs,
   isExchangeExecutionMode,
@@ -58,6 +59,7 @@ import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
 import { FleetError, FleetService } from "./fleet.js";
+import { type SeaTrialSettings } from "./sea-trial.js";
 import { PaperBroker } from "./paper-broker.js";
 import { UnattendedScheduler } from "./scheduler.js";
 import { PINO_REDACT_PATHS } from "./redact.js";
@@ -95,6 +97,8 @@ export interface KeelServerOptions {
   readonly botDesigner?: BotDesigner | undefined;
   /** OKX public market data source (tests inject one that never reaches the network). */
   readonly marketIngestor?: OkxPublicIngestor | undefined;
+  /** Sea-trial sample sizes (tests use fewer random paths). */
+  readonly seaTrial?: Partial<SeaTrialSettings> | undefined;
 }
 
 export async function createKeelServer(options: KeelServerOptions = {}): Promise<FastifyInstance> {
@@ -204,7 +208,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       model: getActiveSnapshot().config.ai.botDesignerModel
     }),
     isSchedulerRunning: (): boolean => scheduler.isRunning(),
-    ingestor: okxIngestor
+    ingestor: okxIngestor,
+    seaTrial: options.seaTrial
   });
 
   const contextAnalyst = new ContextAnalyst(llmGateway);
@@ -2447,7 +2452,15 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const active = getActiveSnapshot();
         const nowMs = clock.nowMs();
         const strategyId = body.strategyId ?? MANUAL_EXECUTION_STRATEGY_ID;
-        const spec = defaultInstrumentSpec(body.instrumentId);
+        if (!EXCHANGE_INSTRUMENT_IDS.includes(body.instrumentId)) {
+          return {
+            status: 400,
+            body: {
+              error: `${body.instrumentId} is paper-only and cannot be traded on the exchange`
+            }
+          };
+        }
+        const spec = getExchangeInstrumentSpec(body.instrumentId);
         const { stepUpPassword, stepUpTotpCode, ...orderInput } = body;
 
         // Exchange orders exist only in exchange Execution Modes (audit-3 C3)
@@ -2535,7 +2548,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           for (const p of openPositions) {
             const pContracts = ScaledDecimal.fromString(p.contracts);
             const pPrice = ScaledDecimal.fromString(p.entryPrice);
-            const pSpec = defaultInstrumentSpec(p.instrumentId);
+            const pSpec = getExchangeInstrumentSpec(p.instrumentId);
             const pNotional = pContracts.mul(pSpec.contractValue).mul(pPrice);
 
             grossNotional = grossNotional.add(pNotional);

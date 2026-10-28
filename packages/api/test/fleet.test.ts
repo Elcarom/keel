@@ -31,6 +31,7 @@ async function setup() {
     clock,
     dataStore,
     marketIngestor,
+    seaTrial: { randomEntryPaths: 20, monteCarloPaths: 200 },
     onBootstrapToken: (t) => {
       bootstrapToken = t;
     }
@@ -117,10 +118,54 @@ describe("Fleet API", () => {
     for (const p of batch.propositions) {
       expect(p.status).toBe("ranked");
       expect(p.assessment?.dataSource).toBe("synthetic");
-      // In-sample only: the backtest window ends before the sealed holdout (2025-01-01)
+      // In-sample only: two years ending before the sealed holdout (2025-01-01)
       expect(p.assessment?.toTs).toBeLessThanOrEqual(1_735_689_600_000);
+      expect(p.assessment?.days).toBe(730);
+
+      // Every proposition goes through the full sea trial
+      const trial = p.assessment?.seaTrial;
+      expect(trial?.checks).toHaveLength(11);
+      expect(trial?.neighbours).toHaveLength(4);
+      expect(trial?.sibling?.instrumentId).toBe("ETH-USDT-SWAP");
+      expect(trial?.segments).toHaveLength(8);
+      expect(trial?.trials).toBeGreaterThanOrEqual(3);
+      // A seaworthy verdict is impossible with any critical check failed
+      if (p.assessment?.verdict === "seaworthy") {
+        expect(trial?.checks.filter((c) => c.critical).every((c) => c.passed)).toBe(true);
+      }
     }
     expect(new Set(batch.propositions.map((p) => p.blueprint.name)).size).toBe(3);
+  }, 60_000);
+
+  it("designs for any of the ten waters and cross-checks each idea on its sibling market", async () => {
+    const { call } = await setup();
+    const res = await call("POST", "/api/v1/fleet/designs", {
+      instruments: ["SOL-USDT-SWAP"],
+      styles: ["squeeze_breakout", "capitulation_fade"],
+      riskAppetite: "cautious",
+      direction: "any",
+      count: 2,
+      notes: ""
+    });
+    expect(res.status).toBe(200);
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 400 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+      if (batch?.status === "assessing") expect(batch.progress).toMatch(/Sea trial \d of 2/);
+    }
+    expect(batch?.progress).toBeNull();
+    expect(batch?.propositions.map((p) => p.blueprint.archetype).sort()).toEqual([
+      "capitulation_fade",
+      "squeeze_breakout"
+    ]);
+    for (const p of batch?.propositions ?? []) {
+      expect(p.status).toBe("ranked");
+      expect(p.blueprint.instrumentId).toBe("SOL-USDT-SWAP");
+      expect(p.assessment?.seaTrial?.sibling?.instrumentId).toBe("AVAX-USDT-SWAP");
+    }
   }, 60_000);
 
   it("launches a ranked proposition as a paper bot funded from the wallet", async () => {

@@ -574,5 +574,47 @@
     "claim": "A Claude refusal is surfaced, never replaced by invented propositions.",
     "testFile": "packages/ai/test/bot-designer.test.ts",
     "testName": "surfaces a refusal instead of inventing propositions"
+  },
+  {
+    "id": "CLAIM-SEATRIAL-CRITICAL",
+    "claim": "A proposition is never rated seaworthy while any critical sea-trial check fails, however high its headline numbers.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "never calls an idea seaworthy when nudged settings sink it, however good it looks"
+  },
+  {
+    "id": "CLAIM-SEATRIAL-COSTS",
+    "claim": "The sea trial fails an idea whose average trade turns negative when fees and slippage are doubled.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "fails the cost check when doubled costs turn the average trade negative"
+  },
+  {
+    "id": "CLAIM-SEATRIAL-SEASONS",
+    "claim": "A result carried by one lucky stretch fails the sea trial's consistency check.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "flags a result carried by one lucky stretch as unsteady"
+  },
+  {
+    "id": "CLAIM-SEATRIAL-SIBLING",
+    "claim": "Propositions on any Fleet instrument are cross-checked on a sibling market during their sea trial.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "designs for any of the ten waters and cross-checks each idea on its sibling market"
+  },
+  {
+    "id": "CLAIM-REPLAY-SNAPSHOT",
+    "claim": "Replay hands a strategy exactly the causal snapshot the market repository would build at each bar.",
+    "testFile": "packages/replay/test/sea-trial-stats.test.ts",
+    "testName": "hands the strategy exactly the snapshot the repository would build, bar by bar"
+  },
+  {
+    "id": "CLAIM-REPLAY-ASSUMED-FUNDING",
+    "claim": "Backtests without settled funding history charge every open position an assumed funding rate.",
+    "testFile": "packages/replay/test/sea-trial-stats.test.ts",
+    "testName": "charges the assumed funding rate only when the window has no settled funding"
+  },
+  {
+    "id": "CLAIM-ARCHETYPE-FAILED-BREAKOUT",
+    "claim": "A failed-breakout boat enters only once the close is back inside the channel.",
+    "testFile": "packages/spec/test/blueprint.test.ts",
+    "testName": "fades a failed breakout only once the close is back inside the channel"
   }
 ]

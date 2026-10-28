@@ -297,19 +297,29 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
         .map(mapProposition);
     },
 
-    getBacktestDataSource(instrumentId: string): "okx" | "synthetic" | null {
+    countPropositions(): number {
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM fleet_propositions`).get();
+      return row ? Number(row["n"]) : 0;
+    },
+
+    // Keyed by instrument and window start, so a longer window is filled afresh
+    getBacktestDataSource(instrumentId: string, windowFromTs: number): "okx" | "synthetic" | null {
       const row = db
         .prepare(`SELECT source FROM fleet_backtest_data WHERE instrument_id = ?`)
-        .get(instrumentId);
+        .get(`${instrumentId}@${windowFromTs}`);
       if (!row) return null;
       return str(row, "source") === "okx" ? "okx" : "synthetic";
     },
 
-    setBacktestDataSource(instrumentId: string, source: "okx" | "synthetic"): void {
+    setBacktestDataSource(
+      instrumentId: string,
+      windowFromTs: number,
+      source: "okx" | "synthetic"
+    ): void {
       db.prepare(
         `INSERT INTO fleet_backtest_data (instrument_id, source) VALUES (?, ?)
          ON CONFLICT(instrument_id) DO UPDATE SET source = excluded.source`
-      ).run(instrumentId, source);
+      ).run(`${instrumentId}@${windowFromTs}`, source);
     }
   };
 }

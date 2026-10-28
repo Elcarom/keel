@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ARCHETYPE_FAMILIES,
+  ARCHETYPE_FAMILY,
   ARCHETYPE_LABELS,
   BOT_ARCHETYPES,
   FLEET_INSTRUMENTS,
   keelApiContract,
+  type ArchetypeFamily,
+  type Assessment,
   type Bot,
   type BotArchetype,
   type DesignBatch,
@@ -11,6 +15,7 @@ import {
   type FleetInstrument,
   type FleetOverview,
   type Proposition,
+  type SeaTrial,
   type Verdict,
   type Wallet
 } from "@keel/core";
@@ -33,6 +38,14 @@ function errorOf(body: unknown, fallback = "Something went wrong"): string {
 // ---------------------------------------------------------------------------
 
 const usd = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** Instrument prices: two decimals for BTC, more for coins priced in cents. */
+function price(value: string | number): string {
+  const n = Number(value);
+  const abs = Math.abs(n);
+  const digits = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: digits });
+}
 
 function money(value: string | number): string {
   return `${usd.format(Number(value))} USDT`;
@@ -63,6 +76,10 @@ function ago(ms: number | null): string {
 
 function pair(instrumentId: string): string {
   return instrumentId.replace("-USDT-SWAP", " perp");
+}
+
+function coin(instrumentId: string): string {
+  return instrumentId.replace("-USDT-SWAP", "");
 }
 
 const DIRECTION_LABELS = { both: "Long & short", long_only: "Long only", short_only: "Short only" };
@@ -122,6 +139,66 @@ function ArchetypeIcon({
         <svg {...common}>
           <circle cx="12" cy="5" r="2" />
           <path d="M12 7v13M8 11h8M5 15c0 3 3 5 7 5s7-2 7-5" />
+        </svg>
+      );
+    case "squeeze_breakout":
+      return (
+        <svg {...common}>
+          <path d="M3 5c4 0 6 4 9 7M3 19c4 0 6-4 9-7" />
+          <path d="M12 12h9M18 9l3 3-3 3" />
+        </svg>
+      );
+    case "volume_breakout":
+      return (
+        <svg {...common}>
+          <path d="M4 20v-3M8 20v-5M12 20v-9" />
+          <path d="M18 15V5M15 8l3-3 3 3" />
+        </svg>
+      );
+    case "inside_bar_breakout":
+      return (
+        <svg {...common}>
+          <rect x="3" y="5" width="6" height="14" rx="1" />
+          <rect x="12" y="8.5" width="4" height="7" rx="1" />
+          <path d="M20 4v8M17.5 6.5 20 4l2.5 2.5" />
+        </svg>
+      );
+    case "keltner_ride":
+      return (
+        <svg {...common}>
+          <path d="M2 8c6-3 14-3 20 0M2 16c6 3 14 3 20 0" strokeDasharray="2 3" />
+          <path d="M3 17c5-2 9-8 18-12" />
+        </svg>
+      );
+    case "regime_momentum":
+      return (
+        <svg {...common}>
+          <path d="M2 18c4-1 6-4 9-4s6-6 11-9" />
+          <path d="M16 5h6v6" />
+          <path d="M2 21h20" strokeDasharray="2 3" />
+        </svg>
+      );
+    case "rsi_reversal":
+      return (
+        <svg {...common}>
+          <path d="M4 17a8 8 0 0 1 16 0" />
+          <path d="M12 17 8.5 11.5" />
+          <path d="M4.5 13h2M17.5 13h2" />
+        </svg>
+      );
+    case "failed_breakout":
+      return (
+        <svg {...common}>
+          <path d="M3 8h18" strokeDasharray="2 3" />
+          <path d="M3 19h4l4-15 3 9h7" />
+        </svg>
+      );
+    case "capitulation_fade":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="8" />
+          <circle cx="12" cy="12" r="3.5" />
+          <path d="m6.3 6.3 3.2 3.2M14.5 14.5l3.2 3.2M17.7 6.3l-3.2 3.2M9.5 14.5l-3.2 3.2" />
         </svg>
       );
   }
@@ -472,8 +549,7 @@ function BotCard({
             >
               {pos.side === "long" ? "Long" : "Short"}
             </span>{" "}
-            {pos.contracts} @ {usd.format(Number(pos.entryPrice))} · stop{" "}
-            {usd.format(Number(pos.protectiveStopPrice))}
+            {pos.contracts} @ {price(pos.entryPrice)} · stop {price(pos.protectiveStopPrice)}
             {pos.takeProfitPrice
               ? ` · target ${usd.format(Number(pos.takeProfitPrice))}`
               : ""} ·{" "}
@@ -570,8 +646,8 @@ function BotLogbook({ bot }: { bot: Bot }) {
               {bot.recentTrades.map((t) => (
                 <tr key={`${t.openedAtMs}-${t.side}`} className="border-t border-[#1E2833]">
                   <td className="py-1">{t.side}</td>
-                  <td className="py-1">{usd.format(Number(t.entryPrice))}</td>
-                  <td className="py-1">{t.exitPrice ? usd.format(Number(t.exitPrice)) : "open"}</td>
+                  <td className="py-1">{price(t.entryPrice)}</td>
+                  <td className="py-1">{t.exitPrice ? price(t.exitPrice) : "open"}</td>
                   <td className={`py-1 text-right ${tone(Number(t.pnlUsdt))}`}>
                     {signedMoney(t.pnlUsdt)}
                   </td>
@@ -765,8 +841,24 @@ const ARCHETYPE_HINTS: Record<BotArchetype, string> = {
   mean_reversion: "Fades stretched moves back to the mean",
   momentum: "Rides strong impulses while they last",
   ma_crossover: "Changes tack when averages cross",
-  trend_pullback: "Follows the trend, boards on the dips"
+  trend_pullback: "Follows the trend, boards on the dips",
+  squeeze_breakout: "Waits out the calm, sails off when it breaks",
+  volume_breakout: "Only trusts breakouts with a crowd behind them",
+  inside_bar_breakout: "A quiet bar, then a push with the current",
+  keltner_ride: "Rides once price clears its volatility band",
+  regime_momentum: "Momentum, but only with the big current",
+  rsi_reversal: "Catches the turn out of an overstretched sea",
+  failed_breakout: "Bets on breakouts that bounce off the wall",
+  capitulation_fade: "Buys what a panic bar left behind"
 };
+
+const FAMILY_LABELS: Record<ArchetypeFamily, string> = {
+  trend: "Trend followers",
+  breakout: "Breakouts",
+  reversion: "Reversion"
+};
+
+const MAJORS: readonly FleetInstrument[] = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
 
 function BriefForm({
   onDesigned,
@@ -821,8 +913,9 @@ function BriefForm({
         <div>
           <h2 className="text-lg font-bold text-slate-50">Draw up a brief</h2>
           <p className="text-sm text-slate-400">
-            Claude drafts the propositions; Keel backtests every one on a year of hourly data and
-            ranks them.
+            Claude drafts the propositions. Keel then puts every one through a sea trial: two years
+            of hourly data, doubled costs, walk-forward, nudged settings and a sibling market. Then
+            it ranks them.
           </p>
         </div>
         <span
@@ -843,16 +936,33 @@ function BriefForm({
         <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
           Waters
         </legend>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {FLEET_INSTRUMENTS.map((id) => (
             <Chip
               key={id}
               selected={brief.instruments.includes(id)}
               onClick={() => toggleInstrument(id)}
+              testId={`instrument-${id}`}
             >
-              {pair(id)}
+              {coin(id)}
             </Chip>
           ))}
+          <span className="mx-1 hidden h-5 w-px bg-[#2B3947] sm:block" aria-hidden />
+          <button
+            type="button"
+            className="text-xs font-semibold text-teal-300 hover:text-teal-200"
+            onClick={() => setBrief((b) => ({ ...b, instruments: [...MAJORS] }))}
+          >
+            Majors
+          </button>
+          <button
+            type="button"
+            data-testid="instruments-all"
+            className="text-xs font-semibold text-teal-300 hover:text-teal-200"
+            onClick={() => setBrief((b) => ({ ...b, instruments: [...FLEET_INSTRUMENTS] }))}
+          >
+            All {FLEET_INSTRUMENTS.length}
+          </button>
         </div>
       </fieldset>
 
@@ -863,34 +973,43 @@ function BriefForm({
             — pick none to let Claude surprise you
           </span>
         </legend>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {BOT_ARCHETYPES.map((s) => {
-            const selected = brief.styles.includes(s);
-            return (
-              <button
-                key={s}
-                type="button"
-                aria-pressed={selected}
-                data-testid={`style-${s}`}
-                onClick={() => toggleStyle(s)}
-                className={`flex items-start gap-3 rounded-xl border p-3 text-left transition ${
-                  selected
-                    ? "border-teal-400 bg-teal-400/10"
-                    : "border-[#2B3947] hover:border-slate-400"
-                }`}
-              >
-                <span className={selected ? "text-teal-200" : "text-slate-400"}>
-                  <ArchetypeIcon archetype={s} />
-                </span>
-                <span>
-                  <span className="block text-sm font-semibold text-slate-100">
-                    {ARCHETYPE_LABELS[s]}
-                  </span>
-                  <span className="block text-xs text-slate-400">{ARCHETYPE_HINTS[s]}</span>
-                </span>
-              </button>
-            );
-          })}
+        <div className="space-y-3">
+          {ARCHETYPE_FAMILIES.map((family) => (
+            <div key={family}>
+              <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
+                {FAMILY_LABELS[family]}
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {BOT_ARCHETYPES.filter((a) => ARCHETYPE_FAMILY[a] === family).map((s) => {
+                  const selected = brief.styles.includes(s);
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      aria-pressed={selected}
+                      data-testid={`style-${s}`}
+                      onClick={() => toggleStyle(s)}
+                      className={`flex items-start gap-3 rounded-xl border p-3 text-left transition ${
+                        selected
+                          ? "border-teal-400 bg-teal-400/10"
+                          : "border-[#2B3947] hover:border-slate-400"
+                      }`}
+                    >
+                      <span className={selected ? "text-teal-200" : "text-slate-400"}>
+                        <ArchetypeIcon archetype={s} />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-100">
+                          {ARCHETYPE_LABELS[s]}
+                        </span>
+                        <span className="block text-xs text-slate-400">{ARCHETYPE_HINTS[s]}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </fieldset>
 
@@ -1102,6 +1221,249 @@ function LaunchForm({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Sea trial: the checks behind a proposition's rank
+// ---------------------------------------------------------------------------
+
+function shortDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+}
+
+function CheckMark({ passed }: { passed: boolean }) {
+  return passed ? (
+    <span aria-label="passed" className="font-bold text-emerald-300">
+      ✓
+    </span>
+  ) : (
+    <span aria-label="failed" className="font-bold text-rose-300">
+      ✕
+    </span>
+  );
+}
+
+/** One line under the stats: how many checks passed, with the critical ones named. */
+function SeaTrialSummary({
+  trial,
+  open,
+  onToggle
+}: {
+  trial: SeaTrial;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const passed = trial.checks.filter((c) => c.passed).length;
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-[#2B3947] px-3 py-2">
+      <span className="text-xs font-semibold text-slate-200" data-testid="sea-trial-summary">
+        Sea trial: {passed} of {trial.checks.length} checks
+      </span>
+      {trial.checks
+        .filter((c) => c.critical)
+        .map((c) => (
+          <span key={c.key} className="inline-flex items-center gap-1 text-[11px] text-slate-300">
+            <CheckMark passed={c.passed} /> {c.label}
+          </span>
+        ))}
+      <button
+        type="button"
+        data-testid="sea-trial-toggle"
+        className="ml-auto text-xs font-semibold text-teal-300 hover:text-teal-200"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        {open ? "Hide the sea trial" : "Full sea trial"}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * One row of season bars around zero, on its own scale: the boat's few percent stay readable
+ * next to a market that tripled. Two strips, not two axes on one chart.
+ */
+function SeasonStrip({
+  label,
+  values,
+  tips,
+  filled
+}: {
+  label: string;
+  values: readonly number[];
+  tips: readonly string[];
+  filled: boolean;
+}) {
+  const max = Math.max(0.5, ...values.map((v) => Math.abs(v)));
+  const half = 22;
+  return (
+    <div>
+      <p className="mb-1 text-[11px] text-slate-400">{label}</p>
+      <div className="grid grid-cols-8 gap-1" role="list" aria-label={label}>
+        {values.map((v, i) => (
+          <div
+            key={i}
+            role="listitem"
+            title={tips[i]}
+            aria-label={tips[i]}
+            className="group rounded-md transition hover:bg-slate-700/30"
+          >
+            <div className="relative" style={{ height: `${half * 2}px` }}>
+              <div className="absolute inset-x-0 top-1/2 border-t border-slate-600" />
+              <div
+                className={`absolute inset-x-[22%] ${
+                  filled
+                    ? v >= 0
+                      ? "rounded-t-[3px] bg-teal-300"
+                      : "rounded-b-[3px] bg-rose-300"
+                    : `border border-slate-400 ${v >= 0 ? "rounded-t-[3px]" : "rounded-b-[3px]"}`
+                }`}
+                style={{
+                  height: `${Math.max(1, (Math.abs(v) / max) * half)}px`,
+                  ...(v >= 0 ? { bottom: "50%" } : { top: "50%" })
+                }}
+              />
+            </div>
+            <p className="font-mono-tabular text-center text-[9px] text-slate-400">
+              {v > 0 ? "+" : ""}
+              {Math.abs(v) >= 100 ? Math.round(v) : v.toFixed(1)}%
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SeasonBars({ trial }: { trial: SeaTrial }) {
+  const tips = trial.segments.map(
+    (s, i) =>
+      `Q${i + 1}, ${shortDate(s.fromTs)}–${shortDate(s.toTs)}: boat ${signedPct(s.returnPct)}, market ${signedPct(s.marketReturnPct)}, ${s.trades} trades`
+  );
+  return (
+    <div className="space-y-2">
+      <SeasonStrip
+        label="The boat, by season"
+        values={trial.segments.map((s) => s.returnPct)}
+        tips={tips}
+        filled
+      />
+      <SeasonStrip
+        label="The market, same seasons"
+        values={trial.segments.map((s) => s.marketReturnPct)}
+        tips={tips}
+        filled={false}
+      />
+      <div className="grid grid-cols-8 gap-1">
+        {trial.segments.map((s, i) => (
+          <p key={s.fromTs} className="text-center text-[10px] text-slate-500">
+            Q{i + 1}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SeaTrialPanel({ assessment, trial }: { assessment: Assessment; trial: SeaTrial }) {
+  const variants = [
+    ...trial.neighbours,
+    ...(trial.sibling
+      ? [{ ...trial.sibling, label: `On ${coin(trial.sibling.instrumentId)}` }]
+      : [])
+  ];
+  return (
+    <div className="mt-3 space-y-5 rounded-xl bg-[#0F1419] p-4" data-testid="sea-trial-panel">
+      <ul className="grid gap-x-6 gap-y-2.5 md:grid-cols-2">
+        {trial.checks.map((c) => (
+          <li key={c.key} className="flex gap-2 text-xs" data-testid={`check-${c.key}`}>
+            <CheckMark passed={c.passed} />
+            <span>
+              <span className="font-semibold text-slate-100">{c.label}</span>
+              {c.critical && (
+                <span className="ml-1.5 rounded bg-slate-700/70 px-1 py-px text-[10px] text-slate-300">
+                  must pass
+                </span>
+              )}
+              <span className="block text-slate-400">{c.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        <SeasonBars trial={trial} />
+        <div>
+          <p className="mb-2 text-[11px] text-slate-400">Same idea, nudged</p>
+          <table className="font-mono-tabular w-full text-xs">
+            <thead>
+              <tr className="text-left text-[10px] text-slate-500">
+                <th className="py-1 font-normal">Variant</th>
+                <th className="py-1 text-right font-normal">Return</th>
+                <th className="py-1 text-right font-normal">Sharpe</th>
+                <th className="py-1 text-right font-normal">Trades</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-[#2B3947] text-slate-100">
+                <td className="py-1">As designed</td>
+                <td className={`py-1 text-right ${tone(assessment.returnPct)}`}>
+                  {signedPct(assessment.returnPct)}
+                </td>
+                <td className="py-1 text-right">{assessment.sharpeRatio.toFixed(2)}</td>
+                <td className="py-1 text-right">{assessment.totalTrades}</td>
+              </tr>
+              {variants.map((v) => (
+                <tr key={v.label} className="border-t border-[#2B3947] text-slate-300">
+                  <td className="py-1">{v.label}</td>
+                  <td className={`py-1 text-right ${tone(v.returnPct)}`}>
+                    {signedPct(v.returnPct)}
+                  </td>
+                  <td className="py-1 text-right">{v.sharpeRatio.toFixed(2)}</td>
+                  <td className="py-1 text-right">{v.trades}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <dl className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <dt className="text-[11px] text-slate-500">Reshuffled histories</dt>
+          <dd className="text-slate-200">
+            {trial.monteCarlo.lossProbabilityPct}% of {trial.monteCarlo.paths.toLocaleString()} lose
+            money; 1-in-20 bad case {signedPct(trial.monteCarlo.p5ReturnPct)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-slate-500">Is the edge real?</dt>
+          <dd className="text-slate-200">
+            t = {trial.tStat.toFixed(2)}, p ={" "}
+            {trial.pValue < 0.001 ? "<0.001" : trial.pValue.toFixed(3)} · {trial.trials} ideas
+            counted
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-slate-500">Costs and funding</dt>
+          <dd className="text-slate-200">
+            {trial.stressAvgR >= 0 ? "+" : ""}
+            {trial.stressAvgR.toFixed(2)}R per trade at 2× costs ·{" "}
+            {trial.funding === "assumed"
+              ? "funding assumed at 0.01%/8h (OKX keeps no older history)"
+              : "settled funding charged"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-slate-500">Strict research gate</dt>
+          <dd className="text-slate-200">
+            {assessment.gatePassed ? "Passed" : "Not yet"} · random entries beaten{" "}
+            {Math.round(trial.randomEntryPercentile)}%
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 function PropositionCard({
   proposition,
   wallets,
@@ -1115,6 +1477,7 @@ function PropositionCard({
 }) {
   const [launching, setLaunching] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
+  const [showTrial, setShowTrial] = useState(false);
   const b = proposition.blueprint;
   const a = proposition.assessment;
   const rankLabel =
@@ -1211,11 +1574,20 @@ function PropositionCard({
                 value={`${Math.round(a.deflatedSharpeRatio * 100)}%`}
                 hint="deflated Sharpe"
               />
-              <Stat
-                label="Research gate"
-                value={a.gatePassed ? "Passed" : "Not yet"}
-                valueClass={a.gatePassed ? "text-emerald-300" : "text-slate-300"}
-              />
+              {a.seaTrial ? (
+                <Stat
+                  label="Out of sample"
+                  value={`${a.seaTrial.outOfSampleAvgR >= 0 ? "+" : ""}${a.seaTrial.outOfSampleAvgR.toFixed(2)}R`}
+                  valueClass={tone(a.seaTrial.outOfSampleAvgR)}
+                  hint="per trade"
+                />
+              ) : (
+                <Stat
+                  label="Research gate"
+                  value={a.gatePassed ? "Passed" : "Not yet"}
+                  valueClass={a.gatePassed ? "text-emerald-300" : "text-slate-300"}
+                />
+              )}
             </div>
           </div>
           <div>
@@ -1232,6 +1604,15 @@ function PropositionCard({
           </div>
         </div>
       )}
+
+      {a?.seaTrial && (
+        <SeaTrialSummary
+          trial={a.seaTrial}
+          open={showTrial}
+          onToggle={() => setShowTrial((s) => !s)}
+        />
+      )}
+      {a?.seaTrial && showTrial && <SeaTrialPanel assessment={a} trial={a.seaTrial} />}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {proposition.status === "ranked" && !launching && (
@@ -1380,6 +1761,15 @@ function ShipyardView({
             </span>
           </div>
           {batch.note && <Banner kind="info">{batch.note}</Banner>}
+          {batch.progress && (
+            <p
+              className="flex items-center gap-2 text-xs text-sky-200"
+              data-testid="sea-trial-progress"
+            >
+              <span className="h-2 w-2 animate-pulse rounded-full bg-sky-300" />
+              {batch.progress}
+            </p>
+          )}
           <div className="grid gap-4">
             {batch.propositions.map((p) => (
               <PropositionCard

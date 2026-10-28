@@ -4,7 +4,9 @@ import {
   ManualClock,
   ScaledDecimal,
   SystemClock,
+  EXCHANGE_INSTRUMENT_IDS,
   defaultInstrumentSpec,
+  getExchangeInstrumentSpec,
   getInstrumentSpec,
   sizeByStopRisk,
   type InstrumentSpec
@@ -239,9 +241,22 @@ describe("@keel/core — Instrument specifications (M5)", () => {
     // defaultInstrumentSpec delegates to getInstrumentSpec
     expect(defaultInstrumentSpec("BTC-USDT-SWAP")).toEqual(btc);
 
-    // Non-BTC/ETH instruments must not silently default to ctVal 0.01
-    expect(() => getInstrumentSpec("SOL-USDT-SWAP")).toThrow(/Unsupported instrument/);
-    expect(() => defaultInstrumentSpec("SOL-USDT-SWAP")).toThrow(/Unsupported instrument/);
+    // Instruments without an explicit spec must not silently default to ctVal 0.01
+    expect(() => getInstrumentSpec("PEPE-USDT-SWAP")).toThrow(/Unsupported instrument/);
+    expect(() => defaultInstrumentSpec("PEPE-USDT-SWAP")).toThrow(/Unsupported instrument/);
+
+    // Paper-only Fleet instruments carry OKX's own contract specs
+    const sol = getInstrumentSpec("SOL-USDT-SWAP");
+    expect(sol.contractValue.toString()).toBe("1");
+    expect(sol.tickSize.toString()).toBe("0.01");
+    const doge = getInstrumentSpec("DOGE-USDT-SWAP");
+    expect(doge.contractValue.toString()).toBe("1000");
+    expect(doge.tickSize.toString()).toBe("0.00001");
+
+    // ...but the exchange broker only ever sees BTC and ETH
+    expect(EXCHANGE_INSTRUMENT_IDS).toEqual(["BTC-USDT-SWAP", "ETH-USDT-SWAP"]);
+    expect(getExchangeInstrumentSpec("ETH-USDT-SWAP")).toEqual(eth);
+    expect(() => getExchangeInstrumentSpec("SOL-USDT-SWAP")).toThrow(/paper-only/);
 
     // Verify fractional contract lot sizing with production static specs
     const btcSizing = sizeByStopRisk({

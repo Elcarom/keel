@@ -4,7 +4,8 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
   test("signs in to the Fleet, drafts ranked propositions, launches one and retires it", async ({
     page
   }) => {
-    test.setTimeout(240_000);
+    // A fresh database downloads two years of history before the first sea trials
+    test.setTimeout(480_000);
     await page.goto("/");
 
     // Sign in (or bootstrap on a fresh database); the Fleet is home afterwards
@@ -29,10 +30,17 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     const batch = page.getByTestId("design-batch").first();
     await expect(batch).toBeVisible();
     // Every proposition is backtested and scored before it can be launched
-    await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 200_000 });
+    await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
     const scores = batch.getByTestId("proposition-score");
     await expect(scores.first()).toBeVisible();
     await expect(batch.getByText("Flagship pick")).toBeVisible();
+
+    // The flagship's sea trial shows every check behind its rank
+    const flagship = batch.getByTestId("proposition-card").first();
+    await expect(flagship.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
+    await flagship.getByTestId("sea-trial-toggle").click();
+    await expect(flagship.locator('[data-testid^="check-"]')).toHaveCount(11);
+    await expect(flagship.getByTestId("check-robust_parameters")).toContainText("nudged versions");
 
     // Launch the flagship onto paper trading; live trading is offered but disabled
     await batch.getByTestId("launch-btn").first().click();

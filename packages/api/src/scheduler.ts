@@ -27,7 +27,12 @@ export interface UnattendedSchedulerOptions {
   readonly checkVenueBookRisk?: (() => Promise<void>) | undefined;
   /** Fleet bots, stepped on the same freshly ingested confirmed bars as the strategies. */
   readonly fleet?:
-    { step(): { readonly ticks: number; readonly errors: readonly string[] } } | undefined;
+    | {
+        step(): { readonly ticks: number; readonly errors: readonly string[] };
+        /** Instruments that running boats trade: ingested even when no strategy trades them. */
+        tradedInstruments(): readonly string[];
+      }
+    | undefined;
 }
 
 /**
@@ -157,6 +162,36 @@ export class UnattendedScheduler {
     }
   }
 
+  /** Ingests the confirmed 1H bars an instrument is missing since its latest stored bar. */
+  private async ingestLatest(instId: string, nowMs: number, errors: string[]): Promise<number> {
+    if (!this.ingestor) return 0;
+    const latest =
+      this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
+        instrumentId: instId,
+        timeframe: "1H",
+        asOfMs: nowMs,
+        limit: 1
+      })[0] ?? null;
+
+    const fromOpenTs = latest ? latest.openTs + 3600_000 : nowMs - 48 * 3600_000;
+    // AGENTS.md: Never compute signals on unconfirmed (forming) bars.
+    // Only ingest bars strictly prior to the current forming bar.
+    const toOpenTs = Math.floor(nowMs / 3600_000) * 3600_000 - 3600_000;
+    if (toOpenTs < fromOpenTs) return 0;
+    try {
+      const res = await this.ingestor.ingestRange({
+        instrumentId: instId,
+        timeframe: "1H",
+        fromOpenTs,
+        toOpenTs
+      });
+      return res.insertedCount;
+    } catch (err) {
+      errors.push(`Failed ingesting ${instId}: ${String(err)}`);
+      return 0;
+    }
+  }
+
   public async stepOnce(): Promise<SchedulerStepResult> {
     if (this.isStepping) {
       return {
@@ -204,34 +239,7 @@ export class UnattendedScheduler {
 
       // 1. Ingest newly confirmed 1H bars for each tracked instrument
       for (const instId of this.instruments) {
-        if (this.ingestor) {
-          const latestBars = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
-            instrumentId: instId,
-            timeframe: "1H",
-            asOfMs: nowMs,
-            limit: 1
-          });
-          const latest = latestBars[0] ?? null;
-
-          const fromOpenTs = latest ? latest.openTs + 3600_000 : nowMs - 48 * 3600_000;
-          // AGENTS.md: Never compute signals on unconfirmed (forming) bars.
-          // Only ingest bars strictly prior to the current forming bar.
-          const toOpenTs = Math.floor(nowMs / 3600_000) * 3600_000 - 3600_000;
-
-          if (toOpenTs >= fromOpenTs) {
-            try {
-              const res = await this.ingestor.ingestRange({
-                instrumentId: instId,
-                timeframe: "1H",
-                fromOpenTs,
-                toOpenTs
-              });
-              barsIngested += res.insertedCount;
-            } catch (err) {
-              errors.push(`Failed ingesting ${instId}: ${String(err)}`);
-            }
-          }
-        }
+        barsIngested += await this.ingestLatest(instId, nowMs, errors);
 
         // 2. Step strategy evaluation on all unprocessed confirmed bars in chronological order (capped at 500 per step) (R6, C2)
         for (const stratId of this.strategies) {
@@ -397,8 +405,14 @@ export class UnattendedScheduler {
         }
       }
 
-      // 2b. Step Fleet bots, each on its own paper Trading Book
+      // 2b. Step Fleet boats, each on its own paper Trading Book, after ingesting the
+      // instruments only boats trade
       if (this.fleet) {
+        for (const instId of this.fleet.tradedInstruments()) {
+          if (!this.instruments.includes(instId)) {
+            barsIngested += await this.ingestLatest(instId, nowMs, errors);
+          }
+        }
         try {
           const fleetStep = this.fleet.step();
           ticksExecuted += fleetStep.ticks;

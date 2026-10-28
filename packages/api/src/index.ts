@@ -24,3 +24,12 @@ export {
   type SchedulerStepResult
 } from "./scheduler.js";
 export { createKeelServer, type KeelServerOptions } from "./server.js";
+export {
+  BACKTEST_DAYS,
+  BACKTEST_FROM_TS,
+  BACKTEST_TO_TS,
+  assessSeaTrial,
+  neighbourBlueprints,
+  type SeaTrialInput,
+  type SeaTrialSettings
+} from "./sea-trial.js";

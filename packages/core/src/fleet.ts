@@ -11,14 +11,50 @@ export const BOT_ARCHETYPES = [
   "mean_reversion",
   "momentum",
   "ma_crossover",
-  "trend_pullback"
+  "trend_pullback",
+  "squeeze_breakout",
+  "volume_breakout",
+  "inside_bar_breakout",
+  "keltner_ride",
+  "regime_momentum",
+  "rsi_reversal",
+  "failed_breakout",
+  "capitulation_fade"
 ] as const;
 export const BotArchetypeSchema = z.enum(BOT_ARCHETYPES);
 export type BotArchetype = z.infer<typeof BotArchetypeSchema>;
 
-export const FLEET_INSTRUMENTS = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"] as const;
+export const FLEET_INSTRUMENTS = [
+  "BTC-USDT-SWAP",
+  "ETH-USDT-SWAP",
+  "SOL-USDT-SWAP",
+  "XRP-USDT-SWAP",
+  "DOGE-USDT-SWAP",
+  "BNB-USDT-SWAP",
+  "ADA-USDT-SWAP",
+  "AVAX-USDT-SWAP",
+  "LINK-USDT-SWAP",
+  "LTC-USDT-SWAP"
+] as const;
 export const FleetInstrumentSchema = z.enum(FLEET_INSTRUMENTS);
 export type FleetInstrument = z.infer<typeof FleetInstrumentSchema>;
+
+/**
+ * The market each instrument is cross-checked on during a sea trial: an edge that only exists on
+ * one coin is more likely luck than structure.
+ */
+export const SIBLING_INSTRUMENTS: Readonly<Record<FleetInstrument, FleetInstrument>> = {
+  "BTC-USDT-SWAP": "ETH-USDT-SWAP",
+  "ETH-USDT-SWAP": "BTC-USDT-SWAP",
+  "SOL-USDT-SWAP": "AVAX-USDT-SWAP",
+  "XRP-USDT-SWAP": "ADA-USDT-SWAP",
+  "DOGE-USDT-SWAP": "SOL-USDT-SWAP",
+  "BNB-USDT-SWAP": "ETH-USDT-SWAP",
+  "ADA-USDT-SWAP": "XRP-USDT-SWAP",
+  "AVAX-USDT-SWAP": "SOL-USDT-SWAP",
+  "LINK-USDT-SWAP": "AVAX-USDT-SWAP",
+  "LTC-USDT-SWAP": "BTC-USDT-SWAP"
+};
 
 export const BOT_DIRECTIONS = ["both", "long_only", "short_only"] as const;
 export const BotDirectionSchema = z.enum(BOT_DIRECTIONS);
@@ -29,7 +65,34 @@ export const ARCHETYPE_LABELS: Readonly<Record<BotArchetype, string>> = {
   mean_reversion: "Mean reversion",
   momentum: "Momentum",
   ma_crossover: "Moving-average crossover",
-  trend_pullback: "Trend pullback"
+  trend_pullback: "Trend pullback",
+  squeeze_breakout: "Volatility squeeze",
+  volume_breakout: "Volume-confirmed breakout",
+  inside_bar_breakout: "Inside-bar breakout",
+  keltner_ride: "Keltner channel ride",
+  regime_momentum: "Regime-filtered momentum",
+  rsi_reversal: "RSI reversal",
+  failed_breakout: "Failed-breakout fade",
+  capitulation_fade: "Capitulation fade"
+};
+
+export const ARCHETYPE_FAMILIES = ["trend", "breakout", "reversion"] as const;
+export type ArchetypeFamily = (typeof ARCHETYPE_FAMILIES)[number];
+
+export const ARCHETYPE_FAMILY: Readonly<Record<BotArchetype, ArchetypeFamily>> = {
+  momentum: "trend",
+  ma_crossover: "trend",
+  trend_pullback: "trend",
+  keltner_ride: "trend",
+  regime_momentum: "trend",
+  breakout: "breakout",
+  squeeze_breakout: "breakout",
+  volume_breakout: "breakout",
+  inside_bar_breakout: "breakout",
+  mean_reversion: "reversion",
+  rsi_reversal: "reversion",
+  failed_breakout: "reversion",
+  capitulation_fade: "reversion"
 };
 
 /** What a model returns: numbers are unbounded here and clamped when normalized. */
@@ -89,12 +152,13 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     },
     fastPeriod: {
       type: "integer",
-      description: "Fast average window in 1H bars, 3-100 (crossover and pullback only)"
+      description:
+        "Short window in 1H bars, 3-100, kept below lookbackPeriod (crossover, pullback, squeeze and regime momentum)"
     },
     entryThreshold: {
       type: "number",
       description:
-        "0.2-4: z-score band for mean reversion/pullback, ATR-scaled impulse for momentum"
+        "0.2-4: the archetype's trigger strength (z-score band, ATR multiple, volume or calm ratio, RSI distance from 50 in tens)"
     },
     stopAtrMultiple: { type: "number", description: "Protective stop distance in ATRs, 0.5-6" },
     rewardMultiple: { type: "number", description: "Take-profit as a multiple of risk, 0.8-6" },
@@ -150,6 +214,79 @@ export type DesignBrief = z.infer<typeof DesignBriefSchema>;
 export const VerdictSchema = z.enum(["seaworthy", "promising", "choppy", "sinks"]);
 export type Verdict = z.infer<typeof VerdictSchema>;
 
+/** The checks every proposition's sea trial runs; critical ones gate the "seaworthy" verdict. */
+export const SEA_TRIAL_CHECKS = [
+  "enough_trades",
+  "survives_costs",
+  "out_of_sample",
+  "steady_quarters",
+  "robust_parameters",
+  "travels_well",
+  "beats_random",
+  "beats_holding",
+  "luck_adjusted",
+  "survives_resampling",
+  "shallow_drawdown"
+] as const;
+export const SeaTrialCheckKeySchema = z.enum(SEA_TRIAL_CHECKS);
+export type SeaTrialCheckKey = z.infer<typeof SeaTrialCheckKeySchema>;
+
+export const SeaTrialCheckSchema = z.object({
+  key: SeaTrialCheckKeySchema,
+  label: z.string(),
+  passed: z.boolean(),
+  critical: z.boolean(),
+  detail: z.string()
+});
+export type SeaTrialCheck = z.infer<typeof SeaTrialCheckSchema>;
+
+/** One calendar quarter of the backtest: the boat's return beside the market's. */
+export const SeaTrialSegmentSchema = z.object({
+  fromTs: z.number().int(),
+  toTs: z.number().int(),
+  returnPct: z.number(),
+  marketReturnPct: z.number(),
+  trades: z.number().int().nonnegative()
+});
+export type SeaTrialSegment = z.infer<typeof SeaTrialSegmentSchema>;
+
+/** The same idea re-run with one parameter nudged, or on the sibling market. */
+export const SeaTrialVariantSchema = z.object({
+  label: z.string(),
+  returnPct: z.number(),
+  sharpeRatio: z.number(),
+  trades: z.number().int().nonnegative()
+});
+export type SeaTrialVariant = z.infer<typeof SeaTrialVariantSchema>;
+
+export const SeaTrialSchema = z.object({
+  checks: z.array(SeaTrialCheckSchema),
+  segments: z.array(SeaTrialSegmentSchema),
+  neighbours: z.array(SeaTrialVariantSchema),
+  sibling: SeaTrialVariantSchema.extend({ instrumentId: z.string() }).nullable(),
+  monteCarlo: z.object({
+    paths: z.number().int().positive(),
+    lossProbabilityPct: z.number(),
+    p5ReturnPct: z.number(),
+    medianReturnPct: z.number(),
+    p95DrawdownPct: z.number()
+  }),
+  /** One-sided t-test that the average trade's net R is above zero. */
+  tStat: z.number(),
+  pValue: z.number(),
+  /** Average net R per trade with every cost doubled. */
+  stressAvgR: z.number(),
+  /** Average net R on purged walk-forward out-of-sample folds. */
+  outOfSampleAvgR: z.number(),
+  /** Where the boat's Sharpe sits among random-entry paths, 0-100. */
+  randomEntryPercentile: z.number(),
+  /** Propositions assessed so far: the trial count behind the luck adjustment. */
+  trials: z.number().int().positive(),
+  /** "settled" when real funding history was charged; "assumed" when a flat rate stood in. */
+  funding: z.enum(["settled", "assumed"])
+});
+export type SeaTrial = z.infer<typeof SeaTrialSchema>;
+
 export const AssessmentSchema = z.object({
   score: z.number().min(0).max(100),
   verdict: VerdictSchema,
@@ -167,7 +304,11 @@ export const AssessmentSchema = z.object({
   avgR: z.number(),
   buyAndHoldReturnPct: z.number(),
   /** Equity as % return from the start, downsampled for sparklines. */
-  equityCurvePct: z.array(z.number())
+  equityCurvePct: z.array(z.number()),
+  /** Length of the backtest window; assessments from before sea trials covered a year. */
+  days: z.number().int().positive().default(365),
+  /** Null for propositions assessed before sea trials existed. */
+  seaTrial: SeaTrialSchema.nullable().default(null)
 });
 export type Assessment = z.infer<typeof AssessmentSchema>;
 
@@ -204,6 +345,8 @@ export const DesignBatchSchema = z.object({
   source: DesignSourceSchema,
   status: z.enum(["assessing", "done"]),
   note: z.string().nullable(),
+  /** What the sea trial is doing right now, while the batch is assessing. */
+  progress: z.string().nullable(),
   propositions: z.array(PropositionSchema)
 });
 export type DesignBatch = z.infer<typeof DesignBatchSchema>;
@@ -361,8 +504,14 @@ export interface FleetRepository {
   saveProposition(proposition: PropositionRecord): PropositionRecord;
   getProposition(propositionId: string): PropositionRecord | null;
   listPropositions(batchId: string): readonly PropositionRecord[];
+  /** Every proposition ever drafted: the trial count behind the luck adjustment. */
+  countPropositions(): number;
 
-  /** Where an instrument's backtest window came from, once it has been filled. */
-  getBacktestDataSource(instrumentId: string): "okx" | "synthetic" | null;
-  setBacktestDataSource(instrumentId: string, source: "okx" | "synthetic"): void;
+  /** Where an instrument's backtest window (from `windowFromTs`) came from, once filled. */
+  getBacktestDataSource(instrumentId: string, windowFromTs: number): "okx" | "synthetic" | null;
+  setBacktestDataSource(
+    instrumentId: string,
+    windowFromTs: number,
+    source: "okx" | "synthetic"
+  ): void;
 }

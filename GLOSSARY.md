@@ -181,9 +181,25 @@ A bounded description of a Boat's trading idea: one of a fixed set of archetypes
 _Avoid_: Prompt, config, recipe
 
 **Proposition**:
-A Blueprint offered as a candidate Boat, with its backtest Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
+A Blueprint offered as a candidate Boat, with its Sea Trial Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
 _Avoid_: Proposal, idea, candidate strategy
 
 **Shipyard**:
-Where the operator writes a guided brief, the Boat designer drafts Propositions, and every Proposition is backtested and ranked before it can be launched.
+Where the operator writes a guided brief, the Boat designer drafts Propositions, and every Proposition goes through a Sea Trial and is ranked before it can be launched.
 _Avoid_: Strategy Lab (the older research surface), generator
+
+**Sea Trial**:
+The examination every Proposition faces before it is ranked: its backtest, the same idea with each setting nudged, and the same idea on its Sibling Market, judged by a list of named checks. Some checks are critical; a Proposition failing any critical check is never rated seaworthy, whatever its score.
+_Avoid_: Backtest (a Sea Trial contains several), audition
+
+**Verdict**:
+A Sea Trial's one-word conclusion: seaworthy, promising, choppy or sinks.
+_Avoid_: Grade, rating
+
+**Sibling Market**:
+The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original. An edge that only exists on one market is more likely luck.
+_Avoid_: Control market, benchmark
+
+**Paper-only Instrument**:
+An instrument Boats may trade on paper but the exchange broker refuses. Making one tradable on an exchange is a Gate G2 decision.
+_Avoid_: Unsupported instrument

@@ -949,13 +949,16 @@ export function seedSyntheticMarketSeries(input: {
   instrumentId: string;
   endCloseTs: number;
   barCount1H?: number | undefined;
+  /** Starting price; defaults to an ETH- or BTC-like level. Small prices get more decimals. */
+  basePrice?: number | undefined;
 }): DataSnapshotMetadata {
   const count1H = input.barCount1H ?? 720;
   const dt1H = TIMEFRAME_DURATION_MS["1H"];
   const alignedEndMs = Math.floor(input.endCloseTs / dt1H) * dt1H;
   const startOpenTs = alignedEndMs - count1H * dt1H;
 
-  const basePrice = input.instrumentId.startsWith("ETH") ? 2500 : 60000;
+  const basePrice = input.basePrice ?? (input.instrumentId.startsWith("ETH") ? 2500 : 60000);
+  const decimals = basePrice >= 100 ? 2 : basePrice >= 1 ? 4 : 6;
   const dt15m = TIMEFRAME_DURATION_MS["15m"];
   const candles15m: RawOkxCandlePayload[] = [];
   const candles1H: RawOkxCandlePayload[] = [];
@@ -986,10 +989,10 @@ export function seedSyntheticMarketSeries(input: {
       const qLow = Math.max(basePrice * 0.2, Math.min(qOpen, qClose) - rangePad * 0.35);
       candles15m.push({
         openTs: openTs + q * dt15m,
-        open: qOpen.toFixed(2),
-        high: qHigh.toFixed(2),
-        low: qLow.toFixed(2),
-        close: qClose.toFixed(2),
+        open: qOpen.toFixed(decimals),
+        high: qHigh.toFixed(decimals),
+        low: qLow.toFixed(decimals),
+        close: qClose.toFixed(decimals),
         volumeContracts: "250.00",
         volumeQuote: (250 * qClose).toFixed(2),
         confirm: "1"
@@ -998,10 +1001,10 @@ export function seedSyntheticMarketSeries(input: {
 
     candles1H.push({
       openTs,
-      open: open.toFixed(2),
-      high: high.toFixed(2),
-      low: low.toFixed(2),
-      close: close.toFixed(2),
+      open: open.toFixed(decimals),
+      high: high.toFixed(decimals),
+      low: low.toFixed(decimals),
+      close: close.toFixed(decimals),
       volumeContracts: (1000 + (i % 17) * 50).toFixed(2),
       volumeQuote: ((1000 + (i % 17) * 50) * close).toFixed(2),
       confirm: "1"
@@ -1010,10 +1013,10 @@ export function seedSyntheticMarketSeries(input: {
     // Aggregate 4H bars every 4 hours
     if (i % 4 === 3) {
       const slice4 = candles1H.slice(i - 3, i + 1);
-      const o4 = slice4[0]?.open ?? open.toFixed(2);
-      const c4 = slice4[slice4.length - 1]?.close ?? close.toFixed(2);
-      const h4 = Math.max(...slice4.map((s) => Number(s.high))).toFixed(2);
-      const l4 = Math.min(...slice4.map((s) => Number(s.low))).toFixed(2);
+      const o4 = slice4[0]?.open ?? open.toFixed(decimals);
+      const c4 = slice4[slice4.length - 1]?.close ?? close.toFixed(decimals);
+      const h4 = Math.max(...slice4.map((s) => Number(s.high))).toFixed(decimals);
+      const l4 = Math.min(...slice4.map((s) => Number(s.low))).toFixed(decimals);
       candles4H.push({
         openTs: startOpenTs + (i - 3) * dt1H,
         open: o4,
@@ -1029,10 +1032,10 @@ export function seedSyntheticMarketSeries(input: {
     // Aggregate 1D bars every 24 hours
     if (i % 24 === 23) {
       const slice24 = candles1H.slice(i - 23, i + 1);
-      const o24 = slice24[0]?.open ?? open.toFixed(2);
-      const c24 = slice24[slice24.length - 1]?.close ?? close.toFixed(2);
-      const h24 = Math.max(...slice24.map((s) => Number(s.high))).toFixed(2);
-      const l24 = Math.min(...slice24.map((s) => Number(s.low))).toFixed(2);
+      const o24 = slice24[0]?.open ?? open.toFixed(decimals);
+      const c24 = slice24[slice24.length - 1]?.close ?? close.toFixed(decimals);
+      const h24 = Math.max(...slice24.map((s) => Number(s.high))).toFixed(decimals);
+      const l24 = Math.min(...slice24.map((s) => Number(s.low))).toFixed(decimals);
       candles1D.push({
         openTs: startOpenTs + (i - 23) * dt1H,
         open: o24,

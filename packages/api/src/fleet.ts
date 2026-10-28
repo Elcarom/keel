@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  SIBLING_INSTRUMENTS,
   ScaledDecimal,
   overlapsSealed2026Holdout,
   type Assessment,
@@ -11,13 +12,14 @@ import {
   type DesignBatch,
   type DesignBrief,
   type DesignSource,
+  type FleetInstrument,
   type FleetOverview,
   type KeelConfig,
   type LedgerRepository,
   type PaperAccountRepository,
   type PaperPositionRecord,
   type Proposition,
-  type Verdict,
+  type SeaTrialVariant,
   type Wallet
 } from "@keel/core";
 import { type BotDesigner } from "@keel/ai";
@@ -31,22 +33,39 @@ import {
   type OkxPublicIngestor,
   type SqliteDataStore
 } from "@keel/data";
-import { type ReplayEngine, type ReplayRunResult } from "@keel/replay";
+import { seedFromString, type ReplayEngine, type ReplayRunResult } from "@keel/replay";
 import { SpecStrategy, compileBlueprint } from "@keel/spec";
 import { PaperBroker } from "./paper-broker.js";
+import {
+  ASSUMED_FUNDING_BPS_PER_8H,
+  BACKTEST_DAYS,
+  BACKTEST_FROM_TS,
+  BACKTEST_TO_TS,
+  DEFAULT_SEA_TRIAL_SETTINGS,
+  assessSeaTrial,
+  neighbourBlueprints,
+  variantOf,
+  type SeaTrialSettings
+} from "./sea-trial.js";
 
 const HOUR_MS = 3_600_000;
-const DAY_MS = 86_400_000;
 
-/**
- * Propositions are backtested on the year before 2024-12-01: in-sample data, clear of the sealed
- * holdout (2025 onward) and of the 30-day synthetic seed that ends at the holdout boundary.
- */
-export const BACKTEST_TO_TS = 1_733_011_200_000; // 2024-12-01 00:00:00 UTC
-export const BACKTEST_DAYS = 365;
-export const BACKTEST_FROM_TS = BACKTEST_TO_TS - BACKTEST_DAYS * DAY_MS;
 const BACKTEST_EQUITY_USDT = "10000.00";
 const DEFAULT_WALLET_USDT = "10000.00000000";
+
+/** Starting prices for the synthetic stand-in series when OKX history is unreachable. */
+const SYNTHETIC_BASE_PRICES: Readonly<Record<FleetInstrument, number>> = {
+  "BTC-USDT-SWAP": 60000,
+  "ETH-USDT-SWAP": 2500,
+  "SOL-USDT-SWAP": 150,
+  "XRP-USDT-SWAP": 0.6,
+  "DOGE-USDT-SWAP": 0.15,
+  "BNB-USDT-SWAP": 550,
+  "ADA-USDT-SWAP": 0.45,
+  "AVAX-USDT-SWAP": 30,
+  "LINK-USDT-SWAP": 15,
+  "LTC-USDT-SWAP": 80
+};
 
 export class FleetError extends Error {
   public constructor(
@@ -73,6 +92,8 @@ export interface FleetServiceOptions {
   readonly designerInfo: () => { readonly source: DesignSource; readonly model: string };
   readonly isSchedulerRunning: () => boolean;
   readonly ingestor?: OkxPublicIngestor | undefined;
+  /** Tests shrink the sea trial's random paths; production uses the defaults. */
+  readonly seaTrial?: Partial<SeaTrialSettings> | undefined;
 }
 
 function newId(prefix: string, nowMs: number): string {
@@ -82,72 +103,6 @@ function newId(prefix: string, nowMs: number): string {
 function round(value: number, places = 2): number {
   const f = 10 ** places;
   return Math.round(value * f) / f;
-}
-
-/** Turns a backtest into a 0-100 score and a verdict. Statistics only; no money moves here. */
-export function scoreBacktest(params: {
-  readonly result: ReplayRunResult;
-  readonly initialEquityUsdt: string;
-  readonly dataSource: "okx" | "synthetic";
-}): Assessment {
-  const { result } = params;
-  const initial = Number(params.initialEquityUsdt);
-  const returnPct = round((Number(result.netPnlUsdt) / initial) * 100);
-  const sharpe = Number.isFinite(result.sharpeRatio) ? result.sharpeRatio : 0;
-  const trades = result.totalTrades;
-
-  let score = ((Math.min(3, Math.max(-1, sharpe)) + 1) / 4) * 40;
-  score += result.deflatedSharpeRatio * 20;
-  score += Math.max(-10, Math.min(15, returnPct / 2));
-  score += returnPct > result.buyAndHoldReturnPct ? 5 : 0;
-  score -= Math.min(20, result.maxDrawdownPct);
-  if (trades < 10) score -= 15;
-  if (result.replayGatePassed) score += 15;
-  score = round(Math.max(0, Math.min(100, score)), 0);
-
-  const verdict: Verdict =
-    result.replayGatePassed && score >= 60
-      ? "seaworthy"
-      : score >= 45
-        ? "promising"
-        : returnPct >= 0 || score >= 25
-          ? "choppy"
-          : "sinks";
-
-  const curve = result.equityCurve;
-  const step = Math.max(1, Math.floor(curve.length / 60));
-  const equityCurvePct: number[] = [];
-  for (let i = 0; i < curve.length; i += step) {
-    const point = curve[i];
-    if (point) equityCurvePct.push(round((Number(point.equityUsdt) / initial - 1) * 100));
-  }
-  const last = curve[curve.length - 1];
-  if (last) equityCurvePct.push(round((Number(last.equityUsdt) / initial - 1) * 100));
-
-  const sign = returnPct >= 0 ? "+" : "";
-  const headline =
-    trades === 0
-      ? "Never left harbour: no trades in a year of data"
-      : `${sign}${returnPct}% over ${BACKTEST_DAYS} days, ${trades} trades, worst dip ${round(result.maxDrawdownPct, 1)}%`;
-
-  return {
-    score,
-    verdict,
-    headline,
-    gatePassed: result.replayGatePassed,
-    dataSource: params.dataSource,
-    fromTs: result.fromTs,
-    toTs: result.toTs,
-    totalTrades: trades,
-    winRate: round(result.winRate, 4),
-    returnPct,
-    maxDrawdownPct: round(result.maxDrawdownPct),
-    sharpeRatio: round(sharpe),
-    deflatedSharpeRatio: round(result.deflatedSharpeRatio, 4),
-    avgR: round(result.avgR),
-    buyAndHoldReturnPct: round(result.buyAndHoldReturnPct),
-    equityCurvePct
-  };
 }
 
 /**
@@ -167,6 +122,9 @@ export class FleetService {
   private readonly engines = new Map<string, BotEngine>();
   private assessQueue: Promise<void> = Promise.resolve();
   private readonly dataFills = new Map<string, Promise<"okx" | "synthetic">>();
+  private readonly seaTrialSettings: SeaTrialSettings;
+  /** What each assessing batch's sea trial is doing right now, for the Shipyard. */
+  private readonly progress = new Map<string, string>();
 
   public constructor(options: FleetServiceOptions) {
     this.clock = options.clock;
@@ -177,6 +135,7 @@ export class FleetService {
     this.designerInfo = options.designerInfo;
     this.isSchedulerRunning = options.isSchedulerRunning;
     this.ingestor = options.ingestor ?? null;
+    this.seaTrialSettings = { ...DEFAULT_SEA_TRIAL_SETTINGS, ...options.seaTrial };
 
     if (this.repo.listWallets().length === 0) {
       this.openWallet("Main Treasury", DEFAULT_WALLET_USDT);
@@ -302,9 +261,11 @@ export class FleetService {
     const propositions = [...this.repo.listPropositions(batchId)].sort(
       (a, b) => (a.rank ?? 99) - (b.rank ?? 99)
     );
+    const assessing = propositions.some((p) => p.status === "assessing");
     return {
       ...batch,
-      status: propositions.some((p) => p.status === "assessing") ? "assessing" : "done",
+      status: assessing ? "assessing" : "done",
+      progress: assessing ? (this.progress.get(batchId) ?? "Waiting for the slipway…") : null,
       propositions
     };
   }
@@ -317,21 +278,31 @@ export class FleetService {
 
   private async assessBatch(batchId: string): Promise<void> {
     const pending = this.repo.listPropositions(batchId).filter((p) => p.status === "assessing");
-    const trials = this.repo.listPropositions(batchId).length;
-    for (const proposition of pending) {
-      // Yield between backtests so the API stays responsive
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      try {
-        const dataSource = await this.ensureBacktestData(proposition.blueprint.instrumentId);
-        const assessment = this.backtest(proposition, trials, dataSource);
-        this.repo.saveProposition({ ...proposition, status: "ranked", assessment, error: null });
-      } catch (err) {
-        this.repo.saveProposition({
-          ...proposition,
-          status: "failed",
-          error: err instanceof Error ? err.message : String(err)
-        });
+    // Every idea ever drafted counts as a trial: the more ideas tried, the more luck is discounted
+    const trials = Math.max(
+      this.repo.listPropositions(batchId).length,
+      this.repo.countPropositions()
+    );
+    try {
+      for (const [index, proposition] of pending.entries()) {
+        const say = (stage: string) =>
+          this.progress.set(
+            batchId,
+            `Sea trial ${index + 1} of ${pending.length}: ${proposition.blueprint.name} — ${stage}`
+          );
+        try {
+          const assessment = await this.seaTrial(proposition, trials, say);
+          this.repo.saveProposition({ ...proposition, status: "ranked", assessment, error: null });
+        } catch (err) {
+          this.repo.saveProposition({
+            ...proposition,
+            status: "failed",
+            error: err instanceof Error ? err.message : String(err)
+          });
+        }
       }
+    } finally {
+      this.progress.delete(batchId);
     }
     this.rankBatch(batchId);
   }
@@ -340,23 +311,30 @@ export class FleetService {
     const scored = this.repo
       .listPropositions(batchId)
       .filter((p) => p.assessment !== null)
-      .sort((a, b) => (b.assessment?.score ?? 0) - (a.assessment?.score ?? 0));
+      .sort(
+        (a, b) =>
+          (b.assessment?.score ?? 0) - (a.assessment?.score ?? 0) ||
+          (b.assessment?.sharpeRatio ?? 0) - (a.assessment?.sharpeRatio ?? 0)
+      );
     scored.forEach((p, i) => this.repo.saveProposition({ ...p, rank: i + 1 }));
   }
 
-  private backtest(
-    proposition: Proposition,
+  /** Yields to the event loop so API calls are served between backtests. */
+  private breathe(): Promise<void> {
+    return new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  private replay(
+    blueprint: Proposition["blueprint"],
+    strategyId: string,
     trials: number,
-    dataSource: "okx" | "synthetic"
-  ): Assessment {
+    full: boolean
+  ): ReplayRunResult {
     const config = this.getConfig();
-    const strategy = new SpecStrategy(
-      compileBlueprint(proposition.blueprint, proposition.propositionId)
-    );
-    const result = this.replayEngine.run({
-      instrumentId: proposition.blueprint.instrumentId,
+    return this.replayEngine.run({
+      instrumentId: blueprint.instrumentId,
       timeframe: "1H",
-      strategy,
+      strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId)),
       fromTs: BACKTEST_FROM_TS,
       toTs: BACKTEST_TO_TS,
       numTrials: Math.max(1, trials),
@@ -364,20 +342,99 @@ export class FleetService {
       riskFractionPerTrade: config.risk.strategy.riskPerTradePct / 100,
       maxGrossLeverage: config.risk.strategy.maxGrossLeverage,
       costStressMultiplier: config.promotionLadder.replayCostStressMultiplier,
-      walkForwardFolds: config.promotionLadder.replayMinWalkForwardFolds,
+      assumedFundingBpsPer8h: ASSUMED_FUNDING_BPS_PER_8H,
+      // Variants only need returns and Sharpe: skip walk-forward and the random-entry baseline
+      walkForwardFolds: full ? config.promotionLadder.replayMinWalkForwardFolds : 0,
+      randomEntryPaths: full ? this.seaTrialSettings.randomEntryPaths : 1,
       replayMinTrades: config.promotionLadder.replayMinTrades,
       replayMinSharpe: config.promotionLadder.replayMinSharpe,
       replayMinDeflatedSharpeConfidence: config.promotionLadder.replayMinDeflatedSharpeConfidence
     });
-    return scoreBacktest({ result, initialEquityUsdt: BACKTEST_EQUITY_USDT, dataSource });
+  }
+
+  /**
+   * The full sea trial: the backtest itself, the same idea with each parameter nudged, the same
+   * idea on a sibling market, then trade statistics. See ADR-0025.
+   */
+  private async seaTrial(
+    proposition: Proposition,
+    trials: number,
+    say: (stage: string) => void
+  ): Promise<Assessment> {
+    const b = proposition.blueprint;
+    const initial = Number(BACKTEST_EQUITY_USDT);
+
+    say(`charting ${BACKTEST_DAYS} days of ${b.instrumentId.replace("-USDT-SWAP", "")} history`);
+    const dataSource = await this.ensureBacktestData(b.instrumentId);
+    await this.breathe();
+
+    say("full backtest, cost stress and walk-forward");
+    const main = this.replay(b, proposition.propositionId, trials, true);
+
+    const neighbours: SeaTrialVariant[] = [];
+    for (const [i, n] of neighbourBlueprints(b).entries()) {
+      say(`nudging settings (${i + 1} of 4): ${n.label}`);
+      await this.breathe();
+      neighbours.push(
+        variantOf(
+          n.label,
+          this.replay(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
+          initial
+        )
+      );
+    }
+
+    const siblingId = SIBLING_INSTRUMENTS[b.instrumentId];
+    say(`sailing the same course on ${siblingId.replace("-USDT-SWAP", "")}`);
+    let sibling: (SeaTrialVariant & { instrumentId: string }) | null = null;
+    try {
+      await this.ensureBacktestData(siblingId);
+      await this.breathe();
+      const run = this.replay(
+        { ...b, instrumentId: siblingId },
+        `${proposition.propositionId}_sib`,
+        trials,
+        false
+      );
+      sibling = { ...variantOf(siblingId, run, initial), instrumentId: siblingId };
+    } catch {
+      // No sibling data: the check fails rather than the whole trial
+    }
+
+    say("reshuffling trades and scoring");
+    await this.breathe();
+    const bars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
+      instrumentId: b.instrumentId,
+      timeframe: "1H",
+      fromOpenTs: BACKTEST_FROM_TS,
+      toCloseTs: BACKTEST_TO_TS
+    });
+    const settled = this.dataStore.marketDataRepo.getSettledFundingInRange({
+      instrumentId: b.instrumentId,
+      fromTs: BACKTEST_FROM_TS,
+      toTs: BACKTEST_TO_TS
+    });
+    return assessSeaTrial({
+      main,
+      bars,
+      neighbours,
+      sibling,
+      initialEquityUsdt: BACKTEST_EQUITY_USDT,
+      dataSource,
+      funding: settled.length > 0 ? "settled" : "assumed",
+      trials,
+      days: BACKTEST_DAYS,
+      seed: seedFromString(proposition.propositionId),
+      settings: this.seaTrialSettings
+    });
   }
 
   /**
    * Fills the backtest window once per instrument: OKX history when reachable, otherwise a
    * synthetic series that every assessment then labels as synthetic.
    */
-  private ensureBacktestData(instrumentId: string): Promise<"okx" | "synthetic"> {
-    const known = this.repo.getBacktestDataSource(instrumentId);
+  private ensureBacktestData(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
+    const known = this.repo.getBacktestDataSource(instrumentId, BACKTEST_FROM_TS);
     if (known) return Promise.resolve(known);
     const inFlight = this.dataFills.get(instrumentId);
     if (inFlight) return inFlight;
@@ -409,11 +466,12 @@ export class FleetService {
           marketDataRepo: this.dataStore.marketDataRepo,
           instrumentId,
           endCloseTs: BACKTEST_TO_TS,
-          barCount1H: expectedBars
+          barCount1H: expectedBars,
+          basePrice: SYNTHETIC_BASE_PRICES[instrumentId]
         });
         source = "synthetic";
       }
-      this.repo.setBacktestDataSource(instrumentId, source);
+      this.repo.setBacktestDataSource(instrumentId, BACKTEST_FROM_TS, source);
       return source;
     })().finally(() => this.dataFills.delete(instrumentId));
     this.dataFills.set(instrumentId, fill);
@@ -665,6 +723,12 @@ export class FleetService {
   // ------------------------------------------------------------------------
   // Trading: one step per scheduler tick
   // ------------------------------------------------------------------------
+
+  /** The instruments running boats trade, so the scheduler keeps their bars current. */
+  public tradedInstruments(): readonly string[] {
+    const running = this.repo.listBots().filter((b) => b.status === "running");
+    return [...new Set(running.map((b) => b.blueprint.instrumentId))];
+  }
 
   /** Steps every running bot through its unprocessed confirmed bars. */
   public step(): { readonly ticks: number; readonly errors: readonly string[] } {

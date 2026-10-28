@@ -254,7 +254,17 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
 
 export const IndicatorDefSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(["donchian", "atr", "sma", "stddev", "zscore", "momentum"]),
+  kind: z.enum([
+    "donchian",
+    "atr",
+    "sma",
+    "stddev",
+    "zscore",
+    "momentum",
+    "ema",
+    "rsi",
+    "volume_sma"
+  ]),
   period: z.number().int().min(2).max(500),
   params: z.record(z.string(), z.union([z.number(), z.string()])).optional()
 });
@@ -493,6 +503,44 @@ function buildProtectiveLevels(params: {
   };
 }
 
+/**
+ * Exponential average of closes, seeded with the simple average of the first `period` closes in
+ * the window. The window should span several periods so the seed has washed out.
+ */
+function computeEma(bars: readonly ConfirmedBar[], period: number): number {
+  const closes = bars.map((b) => Number(b.close));
+  if (closes.length === 0) return 0;
+  const seedLength = Math.min(period, closes.length);
+  let ema = closes.slice(0, seedLength).reduce((acc, v) => acc + v, 0) / seedLength;
+  const alpha = 2 / (period + 1);
+  for (let i = seedLength; i < closes.length; i += 1) {
+    ema = alpha * (closes[i] ?? ema) + (1 - alpha) * ema;
+  }
+  return ema;
+}
+
+/** Wilder's relative strength index of closes, 0-100; 50 when the window is too short. */
+function computeRsi(bars: readonly ConfirmedBar[], period: number): number {
+  const closes = bars.map((b) => Number(b.close));
+  if (closes.length < period + 1) return 50;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const change = (closes[i] ?? 0) - (closes[i - 1] ?? 0);
+    if (change > 0) avgGain += change;
+    else avgLoss -= change;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i += 1) {
+    const change = (closes[i] ?? 0) - (closes[i - 1] ?? 0);
+    avgGain = (avgGain * (period - 1) + Math.max(0, change)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -change)) / period;
+  }
+  if (avgLoss === 0) return avgGain === 0 ? 50 : 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
 interface EvaluatedIndicators {
   readonly [id: string]: Record<string, number>;
 }
@@ -552,6 +600,20 @@ function computeIndicators(
         res["zscore"] = (closeNum - mean) / stdDev;
         res["mean"] = mean;
         res["stddev"] = stdDev;
+        break;
+      }
+      case "ema": {
+        res["ema"] = computeEma(bars, def.period);
+        break;
+      }
+      case "rsi": {
+        res["rsi"] = computeRsi(bars, def.period);
+        break;
+      }
+      case "volume_sma": {
+        const window = bars.slice(-def.period);
+        const volumes = window.map((b) => Number(b.volumeContracts));
+        res["mean"] = volumes.reduce((acc, v) => acc + v, 0) / (volumes.length || 1);
         break;
       }
       case "momentum": {

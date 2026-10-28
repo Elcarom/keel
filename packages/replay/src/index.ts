@@ -18,6 +18,7 @@ import {
   type ConfirmedBar,
   type ExperimentRecord,
   type ExperimentRepository,
+  type FeatureSnapshot,
   type InstrumentSpec,
   type MarketDataRepository,
   type Proposal,
@@ -70,6 +71,11 @@ export interface ReplayRunInput {
   readonly allowHoldoutAccess?: boolean | undefined;
   readonly candidateStrategies?: readonly Strategy[] | undefined;
   readonly randomEntryPaths?: number | undefined;
+  /**
+   * Funding charged to every open position, long or short, at each 8h settlement when the window
+   * holds no settled funding history. Conservative by design: real funding can also be received.
+   */
+  readonly assumedFundingBpsPer8h?: number | undefined;
 }
 
 export interface ReplayEquityPoint {
@@ -87,7 +93,7 @@ export interface ReplayRunResult extends ExperimentRecord {
   };
 }
 
-function normalCdf(z: number): number {
+export function normalCdf(z: number): number {
   if (!Number.isFinite(z)) return z > 0 ? 1 : 0;
   const sign = z < 0 ? -1 : 1;
   const x = Math.abs(z) / Math.sqrt(2);
@@ -747,6 +753,70 @@ export interface ReplayEngineOptions {
   readonly clock?: Clock | undefined;
 }
 
+/**
+ * Builds the same causal snapshots as `MarketDataRepository.buildFeatureSnapshot` from bars already
+ * in memory, so a replay reads the database once instead of once per bar. Only single-timeframe
+ * strategies on the replay timeframe qualify; anything else falls back to the repository.
+ */
+function createInMemorySnapshots(params: {
+  readonly marketDataRepo: MarketDataRepository;
+  readonly instrumentId: string;
+  readonly timeframe: BarTimeframe;
+  readonly requirements: Strategy["lookbacks"];
+  readonly bars: readonly ConfirmedBar[];
+  readonly settledFunding: readonly SettledFundingRate[];
+}): ((asOfMs: number) => FeatureSnapshot) | null {
+  const required = ALL_BAR_TIMEFRAMES.filter((tf) => (params.requirements[tf] ?? 0) > 0);
+  const count = params.requirements[params.timeframe] ?? 0;
+  const firstBar = params.bars[0];
+  if (!firstBar || required.length !== 1 || required[0] !== params.timeframe) return null;
+
+  // Warm-up history: exactly what an as-of query at the window's first bar would see
+  const series = [
+    ...params.marketDataRepo.getConfirmedBarsAsOf({
+      instrumentId: params.instrumentId,
+      timeframe: params.timeframe,
+      asOfMs: firstBar.openTs,
+      limit: count
+    }),
+    ...params.bars
+  ];
+  const funding = [
+    ...params.marketDataRepo.getSettledFundingAsOf({
+      instrumentId: params.instrumentId,
+      asOfMs: firstBar.openTs - 1,
+      limit: 30
+    }),
+    ...params.settledFunding
+  ];
+
+  // Index of the first element whose timestamp is after asOfMs
+  const upperBound = <T>(items: readonly T[], ts: (item: T) => number, asOfMs: number): number => {
+    let lo = 0;
+    let hi = items.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const item = items[mid];
+      if (item !== undefined && ts(item) <= asOfMs) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  return (asOfMs) => {
+    const barEnd = upperBound(series, (b) => b.closeTs, asOfMs);
+    const fundingEnd = upperBound(funding, (f) => f.fundingTs, asOfMs);
+    return {
+      instrumentId: params.instrumentId,
+      asOfMs,
+      barsByTimeframe: { [params.timeframe]: series.slice(Math.max(0, barEnd - count), barEnd) },
+      recentFundingRates: funding.slice(Math.max(0, fundingEnd - 30), fundingEnd)
+    };
+  };
+}
+
+const FUNDING_INTERVAL_MS = 8 * 3_600_000;
+
 export class ReplayEngine {
   private readonly marketDataRepo: MarketDataRepository;
   private readonly experimentRepo: ExperimentRepository | undefined;
@@ -827,7 +897,8 @@ export class ReplayEngine {
       slippageBps,
       oneWayFeeBps,
       totalOneWayCostBps,
-      costStressMultiplier
+      costStressMultiplier,
+      assumedFundingBpsPer8h: input.assumedFundingBpsPer8h
     });
 
     const oosResult =
@@ -847,7 +918,8 @@ export class ReplayEngine {
             slippageBps,
             oneWayFeeBps,
             totalOneWayCostBps,
-            costStressMultiplier
+            costStressMultiplier,
+            assumedFundingBpsPer8h: input.assumedFundingBpsPer8h
           })
         : { oosExpectancyR: 0, isSufficientData: false };
 
@@ -997,6 +1069,7 @@ export class ReplayEngine {
     readonly oneWayFeeBps?: number | undefined;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
+    readonly assumedFundingBpsPer8h?: number | undefined;
   }): {
     readonly trades: readonly ReplayTradeRecord[];
     readonly equityCurve: readonly ReplayEquityPoint[];
@@ -1110,6 +1183,11 @@ export class ReplayEngine {
         })
       : [];
 
+    const assumedFundingFraction =
+      allSettledFunding.length === 0 && (params.assumedFundingBpsPer8h ?? 0) > 0
+        ? ScaledDecimal.fromString(((params.assumedFundingBpsPer8h ?? 0) / 10_000).toFixed(8))
+        : null;
+
     const barFundingMap = new Map<number, SettledFundingRate[]>();
     let fundingIdx = 0;
     for (const bar of bars) {
@@ -1126,6 +1204,15 @@ export class ReplayEngine {
         barFundingMap.set(bar.closeTs, list);
       }
     }
+
+    const inMemorySnapshot = createInMemorySnapshots({
+      marketDataRepo: this.marketDataRepo,
+      instrumentId: params.instrumentId,
+      timeframe: params.timeframe,
+      requirements: params.strategy.lookbacks,
+      bars,
+      settledFunding: allSettledFunding
+    });
 
     for (let idx = 0; idx < bars.length; idx += 1) {
       const bar = bars[idx];
@@ -1200,6 +1287,11 @@ export class ReplayEngine {
               active.lastFundingTs = f.fundingTs;
             }
           }
+        } else if (assumedFundingFraction && bar.closeTs % FUNDING_INTERVAL_MS === 0) {
+          const baseQty = active.contracts.mul(spec.contractValue);
+          const charge = barClose.mul(baseQty).mul(assumedFundingFraction);
+          active.fundingAccruedUsdt = active.fundingAccruedUsdt.sub(charge);
+          active.lastFundingTs = bar.closeTs;
         }
 
         // 2. Conservative intrabar ProtectiveStop & take-profit check with gap-aware fills (M2) and adverse exit slippage (R1)
@@ -1279,11 +1371,13 @@ export class ReplayEngine {
 
       // 4. When flat and idx < bars.length - 1, build strictly causal FeatureSnapshot and evaluate Strategy
       if (!active && pendingProposal === null && idx < bars.length - 1) {
-        const snapshot = this.marketDataRepo.buildFeatureSnapshot({
-          instrumentId: params.instrumentId,
-          asOfMs: nowMs,
-          requirements: params.strategy.lookbacks
-        });
+        const snapshot = inMemorySnapshot
+          ? inMemorySnapshot(nowMs)
+          : this.marketDataRepo.buildFeatureSnapshot({
+              instrumentId: params.instrumentId,
+              asOfMs: nowMs,
+              requirements: params.strategy.lookbacks
+            });
         const menu = params.strategy.evaluate(snapshot);
         const chosen = this.chooser.choose([menu]);
         if (chosen) {
@@ -1351,6 +1445,7 @@ export class ReplayEngine {
     readonly oneWayFeeBps?: number | undefined;
     readonly totalOneWayCostBps: number;
     readonly costStressMultiplier: number;
+    readonly assumedFundingBpsPer8h?: number | undefined;
   }): {
     readonly oosExpectancyR: number;
     readonly isSufficientData: boolean;
@@ -1400,7 +1495,8 @@ export class ReplayEngine {
             slippageBps: params.slippageBps,
             oneWayFeeBps: params.oneWayFeeBps,
             totalOneWayCostBps: params.totalOneWayCostBps,
-            costStressMultiplier: params.costStressMultiplier
+            costStressMultiplier: params.costStressMultiplier,
+            assumedFundingBpsPer8h: params.assumedFundingBpsPer8h
           });
           const score = trainSim.stressNetExpectancyR;
           if (score > bestInSampleScore) {
@@ -1427,7 +1523,8 @@ export class ReplayEngine {
           slippageBps: params.slippageBps,
           oneWayFeeBps: params.oneWayFeeBps,
           totalOneWayCostBps: params.totalOneWayCostBps,
-          costStressMultiplier: params.costStressMultiplier
+          costStressMultiplier: params.costStressMultiplier,
+          assumedFundingBpsPer8h: params.assumedFundingBpsPer8h
         });
         for (const t of valSim.trades) {
           oosReturns.push(t.netR);
@@ -1442,3 +1539,4 @@ export class ReplayEngine {
     return { oosExpectancyR: Number(avg.toFixed(6)), isSufficientData: true };
   }
 }
+export * from "./sea-trial-stats.js";

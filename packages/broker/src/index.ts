@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import {
   MANUAL_EXECUTION_STRATEGY_ID,
   createDefaultConfig,
-  defaultInstrumentSpec,
+  getExchangeInstrumentSpec,
   sha256Hex,
   ScaledDecimal,
   isRealMoneyExecutionMode,
@@ -241,7 +241,7 @@ export class OkxBroker implements ExchangeBroker {
               const markPx = ScaledDecimal.fromString(bars[0].close);
               const entryPx = ScaledDecimal.fromString(pos.entryPrice);
               const contracts = ScaledDecimal.fromString(pos.contracts);
-              const spec = defaultInstrumentSpec(pos.instrumentId);
+              const spec = getExchangeInstrumentSpec(pos.instrumentId);
               const upl =
                 pos.side === "long"
                   ? contracts.mul(spec.contractValue).mul(markPx.sub(entryPx))
@@ -382,6 +382,8 @@ export class OkxBroker implements ExchangeBroker {
     if (!creds || !creds.apiKey) {
       throw new Error("OKX credentials are not configured; refusing to submit exchange order");
     }
+    // Paper-only instruments never reach the venue
+    getExchangeInstrumentSpec(input.instrumentId);
 
     if (input.reduceOnly) {
       return this.submitReduceOnlyClose(input);
@@ -687,7 +689,7 @@ export class OkxBroker implements ExchangeBroker {
 
     const fillPxDec = ScaledDecimal.fromString(fillPriceStr);
     const contractsDec = actualContracts;
-    const spec = defaultInstrumentSpec(input.instrumentId);
+    const spec = getExchangeInstrumentSpec(input.instrumentId);
 
     const orderResult: ExchangeOrderResult = {
       orderId,
@@ -965,7 +967,7 @@ export class OkxBroker implements ExchangeBroker {
               const markPx = ScaledDecimal.fromString(exPos.markPx);
               const entryPx = ScaledDecimal.fromString(matchingLocal.entryPrice);
               const contracts = ScaledDecimal.fromString(matchingLocal.contracts);
-              const spec = defaultInstrumentSpec(matchingLocal.instrumentId);
+              const spec = getExchangeInstrumentSpec(matchingLocal.instrumentId);
               updatedUpl =
                 matchingLocal.side === "long"
                   ? contracts.mul(spec.contractValue).mul(markPx.sub(entryPx))
@@ -1085,7 +1087,7 @@ export class OkxBroker implements ExchangeBroker {
                   const exitPxDec = ScaledDecimal.fromString(exitPxStr);
                   const entryPxDec = ScaledDecimal.fromString(locPos.entryPrice);
                   const contractsDec = ScaledDecimal.fromString(locPos.contracts);
-                  const spec = defaultInstrumentSpec(locPos.instrumentId);
+                  const spec = getExchangeInstrumentSpec(locPos.instrumentId);
                   const exitFeeDec = matchingFill.fee
                     ? ScaledDecimal.fromString(matchingFill.fee).abs()
                     : ScaledDecimal.zero();
@@ -1695,7 +1697,7 @@ export class OkxBroker implements ExchangeBroker {
 
         const entryPriceDec = ScaledDecimal.fromString(pos.entryPrice);
         const contractsDec = ScaledDecimal.fromString(pos.contracts);
-        const spec = defaultInstrumentSpec(pos.instrumentId);
+        const spec = getExchangeInstrumentSpec(pos.instrumentId);
         const grossPnl =
           pos.side === "long"
             ? contractsDec.mul(spec.contractValue).mul(exitPriceDec.sub(entryPriceDec))
