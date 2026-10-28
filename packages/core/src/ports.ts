@@ -573,6 +573,16 @@ export interface LedgerRepository {
     readonly strategyId?: string | null | undefined;
     readonly equityUsdt: ScaledDecimal;
   }): void;
+  /**
+   * Posts a capital adjustment so book cash equals `targetEquityUsdt`, starting a new equity
+   * baseline (high-water mark, day and week starts). Returns null when nothing needed posting.
+   * Only call while the book is flat.
+   */
+  rebaseCapital(params: {
+    readonly ts: number;
+    readonly targetEquityUsdt: ScaledDecimal;
+    readonly description: string;
+  }): LedgerEntryRecord | null;
 }
 
 export const PaperPositionRecordSchema = z.object({
@@ -777,6 +787,8 @@ export interface ExchangeBroker extends Broker {
     status?: "ok" | "not_configured" | "failed";
   }>;
   reconcilePositions(): Promise<ReconciliationResult>;
+  /** USDT equity of the venue account for the current Execution Mode; throws if unreadable. */
+  getVenueEquityUsdt(): Promise<ScaledDecimal>;
   getDmsStatus(): DmsStatus;
   amendAlgoOrder(params: {
     readonly algoOrderId: string;

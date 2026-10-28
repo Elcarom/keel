@@ -744,9 +744,31 @@ export const keelApiContract = c.router({
         }),
         400: ApiErrorSchema,
         401: ApiErrorSchema,
-        403: ApiErrorSchema
+        403: ApiErrorSchema,
+        409: ApiErrorSchema,
+        503: ApiErrorSchema
       },
       summary: "Submit order with mandatory attached protective stop (ADR-0006)"
+    },
+    rebaseVenueCapital: {
+      method: "POST",
+      path: "/api/v1/broker/venue-capital/rebase",
+      body: z.object({
+        reason: z.string().min(1),
+        stepUpPassword: z.string().optional(),
+        stepUpTotpCode: z.string().optional()
+      }),
+      responses: {
+        200: z.object({
+          previousEquityUsdt: z.string(),
+          venueEquityUsdt: z.string()
+        }),
+        401: ApiErrorSchema,
+        403: ApiErrorSchema,
+        409: ApiErrorSchema,
+        503: ApiErrorSchema
+      },
+      summary: "Rebase the flat Venue Book's capital to the OKX account balance (step-up required)"
     },
     reconcile: {
       method: "POST",

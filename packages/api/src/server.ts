@@ -2296,6 +2296,34 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             strategyId: null,
             openUnrealizedPnlUsdt: totalUnrealizedPnl
           });
+
+          // Never size from equity the venue does not hold: the Venue Book starts from configured
+          // capital, so it must agree with the OKX balance before an entry is sized from it
+          let venueEquity: ScaledDecimal;
+          try {
+            venueEquity = await okxBroker.getVenueEquityUsdt();
+          } catch (err) {
+            return {
+              status: 503,
+              body: {
+                error: `Cannot read the OKX balance, so exchange entries are refused: ${err instanceof Error ? err.message : String(err)}`
+              }
+            };
+          }
+          const tolerancePct = active.config.risk.portfolio.venueEquityDriftTolerancePct;
+          const allowedBookEquity = venueEquity.add(
+            venueEquity
+              .mul(ScaledDecimal.fromString(String(tolerancePct)))
+              .divFloor(ScaledDecimal.fromString("100"))
+          );
+          if (portfolioMetrics.currentEquityUsdt.gt(allowedBookEquity)) {
+            return {
+              status: 409,
+              body: {
+                error: `Venue Book equity ${portfolioMetrics.currentEquityUsdt.toFixed(2)} USDT exceeds the OKX balance ${venueEquity.toFixed(2)} USDT by more than ${tolerancePct}%; rebase the Venue Book to the venue balance while it is flat`
+              }
+            };
+          }
           const tradesTodayCount = dataStore.exchangeAccountRepo.countFilledOrdersToday({
             sinceMs: dayStartMs,
             strategyId
@@ -2402,6 +2430,84 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             body: { error: err instanceof Error ? err.message : String(err) }
           };
         }
+      },
+
+      rebaseVenueCapital: async ({ request, body }) => {
+        const ingress = getIngress(request);
+        if (!ingress.session.authenticated || !ingress.session.username) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        const active = getActiveSnapshot();
+        const mode = active.config.system.executionMode;
+        if (!isExchangeExecutionMode(mode)) {
+          return {
+            status: 403,
+            body: { error: `The Venue Book has no venue in the ${mode} Execution Mode` }
+          };
+        }
+        const stepUpDenial = stepUpDenied(
+          ingress,
+          body,
+          "Step-up authentication required to rebase Venue Book capital"
+        );
+        if (stepUpDenial) {
+          return stepUpDenial;
+        }
+        // A rebase starts a new equity baseline, which is only honest while nothing is open
+        const open = dataStore.exchangeAccountRepo.listOpenPositions().length;
+        if (open > 0) {
+          return {
+            status: 409,
+            body: {
+              error: `Cannot rebase Venue Book capital with ${open} open position(s); close them first`
+            }
+          };
+        }
+
+        let venueEquity: ScaledDecimal;
+        try {
+          venueEquity = await okxBroker.getVenueEquityUsdt();
+        } catch (err) {
+          return {
+            status: 503,
+            body: {
+              error: `Cannot read the OKX balance: ${err instanceof Error ? err.message : String(err)}`
+            }
+          };
+        }
+
+        const nowMs = clock.nowMs();
+        const previousEquity = dataStore.exchangeLedgerRepo.getRiskMetrics({
+          asOfMs: nowMs
+        }).currentEquityUsdt;
+        dataStore.exchangeLedgerRepo.rebaseCapital({
+          ts: nowMs,
+          targetEquityUsdt: venueEquity,
+          description: `Rebase Venue Book capital to the ${mode} OKX balance: ${body.reason}`
+        });
+
+        dataStore.auditRepo.append({
+          ts: nowMs,
+          actor: ingress.session.username,
+          clientIp: ingress.clientIp,
+          action: "broker.rebase_venue_capital",
+          riskClass: "locked-in-live",
+          configHash: active.configHash,
+          details: {
+            reason: body.reason,
+            executionMode: mode,
+            previousEquityUsdt: previousEquity.toFixed(8),
+            venueEquityUsdt: venueEquity.toFixed(8)
+          }
+        });
+
+        return {
+          status: 200,
+          body: {
+            previousEquityUsdt: previousEquity.toFixed(8),
+            venueEquityUsdt: venueEquity.toFixed(8)
+          }
+        };
       },
 
       reconcile: async ({ request }) => {

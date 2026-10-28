@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ManualClock, type PaperPositionRecord } from "@keel/core";
+import { ManualClock, ScaledDecimal, type PaperPositionRecord } from "@keel/core";
 import { createSqliteDataStore } from "../src/index.js";
 
 const position: PaperPositionRecord = {
@@ -65,5 +65,43 @@ describe("Exchange and paper books are separate ledgers (audit-3 C2)", () => {
     });
 
     expect(store.exchangeAccountRepo.getCircuitBreaker().status).toBe("MANUAL_KILL_SWITCH");
+  });
+});
+
+describe("Venue capital rebase starts a new equity baseline", () => {
+  it("rebases the Venue Book to the venue balance and resets the high-water mark and period starts", () => {
+    const clock = new ManualClock(1_750_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const ledger = store.exchangeLedgerRepo;
+    const asOfMs = clock.nowMs();
+
+    const rebase = ledger.rebaseCapital({
+      ts: asOfMs,
+      targetEquityUsdt: ScaledDecimal.fromString("5000"),
+      description: "Rebase to OKX balance"
+    });
+
+    expect(rebase?.amountUsdt).toBe("5000.00000000");
+    const metrics = ledger.getRiskMetrics({ asOfMs });
+    expect(metrics.currentEquityUsdt.toFixed(2)).toBe("5000.00");
+    expect(metrics.highWaterMarkEquityUsdt.toFixed(2)).toBe("5000.00");
+    expect(metrics.dayStartEquityUsdt.toFixed(2)).toBe("5000.00");
+    expect(metrics.weekStartEquityUsdt.toFixed(2)).toBe("5000.00");
+    expect(metrics.drawdownPct.toFixed(2)).toBe("0.00");
+    expect(store.ledgerRepo.getRiskMetrics({ asOfMs }).currentEquityUsdt.toFixed(2)).toBe(
+      "10000.00"
+    );
+  });
+
+  it("posts nothing when the book already matches the target", () => {
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock: new ManualClock(0) });
+
+    expect(
+      store.exchangeLedgerRepo.rebaseCapital({
+        ts: 1,
+        targetEquityUsdt: ScaledDecimal.fromString("10000"),
+        description: "No-op rebase"
+      })
+    ).toBeNull();
   });
 });

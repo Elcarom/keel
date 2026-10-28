@@ -255,6 +255,8 @@ function mapOrderRow(row: Record<string, unknown>): PaperOrderRecord {
   });
 }
 
+const CAPITAL_ACCOUNT = "equity_capital:usdt";
+
 export function createLedgerRepository(
   db: DatabaseSync,
   initialEquityUsdt = "10000.00000000",
@@ -414,6 +416,8 @@ export function createLedgerRepository(
 
       let hasDayStart = false;
       let hasWeekStart = false;
+      // A capital flow (seed or rebase) starts a new equity baseline; earlier peaks no longer count
+      let lastCapitalFlowTs = 0;
 
       for (const row of rows) {
         const amt = ScaledDecimal.fromString(row.amount_usdt);
@@ -421,6 +425,19 @@ export function createLedgerRepository(
           runningCash = runningCash.add(amt);
         } else if (row.credit_account === "cash:usdt") {
           runningCash = runningCash.sub(amt);
+        }
+
+        if (row.debit_account === CAPITAL_ACCOUNT || row.credit_account === CAPITAL_ACCOUNT) {
+          hwm = runningCash;
+          lastCapitalFlowTs = row.ts;
+          if (row.ts > dayStartMs) {
+            dayStartCash = runningCash;
+            hasDayStart = true;
+          }
+          if (row.ts > weekStartMs) {
+            weekStartCash = runningCash;
+            hasWeekStart = true;
+          }
         }
 
         if (runningCash.gt(hwm)) {
@@ -456,9 +473,9 @@ export function createLedgerRepository(
       const snapshotRows = db
         .prepare(
           `SELECT equity_usdt FROM ${t.equitySnapshots}
-           WHERE strategy_id = ? AND ts <= ?`
+           WHERE strategy_id = ? AND ts <= ? AND ts >= ?`
         )
-        .all(snapshotStrategyKey, asOfMs) as {
+        .all(snapshotStrategyKey, asOfMs, lastCapitalFlowTs) as {
         equity_usdt: string;
       }[];
       for (const sRow of snapshotRows) {
@@ -476,10 +493,11 @@ export function createLedgerRepository(
       const dayStartSnapshot = db
         .prepare(
           `SELECT equity_usdt FROM ${t.equitySnapshots}
-           WHERE strategy_id = ? AND ts <= ?
+           WHERE strategy_id = ? AND ts <= ? AND ts >= ?
            ORDER BY ts DESC LIMIT 1`
         )
-        .get(snapshotStrategyKey, dayStartMs) as { equity_usdt: string } | undefined;
+        .get(snapshotStrategyKey, dayStartMs, lastCapitalFlowTs) as
+        { equity_usdt: string } | undefined;
       const effectiveDayStartEquity = dayStartSnapshot
         ? ScaledDecimal.fromString(dayStartSnapshot.equity_usdt)
         : dayStartCash;
@@ -487,10 +505,11 @@ export function createLedgerRepository(
       const weekStartSnapshot = db
         .prepare(
           `SELECT equity_usdt FROM ${t.equitySnapshots}
-           WHERE strategy_id = ? AND ts <= ?
+           WHERE strategy_id = ? AND ts <= ? AND ts >= ?
            ORDER BY ts DESC LIMIT 1`
         )
-        .get(snapshotStrategyKey, weekStartMs) as { equity_usdt: string } | undefined;
+        .get(snapshotStrategyKey, weekStartMs, lastCapitalFlowTs) as
+        { equity_usdt: string } | undefined;
       const effectiveWeekStartEquity = weekStartSnapshot
         ? ScaledDecimal.fromString(weekStartSnapshot.equity_usdt)
         : weekStartCash;
@@ -509,6 +528,29 @@ export function createLedgerRepository(
         feesTodayUsdt: feesToday,
         drawdownPct
       };
+    },
+
+    rebaseCapital(params: {
+      readonly ts: number;
+      readonly targetEquityUsdt: ScaledDecimal;
+      readonly description: string;
+    }): LedgerEntryRecord | null {
+      const current = this.getRiskMetrics({ asOfMs: params.ts }).currentEquityUsdt;
+      const delta = params.targetEquityUsdt.sub(current);
+      if (delta.isZero()) {
+        return null;
+      }
+      const raising = delta.isPositive();
+      return this.recordJournal({
+        txGroupId: `rebase-capital-${params.ts}`,
+        ts: params.ts,
+        strategyId: null,
+        instrumentId: null,
+        debitAccount: raising ? "cash:usdt" : CAPITAL_ACCOUNT,
+        creditAccount: raising ? CAPITAL_ACCOUNT : "cash:usdt",
+        amountUsdt: delta.abs().toFixed(8),
+        description: params.description
+      });
     },
 
     recordEquitySnapshot(params: {

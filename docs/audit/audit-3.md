@@ -62,8 +62,12 @@ Fixed in a follow-up, each with a failing-first test and a claim where it change
 | The G2 runbook expected attached-stop fields the code omits            | `go-live-checklist.md` now describes the real attached stop, the 15s heartbeat, the Demo-only venue, and the Kill Switch lock                                                            |
 | Duplicated step-up check and `"manual-execution"` literal              | One `stepUpDenied` helper serves all six human-gated routes and always rate-limits on the request IP. The literal is now `MANUAL_EXECUTION_STRATEGY_ID` in `@keel/core`                  |
 
-## 5. Still open
+## 5. Venue Book equity
 
-| Item                                                                             | Risk                                                                                                                                                |
-| :------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Exchange-book equity is seeded from configured capital, not the real OKX balance | Live-Ramp position sizing can be wrong. Needs an owner decision on how to reconcile, because the ledger's high-water mark and drawdown are affected |
+The last open finding: the Venue Book was seeded from configured capital, not the OKX balance, so Live-Ramp entries could be sized from money the account never held. The owner chose a fail-closed gate with a rebase as its recovery step (ADR-0022):
+
+- Before sizing an exchange entry, Keel reads the OKX USDT balance. It refuses the entry with 503 if the balance can't be read, and with 409 if Venue Book equity exceeds it by more than `risk.portfolio.venueEquityDriftTolerancePct` (default 1%, `locked-in-live`). Reduce-only closes are never blocked.
+- `POST /api/v1/broker/venue-capital/rebase` requires step-up and a flat Venue Book. It posts a capital adjustment to the OKX balance and starts a new equity baseline (high-water mark, day and week starts), and it is audited as `broker.rebase_venue_capital`.
+- GLOSSARY.md defines **Venue Capital Rebase**.
+
+No audit-3 findings remain open. The rebase is API-only; the dashboard has no button for it yet.

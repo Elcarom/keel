@@ -54,7 +54,8 @@ export const PortfolioRiskConfigSchema = z.object({
   maxNetDirectionalExposure: z.number().min(0.25).max(2.5).default(1.25),
   maxSingleInstrumentExposure: z.number().min(0.25).max(2.0).default(1.0),
   dailyLossStopPct: z.number().min(1.0).max(12.0).default(4.0),
-  maxDrawdownKillSwitchPct: z.number().min(3.0).max(25.0).default(12.0)
+  maxDrawdownKillSwitchPct: z.number().min(3.0).max(25.0).default(12.0),
+  venueEquityDriftTolerancePct: z.number().min(0.1).max(10.0).default(1.0)
 });
 
 export const RiskConfigSchema = z.object({
@@ -348,6 +349,17 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     min: 3.0,
     max: 25.0,
     defaultValue: 12.0,
+    riskClass: "locked-in-live"
+  },
+  {
+    path: "risk.portfolio.venueEquityDriftTolerancePct",
+    label: "Venue Equity Drift Tolerance",
+    helpText:
+      "How far Venue Book equity may exceed the OKX account balance before exchange entries are refused until the book is rebased.",
+    unit: "%",
+    min: 0.1,
+    max: 10.0,
+    defaultValue: 1.0,
     riskClass: "locked-in-live"
   },
   {

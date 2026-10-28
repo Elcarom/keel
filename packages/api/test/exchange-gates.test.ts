@@ -331,3 +331,79 @@ describe("Leaving exchange Execution Modes cannot strand positions (audit-3 H5 r
     }
   });
 });
+
+describe("Venue Book equity is reconciled to the OKX balance before sizing", () => {
+  const rebase = (app: Awaited<ReturnType<typeof setup>>["app"], cookie: string, extra = {}) =>
+    app.inject({
+      method: "POST",
+      url: "/api/v1/broker/venue-capital/rebase",
+      headers: { cookie },
+      payload: { reason: "Align Venue Book with OKX balance", ...extra }
+    });
+
+  it("refuses entry orders while the OKX balance is below the Venue Book equity beyond the drift tolerance", async () => {
+    const { app, order, fake } = await setup("Demo", "Demo", { venueEquityUsdt: "5000" });
+    try {
+      const res = await order({ stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatch(/rebase/i);
+      expect(placedOrders(fake)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses entry orders when the OKX balance cannot be read", async () => {
+    const { app, order, fake } = await setup("Demo", "Demo", { venueEquityUsdt: null });
+    try {
+      const res = await order({ stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(503);
+      expect(placedOrders(fake)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rebases the flat Venue Book to the OKX balance with step-up, after which entries are sized from it", async () => {
+    const { app, order, cookie, dataStore, clock } = await setup("Demo", "Demo", {
+      venueEquityUsdt: "5000"
+    });
+    try {
+      expect((await rebase(app, cookie)).statusCode).toBe(403);
+
+      const res = await rebase(app, cookie, { stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().venueEquityUsdt).toBe("5000.00000000");
+      expect(
+        dataStore.exchangeLedgerRepo
+          .getRiskMetrics({ asOfMs: clock.nowMs() })
+          .currentEquityUsdt.toFixed(2)
+      ).toBe("5000.00");
+
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses a rebase while the Venue Book holds open positions, but still allows reduce-only closes", async () => {
+    const { app, order, cookie, fake } = await setup("Demo", "Demo");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+      fake.setVenueEquityUsdt("5000");
+
+      const res = await rebase(app, cookie, { stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error).toMatch(/open position/i);
+
+      const close = await order({
+        side: "short",
+        reduceOnly: true,
+        protectiveStopPrice: undefined
+      });
+      expect(close.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});

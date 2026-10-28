@@ -175,6 +175,9 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
       submitOrder: async () => {
         throw new Error("Not used in test");
       },
+      getVenueEquityUsdt: async () => {
+        throw new Error("Not used in test");
+      },
       amendAlgoOrder: async () => {
         throw new Error("Not used in test");
       },
