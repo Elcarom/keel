@@ -600,6 +600,11 @@ export class AuthManager {
     this.authRepo.updateSessionStepUp(hashSessionToken(sessionToken), nowMs);
   }
 
+  /** True once the operator has enrolled and verified a TOTP authenticator. */
+  public isTotpEnabled(): boolean {
+    return this.authRepo.getAdminUser()?.totpEnabled === true;
+  }
+
   public verifyStepUp(input: {
     sessionToken: string | null;
     password?: string | undefined;

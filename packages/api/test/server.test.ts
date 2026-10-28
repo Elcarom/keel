@@ -14,6 +14,7 @@ import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer, redactLogObject } from "../src/index.js";
 import { createFakeOkx } from "../../broker/test/fake-okx.js";
+import { enrollTotp } from "./totp.js";
 
 const TEST_OKX_CREDENTIALS = {
   apiKey: "test-api-key",
@@ -270,6 +271,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           executionMode: "Live-Ramp" as const
         }
       };
+      // Gate G3: real-money modes need an enrolled authenticator (audit-4 H4)
+      await enrollTotp(app, cookieHeader, String(bootRes.json().totpSecretBase32), clock);
       const modeUpdateRes = await app.inject({
         method: "PUT",
         url: "/api/v1/config",
@@ -316,6 +319,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(actions).toEqual([
         "config.update_blocked",
         "config.update",
+        "auth.totp_verify",
         "system.backup",
         "config.rollback",
         "secrets.upsert",

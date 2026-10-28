@@ -436,5 +436,35 @@
     "claim": "A capital rebase resets the high-water mark, day start and week start.",
     "testFile": "packages/data/test/exchange-book.test.ts",
     "testName": "rebases the Venue Book to the venue balance and resets the high-water mark and period starts"
+  },
+  {
+    "id": "CLAIM-AUDIT4-VENUE-LOSS-WATCH",
+    "claim": "Venue Book drawdown trips the Kill Switch from the heartbeat, with no order attempted.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "trips the drawdown Kill Switch from the heartbeat when Venue Book losses breach the limit, with no order attempted"
+  },
+  {
+    "id": "CLAIM-AUDIT4-LIVE-RAMP-SIZING",
+    "claim": "Live-Ramp entries are capped at the strategy's ramp allocation of the 1R size.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "caps a Live-Ramp entry at the strategy's ramp allocation of its 1R size"
+  },
+  {
+    "id": "CLAIM-AUDIT4-VENUE-EVIDENCE",
+    "claim": "Paper trades alone cannot make a Demo strategy eligible for Live-Ramp.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "does not make a Demo strategy eligible for Live-Ramp on paper trades alone"
+  },
+  {
+    "id": "CLAIM-AUDIT4-G3-MFA-ORDERS",
+    "claim": "Real-money orders are refused until a TOTP authenticator is enrolled.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses real-money orders until a TOTP authenticator is enrolled"
+  },
+  {
+    "id": "CLAIM-AUDIT4-G3-MFA-MODE",
+    "claim": "Switching into a real-money Execution Mode is refused without an enrolled authenticator.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses switching into a real-money Execution Mode without an enrolled authenticator"
   }
 ]

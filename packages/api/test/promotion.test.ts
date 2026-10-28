@@ -5,6 +5,7 @@ import { ManualClock, createDefaultConfig } from "@keel/core";
 import { createSqliteDataStore } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer } from "../src/index.js";
+import { enrollTotp } from "./totp.js";
 
 describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (ADR-0007)", () => {
   let tempDir: string;
@@ -53,6 +54,8 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     expect(bootRes.statusCode).toBe(200);
     const setCookie = String(bootRes.headers["set-cookie"] ?? "");
     const cookieHeader = setCookie.split(";")[0] ?? "";
+    // Gate G3: real-money stages need an enrolled authenticator (audit-4 H4)
+    await enrollTotp(app, cookieHeader, String(bootRes.json().totpSecretBase32), clock);
 
     // 2. Attempt promoting without prior evaluation -> 400
     const unvettedRes = await app.inject({
@@ -204,7 +207,8 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     const cookieHeader = setCookie.split(";")[0] ?? "";
 
     // Seed strategy in Live-Ramp with drawdown breaching 3% threshold via ledger loss (4.2%)
-    dataStore.ledgerRepo.recordJournal({
+    // Demo and Live stages are judged on the Venue Book (audit-4 H3)
+    dataStore.exchangeLedgerRepo.recordJournal({
       txGroupId: "tx-ramp-loss",
       ts: clock.nowMs(),
       strategyId: "donchian-trend",
@@ -298,7 +302,8 @@ describe("M7 Promotion Ladder, Human Gates G2/G3, & Demotion Auto-Flattening (AD
     });
 
     // 2. Record a catastrophic loss of 1,500 USDT in double-entry ledger (15% drawdown > 12% limit)
-    dataStore.ledgerRepo.recordJournal({
+    // Demo and Live stages are judged on the Venue Book (audit-4 H3)
+    dataStore.exchangeLedgerRepo.recordJournal({
       txGroupId: "tx-catastrophic-loss",
       ts: clock.nowMs(),
       strategyId: "donchian-trend",

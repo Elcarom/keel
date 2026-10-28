@@ -17,6 +17,7 @@ Keel operates in **Paper** mode by default. Moving any strategy or AI advisor to
 
 ## Gate G3: Before Unlocking `Live-Ramp` or `Live` Execution Mode
 
+- [ ] **TOTP Authenticator Enrolled**: Enrol and verify a TOTP authenticator under Security. Keel refuses to switch into `Live-Ramp` or `Live`, promote a strategy to those stages, or place orders in them until one is enrolled, and from then on every step-up there needs its code.
 - [ ] **Promotion Ladder Evidence**:
   - Strategy has passed `Replay-Validated` (`≥ 150` trades, `DSR ≥ 0.90`, positive expectancy at `2.0x` cost stress, positive walk-forward out-of-sample expectancy, and benchmark outperformance against Buy & Hold and Random Entry baselines).
   - Strategy has completed `≥ 14 days / ≥ 30 trades` in `Forward Shadow` and `≥ 30 days / ≥ 50 trades` in `Paper Capital` with continuous mark-to-market drawdown strictly within limits and zero reconciliation errors.

@@ -255,6 +255,14 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   } catch {
     // Column already exists
   }
+  try {
+    // Rows promoted before the ramp was persisted get the most conservative Live-Ramp tier
+    db.exec(
+      "ALTER TABLE strategy_promotions ADD COLUMN ramp_allocation_pct REAL NOT NULL DEFAULT 10"
+    );
+  } catch {
+    // Column already exists
+  }
 
   const marketDataRepo = createMarketDataRepository(db);
   const experimentRepo = createExperimentRepository(db);
