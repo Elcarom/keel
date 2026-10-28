@@ -40,7 +40,7 @@ import {
  * order tables so simulated fills can never touch real positions or the equity live risk sizes
  * against (audit-3 C2). The circuit breaker stays shared: one Kill Switch stops both books.
  */
-export type TradingBook = "paper" | "exchange";
+export type TradingBook = "paper" | "exchange" | `bot:${string}`;
 
 export interface BookTables {
   readonly ledger: string;
@@ -49,20 +49,56 @@ export interface BookTables {
   readonly orders: string;
 }
 
+const BOT_BOOK_PATTERN = /^bot:([a-z0-9_]{1,48})$/;
+
+/** Each Fleet bot trades a paper book of its own, so its wallet allocation is its whole equity. */
+export function botBook(botId: string): TradingBook {
+  const book = `bot:${botId}` as const;
+  if (!BOT_BOOK_PATTERN.test(book)) {
+    throw new Error(`Invalid bot id for a Trading Book: ${botId}`);
+  }
+  return book;
+}
+
 export function bookTables(book: TradingBook): BookTables {
-  return book === "paper"
-    ? {
-        ledger: "ledger_entries",
-        equitySnapshots: "ledger_equity_snapshots",
-        positions: "paper_positions",
-        orders: "paper_orders"
-      }
-    : {
-        ledger: "exchange_ledger_entries",
-        equitySnapshots: "exchange_ledger_equity_snapshots",
-        positions: "exchange_positions",
-        orders: "exchange_orders"
-      };
+  if (book === "paper") {
+    return {
+      ledger: "ledger_entries",
+      equitySnapshots: "ledger_equity_snapshots",
+      positions: "paper_positions",
+      orders: "paper_orders"
+    };
+  }
+  if (book === "exchange") {
+    return {
+      ledger: "exchange_ledger_entries",
+      equitySnapshots: "exchange_ledger_equity_snapshots",
+      positions: "exchange_positions",
+      orders: "exchange_orders"
+    };
+  }
+  // The id is spliced into table names, so it must match the pattern exactly
+  const key = BOT_BOOK_PATTERN.exec(book)?.[1];
+  if (key === undefined) {
+    throw new Error(`Invalid bot Trading Book: ${book}`);
+  }
+  return {
+    ledger: `bot_${key}_ledger_entries`,
+    equitySnapshots: `bot_${key}_equity_snapshots`,
+    positions: `bot_${key}_positions`,
+    orders: `bot_${key}_orders`
+  };
+}
+
+/** Removes a bot book's tables once the bot is deleted. */
+export function dropBookSql(book: TradingBook): string {
+  if (book === "paper" || book === "exchange") {
+    throw new Error("Only bot Trading Books can be dropped");
+  }
+  const t = bookTables(book);
+  return [t.ledger, t.equitySnapshots, t.positions, t.orders]
+    .map((table) => `DROP TABLE IF EXISTS ${table};`)
+    .join(" ");
 }
 
 export function bookSchemaSql(book: TradingBook): string {
@@ -284,7 +320,9 @@ export function createLedgerRepository(
       initialEquityUsdt,
       book === "paper"
         ? "Initial paper portfolio capital seed"
-        : "Initial exchange book capital seed (configured, reconcile to venue balance)"
+        : book === "exchange"
+          ? "Initial exchange book capital seed (configured, reconcile to venue balance)"
+          : "Bot allocation from its wallet"
     );
   }
 

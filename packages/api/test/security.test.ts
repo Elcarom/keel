@@ -41,7 +41,7 @@ describe("M1-2 — IngressGuard, AuthManager (Argon2id), RFC 6238 TOTP, & AES-25
     });
 
     const initialMeta = vault.listMetadata();
-    expect(initialMeta).toHaveLength(5);
+    expect(initialMeta).toHaveLength(6);
     expect(initialMeta.every((m) => !m.isConfigured)).toBe(true);
 
     const savedMeta = vault.upsertSecret({

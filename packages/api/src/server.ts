@@ -41,6 +41,8 @@ import {
   type SqliteDataStore
 } from "@keel/data";
 import {
+  BotDesigner,
+  ClaudeLlmGateway,
   ContextAnalyst,
   EventGateAdvisor,
   GeminiLlmGateway,
@@ -55,6 +57,7 @@ import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { DiscordWebhookNotifier, type WebhookFetchFn } from "./notifications.js";
+import { FleetError, FleetService } from "./fleet.js";
 import { PaperBroker } from "./paper-broker.js";
 import { UnattendedScheduler } from "./scheduler.js";
 import { PINO_REDACT_PATHS } from "./redact.js";
@@ -88,6 +91,10 @@ export interface KeelServerOptions {
   readonly allowInsecureHttp?: boolean | undefined;
   readonly schedulerIntervalMs?: number | undefined;
   readonly scheduler?: UnattendedScheduler | undefined;
+  /** Replaces the Shipyard's designer (tests); defaults to Claude, or samples without a key. */
+  readonly botDesigner?: BotDesigner | undefined;
+  /** OKX public market data source (tests inject one that never reaches the network). */
+  readonly marketIngestor?: OkxPublicIngestor | undefined;
 }
 
 export async function createKeelServer(options: KeelServerOptions = {}): Promise<FastifyInstance> {
@@ -172,6 +179,34 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       getApiKey: () => getSecretSafe("geminiApiKey") ?? process.env["KEEL_GEMINI_API_KEY"] ?? null
     });
 
+  const claudeGateway = new ClaudeLlmGateway({
+    clock,
+    getConfig: () => getActiveSnapshot().config.ai,
+    getApiKey: () => getSecretSafe("anthropicApiKey") ?? process.env["ANTHROPIC_API_KEY"] ?? null
+  });
+  const designerIsLive = (): boolean =>
+    claudeGateway.hasApiKey() && !getActiveSnapshot().config.ai.simulateResponses;
+  const botDesigner =
+    options.botDesigner ??
+    new BotDesigner({ clock, gateway: claudeGateway, isLive: designerIsLive });
+
+  const okxIngestor =
+    options.marketIngestor ?? new OkxPublicIngestor({ marketDataRepo: dataStore.marketDataRepo });
+
+  const fleet: FleetService = new FleetService({
+    clock,
+    dataStore,
+    replayEngine,
+    designer: botDesigner,
+    getConfig: () => getActiveSnapshot().config,
+    designerInfo: () => ({
+      source: options.botDesigner || designerIsLive() ? "claude" : "sample",
+      model: getActiveSnapshot().config.ai.botDesignerModel
+    }),
+    isSchedulerRunning: (): boolean => scheduler.isRunning(),
+    ingestor: okxIngestor
+  });
+
   const contextAnalyst = new ContextAnalyst(llmGateway);
   const shadowAdvisor = new ShadowAdvisor(llmGateway);
   const eventGateAdvisor = new EventGateAdvisor(llmGateway);
@@ -253,6 +288,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   const runKillSwitchFlatten = async (reason: string): Promise<KillSwitchFlattenOutcome> => {
     const errors: string[] = [];
     const paperClosed = paperBroker.flattenAllPositions(`Kill Switch: ${reason}`);
+    const fleetClosed = fleet.flattenAll(`Kill Switch: ${reason}`);
     let exchangeClosed: readonly PaperPositionRecord[] = [];
     try {
       exchangeClosed = await okxBroker.flattenAllPositions(`Kill Switch: ${reason}`);
@@ -268,9 +304,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       errors.push(`Venue verification failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     const outcome: KillSwitchFlattenOutcome = {
-      paperFlattenedCount: paperClosed.length,
+      paperFlattenedCount: paperClosed.length + fleetClosed,
       exchangeFlattenedCount: exchangeClosed.length,
-      paperFlat: dataStore.paperAccountRepo.listOpenPositions().length === 0,
+      paperFlat:
+        dataStore.paperAccountRepo.listOpenPositions().length === 0 &&
+        fleet.openPositionCount() === 0,
       exchangeFlat,
       errors
     };
@@ -342,9 +380,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       dataStore,
       paperBroker,
       exchangeBroker: okxBroker,
-      ingestor: new OkxPublicIngestor({
-        marketDataRepo: dataStore.marketDataRepo
-      }),
+      ingestor: okxIngestor,
+      fleet,
       getRiskConfig: () => getActiveSnapshot().config.risk,
       getSystemConfig: () => getActiveSnapshot().config.system,
       notificationChannel: notifier,
@@ -608,8 +645,95 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     };
   };
 
+  /** Runs a Fleet action for a signed-in operator, mapping refusals to their HTTP status. */
+  const fleetAction = async <T>(
+    request: FastifyRequest,
+    action: string,
+    run: () => T | Promise<T>
+  ): Promise<
+    { status: 200; body: T } | { status: 400 | 401 | 404 | 409; body: { error: string } }
+  > => {
+    const authIngress = requireAuthenticatedIngress(request);
+    if (!authIngress) {
+      return { status: 401, body: { error: "Authentication required" } };
+    }
+    try {
+      const body = await run();
+      dataStore.auditRepo.append({
+        ts: clock.nowMs(),
+        actor: authIngress.username,
+        clientIp: authIngress.clientIp,
+        action: `fleet.${action}`,
+        riskClass: "safe",
+        configHash: getActiveSnapshot().configHash,
+        details: {}
+      });
+      return { status: 200, body };
+    } catch (err) {
+      if (err instanceof FleetError) {
+        return { status: err.status, body: { error: err.message } };
+      }
+      throw err;
+    }
+  };
+
   const s = initServer();
   const router = s.router(keelApiContract, {
+    fleet: {
+      getOverview: async ({ request }) => {
+        if (!requireAuthenticatedIngress(request)) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        return { status: 200, body: fleet.overview() };
+      },
+      createWallet: async ({ body, request }) =>
+        fleetAction(request, "wallet.create", () => ({
+          wallet: fleet.createWallet(body.name, body.startingBalanceUsdt)
+        })),
+      depositToWallet: async ({ params, body, request }) =>
+        fleetAction(request, "wallet.deposit", () => ({
+          wallet: fleet.deposit(params.walletId, body.amountUsdt)
+        })),
+      listDesigns: async ({ request }) => {
+        if (!requireAuthenticatedIngress(request)) {
+          return { status: 401, body: { error: "Authentication required" } };
+        }
+        return { status: 200, body: { batches: [...fleet.listDesigns()] } };
+      },
+      designBots: async ({ body, request }) => {
+        try {
+          return await fleetAction(request, "design", async () => ({
+            batch: await fleet.design(body)
+          }));
+        } catch (err) {
+          return {
+            status: 502,
+            body: {
+              error: `The bot designer could not answer: ${err instanceof Error ? err.message : String(err)}`
+            }
+          };
+        }
+      },
+      discardProposition: async ({ params, request }) =>
+        fleetAction(request, "proposition.discard", () => ({
+          proposition: fleet.discard(params.propositionId)
+        })),
+      launchBot: async ({ params, body, request }) =>
+        fleetAction(request, "bot.launch", () => ({
+          bot: fleet.launch(params.propositionId, body)
+        })),
+      pauseBot: async ({ params, request }) =>
+        fleetAction(request, "bot.pause", () => ({ bot: fleet.pause(params.botId) })),
+      resumeBot: async ({ params, request }) =>
+        fleetAction(request, "bot.resume", () => ({ bot: fleet.resume(params.botId) })),
+      retireBot: async ({ params, request }) =>
+        fleetAction(request, "bot.retire", () => ({ bot: fleet.retire(params.botId) })),
+      deleteBot: async ({ params, request }) =>
+        fleetAction(request, "bot.delete", () => {
+          fleet.remove(params.botId);
+          return { deleted: true as const };
+        })
+    },
     system: {
       getStatus: async ({ request }) => {
         const active = getActiveSnapshot();

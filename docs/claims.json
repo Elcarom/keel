@@ -514,5 +514,65 @@
     "claim": "Production session cookies stay Secure unless plain-HTTP LAN access is explicitly allowed.",
     "testFile": "packages/api/test/server.test.ts",
     "testName": "keeps the session cookie Secure in production unless plain-HTTP LAN access is explicitly allowed"
+  },
+  {
+    "id": "CLAIM-FLEET-AUTH",
+    "claim": "Fleet routes require a signed-in operator.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "requires a signed-in operator"
+  },
+  {
+    "id": "CLAIM-FLEET-NO-LIVE",
+    "claim": "The prototype Fleet offers paper trading only; live trading is unavailable.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "starts with a funded paper treasury, no bots and live trading unavailable"
+  },
+  {
+    "id": "CLAIM-FLEET-RANK-INSAMPLE",
+    "claim": "Propositions are backtested on in-sample data that ends before the sealed holdout, scored and ranked; synthetic data is labelled.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "designs, backtests and ranks propositions without a Claude key"
+  },
+  {
+    "id": "CLAIM-FLEET-WALLET-ALLOCATION",
+    "claim": "Launching a bot draws its stake from a wallet, and one proposition becomes at most one bot.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "launches a ranked proposition as a paper bot funded from the wallet"
+  },
+  {
+    "id": "CLAIM-FLEET-WALLET-LIMIT",
+    "claim": "A bot cannot be given more than its wallet holds.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "refuses an allocation larger than the wallet holds"
+  },
+  {
+    "id": "CLAIM-FLEET-NO-HISTORY-TRADING",
+    "claim": "Bots trade only confirmed bars that close after launch, and retiring returns their equity to the wallet.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "trades only confirmed bars that close after launch, and retiring returns equity to the wallet"
+  },
+  {
+    "id": "CLAIM-BLUEPRINT-CLAMP",
+    "claim": "Every model-chosen bot parameter is clamped into a reviewed range before compilation.",
+    "testFile": "packages/spec/test/blueprint.test.ts",
+    "testName": "clamps every model-chosen parameter into its reviewed range"
+  },
+  {
+    "id": "CLAIM-BLUEPRINT-STOP",
+    "claim": "Every proposal from a compiled bot blueprint carries a protective stop.",
+    "testFile": "packages/spec/test/blueprint.test.ts",
+    "testName": "attaches a protective stop to every proposal"
+  },
+  {
+    "id": "CLAIM-DESIGNER-BRIEF",
+    "claim": "The bot designer enforces the brief's instruments and direction whatever the model answers.",
+    "testFile": "packages/ai/test/bot-designer.test.ts",
+    "testName": "enforces the brief's instruments and direction whatever the model answers"
+  },
+  {
+    "id": "CLAIM-DESIGNER-REFUSAL",
+    "claim": "A Claude refusal is surfaced, never replaced by invented propositions.",
+    "testFile": "packages/ai/test/bot-designer.test.ts",
+    "testName": "surfaces a refusal instead of inventing propositions"
   }
 ]

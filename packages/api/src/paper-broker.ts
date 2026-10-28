@@ -661,7 +661,14 @@ export class PaperBroker implements Broker {
     };
   }
 
-  public flattenAllPositions(reason: string): readonly PaperPositionRecord[] {
+  /**
+   * Closes every open position. With a mark price for an instrument the exit fills at that mark
+   * and books the realized PnL; without one it exits at the entry price (fees only).
+   */
+  public flattenAllPositions(
+    reason: string,
+    markPrices: Readonly<Record<string, ScaledDecimal>> = {}
+  ): readonly PaperPositionRecord[] {
     const asOfMs = this.clock.nowMs();
     const openPositions = this.paperAccountRepo.listOpenPositions();
     const closedPositions: PaperPositionRecord[] = [];
@@ -671,9 +678,10 @@ export class PaperBroker implements Broker {
       const contracts = ScaledDecimal.fromString(pos.contracts);
       const spec = defaultInstrumentSpec(pos.instrumentId);
       // Flat with market exit adverse slippage (ADR-0014)
+      const mark = markPrices[pos.instrumentId];
       const exitMarket = computeMarketExitPrice({
         side: pos.side,
-        marketPrice: entryPrice,
+        marketPrice: mark ?? entryPrice,
         slippageBps: this.slippageBps
       });
       const exitPrice = exitMarket.exitPrice;
@@ -681,8 +689,25 @@ export class PaperBroker implements Broker {
       const exitFee = notional.mul(
         ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
       );
+      const grossPnl =
+        pos.side === "long"
+          ? contracts.mul(spec.contractValue).mul(exitPrice.sub(entryPrice))
+          : contracts.mul(spec.contractValue).mul(entryPrice.sub(exitPrice));
 
       const txGroup = `flatten-${pos.positionId}-${asOfMs}`;
+      if (mark !== undefined && !grossPnl.isZero()) {
+        const profit = grossPnl.isPositive();
+        this.ledgerRepo.recordJournal({
+          txGroupId: txGroup,
+          ts: asOfMs,
+          strategyId: pos.strategyId,
+          instrumentId: pos.instrumentId,
+          debitAccount: profit ? "cash:usdt" : "realized_pnl:usdt",
+          creditAccount: profit ? "realized_pnl:usdt" : "cash:usdt",
+          amountUsdt: grossPnl.abs().toFixed(8),
+          description: `Flatten gross ${profit ? "profit" : "loss"} on ${pos.positionId} (${reason})`
+        });
+      }
       if (exitFee.isPositive()) {
         this.ledgerRepo.recordJournal({
           txGroupId: txGroup,
@@ -703,6 +728,7 @@ export class PaperBroker implements Broker {
         closedAtMs: asOfMs,
         exitPrice: exitPrice.toFixed(8),
         exitReason: `flatten: ${reason}`,
+        realizedPnlUsdt: mark !== undefined ? grossPnl.toFixed(8) : pos.realizedPnlUsdt,
         unrealizedPnlUsdt: "0.00000000",
         feesPaidUsdt: totalFees.toFixed(8)
       };

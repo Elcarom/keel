@@ -25,6 +25,9 @@ export interface UnattendedSchedulerOptions {
   readonly intervalMs?: number | undefined;
   /** Runs after every DMS heartbeat in exchange modes: watches Venue Book loss limits between orders. */
   readonly checkVenueBookRisk?: (() => Promise<void>) | undefined;
+  /** Fleet bots, stepped on the same freshly ingested confirmed bars as the strategies. */
+  readonly fleet?:
+    { step(): { readonly ticks: number; readonly errors: readonly string[] } } | undefined;
 }
 
 /**
@@ -64,6 +67,7 @@ export class UnattendedScheduler {
   private isStepping = false;
   private isBeating = false;
   private readonly checkVenueBookRisk: (() => Promise<void>) | null;
+  private readonly fleet: UnattendedSchedulerOptions["fleet"];
 
   public constructor(options: UnattendedSchedulerOptions) {
     this.clock = options.clock;
@@ -78,6 +82,7 @@ export class UnattendedScheduler {
     this.strategies = options.strategies ?? [];
     this.intervalMs = options.intervalMs ?? 60_000;
     this.checkVenueBookRisk = options.checkVenueBookRisk ?? null;
+    this.fleet = options.fleet;
   }
 
   public isRunning(): boolean {
@@ -389,6 +394,17 @@ export class UnattendedScheduler {
           });
         } catch (err) {
           errors.push(`Shadow resolution failed: ${String(err)}`);
+        }
+      }
+
+      // 2b. Step Fleet bots, each on its own paper Trading Book
+      if (this.fleet) {
+        try {
+          const fleetStep = this.fleet.step();
+          ticksExecuted += fleetStep.ticks;
+          errors.push(...fleetStep.errors.map((e) => `Fleet bot tick failed: ${e}`));
+        } catch (err) {
+          errors.push(`Fleet step failed: ${String(err)}`);
         }
       }
 

@@ -757,3 +757,15 @@ Return JSON:
     };
   }
 }
+
+export {
+  ClaudeLlmGateway,
+  type ClaudeGatewayOptions,
+  type ClaudeMessagesClient
+} from "./claude.js";
+export {
+  BotDesigner,
+  sampleBlueprints,
+  type BotDesignResult,
+  type BotDesignerOptions
+} from "./bot-designer.js";

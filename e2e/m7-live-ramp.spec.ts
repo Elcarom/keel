@@ -4,7 +4,7 @@ test.describe("Keel M7 — End-to-End Live-Ramp & Demotion Automation", () => {
   test("authenticates, evaluates promotion ladder, promotes strategy to next stage, and executes safety demotion with auto-flattening", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login)
     const bootstrapPanel = page.getByTestId("bootstrap-panel");

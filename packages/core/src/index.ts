@@ -215,3 +215,4 @@ export {
   type StopRiskSizingResult,
   type VenueId
 } from "./sizing.js";
+export * from "./fleet.js";

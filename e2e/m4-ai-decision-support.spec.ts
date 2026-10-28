@@ -4,7 +4,7 @@ test.describe("Keel M4 — End-to-End AI Decision Support, Context Analyst & Sha
   test("authenticates, extracts structured context features, verifies budget tracking, and evaluates shadow advisor against baseline", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login)
     const bootstrapPanel = page.getByTestId("bootstrap-panel");

@@ -36,6 +36,7 @@ import {
   type SecretKeyName,
   type SecretVaultRepository,
   type ShadowRepository,
+  type FleetRepository,
   type StrategySpecRepository
 } from "@keel/core";
 import {
@@ -48,9 +49,12 @@ import {
   type FetchOkxHistoryFundingFn,
   type OkxPublicIngestorOptions
 } from "./market.js";
+import { FLEET_SCHEMA_SQL, createFleetRepository } from "./fleet-repository.js";
 import {
   PAPER_SCHEMA_SQL,
+  botBook,
   bookSchemaSql,
+  dropBookSql,
   createLedgerRepository,
   createPaperAccountRepository,
   createPromotionRepository,
@@ -60,6 +64,10 @@ import { SPEC_SCHEMA_SQL, createStrategySpecRepository } from "./spec-repository
 
 export {
   OkxPublicIngestor,
+  botBook,
+  bookSchemaSql,
+  dropBookSql,
+  createFleetRepository,
   createLedgerRepository,
   createPaperAccountRepository,
   createPromotionRepository,
@@ -107,6 +115,7 @@ export interface SqliteDataStore extends BackupService {
   readonly promotionRepo: PromotionRepository;
   readonly shadowRepo: ShadowRepository;
   readonly strategySpecRepo: StrategySpecRepository;
+  readonly fleetRepo: FleetRepository;
   readonly backupService: BackupService;
   readonly rawDb: DatabaseSyncType;
   getPragmaStatus(): SqlitePragmaStatus;
@@ -251,6 +260,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   db.exec(bookSchemaSql("exchange"));
   db.exec(PAPER_SCHEMA_SQL);
   db.exec(SPEC_SCHEMA_SQL);
+  db.exec(FLEET_SCHEMA_SQL);
   try {
     db.exec("ALTER TABLE admin_users ADD COLUMN totp_last_step INTEGER");
   } catch {
@@ -286,6 +296,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   const exchangeAccountRepo = createPaperAccountRepository(db, options.clock, "exchange");
   const promotionRepo = createPromotionRepository(db);
   const shadowRepo = createShadowRepository(db);
+  const fleetRepo = createFleetRepository(db);
 
   // Seed default version 1 config if empty
   const existingCountRow = db.prepare("SELECT COUNT(*) AS cnt FROM config_snapshots").get();
@@ -700,6 +711,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     exchangeAccountRepo,
     promotionRepo,
     shadowRepo,
+    fleetRepo,
     strategySpecRepo,
     backupService,
     rawDb: db,

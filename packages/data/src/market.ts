@@ -262,12 +262,15 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
 
     getConfirmedBarsAsOf(input): readonly ConfirmedBar[] {
       if (input.limit !== undefined) {
+        // Within one timeframe close order is open order; ordering by close_ts lets the as-of
+        // index serve the LIMIT directly instead of sorting every earlier bar per call
+
         const rows = db
           .prepare(
             `SELECT instrument_id, timeframe, open_ts, close_ts, open, high, low, close, volume_contracts, volume_quote
              FROM confirmed_bars
              WHERE instrument_id = ? AND timeframe = ? AND close_ts <= ?
-             ORDER BY open_ts DESC
+             ORDER BY close_ts DESC
              LIMIT ?`
           )
           .all(input.instrumentId, input.timeframe, input.asOfMs, input.limit);

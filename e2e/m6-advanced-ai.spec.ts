@@ -4,7 +4,7 @@ test.describe("Keel M6 — End-to-End Advanced AI: Event Gate, Narrative Cluster
   test("authenticates, evaluates event gate volatility risk, tags narrative clusters, and calculates post-fill markout forensics", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login)
     const bootstrapPanel = page.getByTestId("bootstrap-panel");
