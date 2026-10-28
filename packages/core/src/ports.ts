@@ -12,6 +12,7 @@ export const SecretKeyNameSchema = z.enum([
   "okxSecretKey",
   "okxPassphrase",
   "geminiApiKey",
+  "anthropicApiKey",
   "discordWebhookUrl"
 ]);
 export type SecretKeyName = z.infer<typeof SecretKeyNameSchema>;
@@ -846,6 +847,8 @@ export interface LlmCompletionRequest {
   readonly userPrompt: string;
   readonly asOfMs: number;
   readonly modelCutoffDate?: string | undefined;
+  /** JSON Schema for providers that constrain decoding to a schema; the zod schema still validates. */
+  readonly outputJsonSchema?: Readonly<Record<string, unknown>> | undefined;
 }
 
 export interface LlmCompletionResponse<T = unknown> {

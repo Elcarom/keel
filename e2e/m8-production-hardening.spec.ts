@@ -5,7 +5,7 @@ test.describe("Keel M8 — End-to-End Production Hardening, Disaster Recovery, &
     page
   }) => {
     // 1. Production Health & Brand Shell
-    await page.goto("/");
+    await page.goto("/#/engine-room");
     await expect(page).toHaveTitle(/Keel/);
 
     // 2. Authentication Bootstrap / Login

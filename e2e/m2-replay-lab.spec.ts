@@ -4,7 +4,7 @@ test.describe("Keel M2 — End-to-End Market Data Ingestion & Replay Research La
   test("seeds confirmed multi-timeframe bars & 8h funding, verifies strategy lookback readiness, runs event-driven replay, and records immutable ExperimentRecords", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login)
     const bootstrapPanel = page.getByTestId("bootstrap-panel");

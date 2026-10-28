@@ -4,7 +4,7 @@ test.describe("Keel M0 — End-to-End Dashboard & Health Smoke Test", () => {
   test("renders the Keel brand shell, PAPER execution mode badge, config hash, and live heartbeat", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     await expect(page.getByRole("heading", { name: "Keel" })).toBeVisible();
     await expect(page.getByTestId("execution-mode-badge")).toContainText("Paper");

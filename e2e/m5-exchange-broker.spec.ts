@@ -6,7 +6,7 @@ test.describe("Keel M5 — Exchange Broker panel refuses orders outside exchange
   test("authenticates, shows an idle DMS, and refuses a protected order in Paper mode", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login) once the auth form has rendered
     await page.getByTestId("bootstrap-username-input").waitFor();

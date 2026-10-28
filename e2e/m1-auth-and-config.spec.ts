@@ -4,7 +4,7 @@ test.describe("Keel M1 — End-to-End Auth Bootstrap, Config Governance, Vault, 
   test("bootstraps operator account, updates confirm-class config with step-up, encrypts secret, and rolls back to v1", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     await expect(page.getByTestId("config-hash-display")).toHaveText(/^[a-f0-9]{16}$/);
     const initialHash = (await page.getByTestId("config-hash-display").textContent())?.trim();

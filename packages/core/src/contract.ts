@@ -28,6 +28,14 @@ import {
   StrategyPromotionRecordSchema,
   StrategySpecRecordSchema
 } from "./ports.js";
+import {
+  BotSchema,
+  DesignBatchSchema,
+  DesignBriefSchema,
+  FleetOverviewSchema,
+  PropositionSchema,
+  WalletSchema
+} from "./fleet.js";
 
 const c = initContract();
 
@@ -40,6 +48,12 @@ export const KillSwitchFlattenOutcomeSchema = z.object({
   errors: z.array(z.string())
 });
 export type KillSwitchFlattenOutcome = z.infer<typeof KillSwitchFlattenOutcomeSchema>;
+
+/** A positive USDT amount as a decimal string, never a float. */
+const UsdtAmountSchema = z
+  .string()
+  .regex(/^\d{1,9}(\.\d{1,8})?$/, "Amount must be a decimal with at most 8 places")
+  .refine((v) => /[1-9]/.test(v), "Amount must be positive");
 
 export const ApiErrorSchema = z.object({
   error: z.string(),
@@ -129,6 +143,159 @@ export const MarketSummaryResponseSchema = z.object({
 export type MarketSummaryResponse = z.infer<typeof MarketSummaryResponseSchema>;
 
 export const keelApiContract = c.router({
+  fleet: {
+    getOverview: {
+      method: "GET",
+      path: "/api/v1/fleet",
+      responses: {
+        200: FleetOverviewSchema,
+        401: ApiErrorSchema
+      },
+      summary: "Every bot with its live paper results, plus wallets and fleet totals"
+    },
+    createWallet: {
+      method: "POST",
+      path: "/api/v1/fleet/wallets",
+      body: z.object({
+        name: z.string().trim().min(1).max(40),
+        startingBalanceUsdt: UsdtAmountSchema
+      }),
+      responses: {
+        200: z.object({ wallet: WalletSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Open a paper wallet with a starting balance"
+    },
+    depositToWallet: {
+      method: "POST",
+      path: "/api/v1/fleet/wallets/:walletId/deposit",
+      pathParams: z.object({ walletId: z.string() }),
+      body: z.object({ amountUsdt: UsdtAmountSchema }),
+      responses: {
+        200: z.object({ wallet: WalletSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Add paper funds to a wallet"
+    },
+    listDesigns: {
+      method: "GET",
+      path: "/api/v1/fleet/designs",
+      responses: {
+        200: z.object({ batches: z.array(DesignBatchSchema) }),
+        401: ApiErrorSchema
+      },
+      summary: "Recent Shipyard design batches with their ranked propositions"
+    },
+    designBots: {
+      method: "POST",
+      path: "/api/v1/fleet/designs",
+      body: DesignBriefSchema,
+      responses: {
+        200: z.object({ batch: DesignBatchSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema,
+        502: ApiErrorSchema
+      },
+      summary: "Ask the bot designer for propositions; each is then backtested and ranked"
+    },
+    discardProposition: {
+      method: "POST",
+      path: "/api/v1/fleet/propositions/:propositionId/discard",
+      pathParams: z.object({ propositionId: z.string() }),
+      body: z.object({}).optional(),
+      responses: {
+        200: z.object({ proposition: PropositionSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Set a proposition aside"
+    },
+    launchBot: {
+      method: "POST",
+      path: "/api/v1/fleet/propositions/:propositionId/launch",
+      pathParams: z.object({ propositionId: z.string() }),
+      body: z.object({
+        name: z.string().trim().min(1).max(40),
+        walletId: z.string(),
+        allocationUsdt: UsdtAmountSchema,
+        mode: z.literal("paper")
+      }),
+      responses: {
+        200: z.object({ bot: BotSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Turn a ranked proposition into a paper-trading bot funded from a wallet"
+    },
+    pauseBot: {
+      method: "POST",
+      path: "/api/v1/fleet/bots/:botId/pause",
+      pathParams: z.object({ botId: z.string() }),
+      body: z.object({}).optional(),
+      responses: {
+        200: z.object({ bot: BotSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Close the bot's position and stop it trading"
+    },
+    resumeBot: {
+      method: "POST",
+      path: "/api/v1/fleet/bots/:botId/resume",
+      pathParams: z.object({ botId: z.string() }),
+      body: z.object({}).optional(),
+      responses: {
+        200: z.object({ bot: BotSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Let a paused bot trade again from the next confirmed bar"
+    },
+    retireBot: {
+      method: "POST",
+      path: "/api/v1/fleet/bots/:botId/retire",
+      pathParams: z.object({ botId: z.string() }),
+      body: z.object({}).optional(),
+      responses: {
+        200: z.object({ bot: BotSchema }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Close the bot's position for good and return its equity to the wallet"
+    },
+    deleteBot: {
+      method: "DELETE",
+      path: "/api/v1/fleet/bots/:botId",
+      pathParams: z.object({ botId: z.string() }),
+      body: z.object({}).optional(),
+      responses: {
+        200: z.object({ deleted: z.literal(true) }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Retire the bot if needed, then remove it and its trading history"
+    }
+  },
   system: {
     getStatus: {
       method: "GET",

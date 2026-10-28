@@ -99,6 +99,7 @@ export const AiGatewayConfigSchema = z.object({
   provider: z.literal("gemini").default("gemini"),
   fastModel: z.string().min(1).default("gemini-2.5-flash"),
   reasoningModel: z.string().min(1).default("gemini-2.5-pro"),
+  botDesignerModel: z.string().min(1).default("claude-opus-5-5"),
   trainingCutoffDate: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -642,6 +643,14 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     label: "Enable Context Analyst",
     helpText: "Ingest and structure OKX announcements, RSS news, and macro events.",
     defaultValue: true,
+    riskClass: "safe"
+  },
+  {
+    path: "ai.botDesignerModel",
+    label: "Bot Designer Claude Model",
+    helpText:
+      "Claude model that drafts bot propositions in the Shipyard. Needs the Anthropic API key in the vault; without it the Shipyard drafts sample propositions.",
+    defaultValue: "claude-opus-5-5",
     riskClass: "safe"
   },
   {

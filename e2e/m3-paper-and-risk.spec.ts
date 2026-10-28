@@ -4,7 +4,7 @@ test.describe("Keel M3 — End-to-End Two-Tier Risk Guardian, Paper Execution, &
   test("seeds market bars, verifies balanced double-entry ledger, steps paper execution tick with attached protective stops, trips/re-arms kill-switch, and evaluates promotion ladder", async ({
     page
   }) => {
-    await page.goto("/");
+    await page.goto("/#/engine-room");
 
     // 1. Authenticate (bootstrap or login) once the auth form has rendered
     await page.getByTestId("bootstrap-username-input").waitFor();

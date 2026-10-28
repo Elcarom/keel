@@ -53,7 +53,14 @@ function extractApiError(body: unknown, fallback = "Request failed"): string {
   return fallback;
 }
 
-export function App() {
+export interface EngineRoomProps {
+  /** Called once a sign-in or bootstrap leaves the browser with a working session. */
+  readonly onSignedIn?: (() => void) | undefined;
+  /** Shows a way back to the Fleet when the Engine Room is opened from it. */
+  readonly onExitEngineRoom?: (() => void) | undefined;
+}
+
+export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
   const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -292,6 +299,9 @@ export function App() {
   // cookie, which happens when a Secure cookie is served to a plain-HTTP page
   const explainDroppedSession = async () => {
     const session = await apiClient.auth.getSession();
+    if (session.status === 200 && session.body.authenticated) {
+      onSignedIn?.();
+    }
     if (session.status === 200 && !session.body.authenticated) {
       setAuthError(
         window.location.protocol === "http:"
@@ -552,6 +562,16 @@ export function App() {
               {isHealthy ? "HEARTBEAT OK" : "CONNECTING"}
             </span>
 
+            {onExitEngineRoom && (
+              <button
+                type="button"
+                data-testid="back-to-fleet"
+                onClick={onExitEngineRoom}
+                className="rounded-md border border-teal-500/50 px-3 py-1 text-xs font-semibold text-teal-400 hover:bg-teal-500/10"
+              >
+                ← Back to the Fleet
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setTheme(isDark ? "light" : "dark")}
@@ -929,6 +949,7 @@ export function App() {
                     className={inputClass}
                   >
                     <option value="geminiApiKey">geminiApiKey</option>
+                    <option value="anthropicApiKey">anthropicApiKey (Shipyard bot designer)</option>
                     <option value="discordWebhookUrl">discordWebhookUrl</option>
                     <option value="okxApiKey">okxApiKey</option>
                     <option value="okxSecretKey">okxSecretKey</option>
