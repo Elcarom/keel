@@ -15,5 +15,5 @@ Audit 3 found the exchange broker persisting real positions and journals into th
 
 ## Consequences
 
-- The exchange ledger is seeded with the configured capital, not the venue balance; live equity must still be reconciled against the OKX account balance before Live-Ramp sizing is trusted.
+- The exchange ledger is seeded with the configured capital, not the venue balance. Before sizing any exchange entry, Keel reads the OKX USDT balance and refuses the entry (fail-closed) if it cannot, or if Venue Book equity exceeds that balance by more than `risk.portfolio.venueEquityDriftTolerancePct`. The recovery is a **Venue Capital Rebase**: a stepped-up capital adjustment, allowed only while the Venue Book is flat, that starts a new equity baseline. Resetting the high-water mark was chosen over keeping it, because a baseline that includes capital the venue never held would report a permanent false drawdown.
 - Existing databases keep their paper data untouched; the exchange tables start empty.

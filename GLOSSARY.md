@@ -44,6 +44,10 @@ _Avoid_: Funding fee, current funding
 The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills) or the **Venue Book** (real fills on a Venue's Demo or real-money account). Books never share positions or equity; only the circuit breaker and Kill Switch state span both.
 _Avoid_: Account, portfolio (when meaning one book)
 
+**Venue Capital Rebase**:
+An operator action, taken with step-up authentication while the Venue Book holds no open positions, that sets the Venue Book's equity to the balance the Venue actually reports and starts a new equity baseline (High-Water Mark, day start, week start). Until the Venue Book's equity is within tolerance of the Venue balance, new exchange entries are refused.
+_Avoid_: Deposit, top-up, reset
+
 **Execution Mode**:
 The operating environment binding a strategy and risk engine to a market data source and a Broker adapter: **Replay** (historical event-driven simulation), **Paper** (live market data with simulated fills via `SimBroker`), **Demo** (live market data with orders routed to a Venue's sandbox/demo environment), or **Live** (real capital on a Venue).
 _Avoid_: Dry run, backtest mode, sim mode

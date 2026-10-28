@@ -109,3 +109,17 @@ describe("Exchange broker never fabricates fills (audit-3 H7)", () => {
     expect(broker.getOpenPositions()[0]?.contracts).toBe("0.37");
   });
 });
+
+describe("Venue equity is read from the OKX account", () => {
+  it("returns the USDT equity reported by the venue as an exact decimal", async () => {
+    const broker = brokerOn(createFakeOkx({ venueEquityUsdt: "4321.12345678" }));
+
+    expect((await broker.getVenueEquityUsdt()).toFixed(8)).toBe("4321.12345678");
+  });
+
+  it("throws rather than guessing when the venue balance cannot be read", async () => {
+    const broker = brokerOn(createFakeOkx({ venueEquityUsdt: null }));
+
+    await expect(broker.getVenueEquityUsdt()).rejects.toThrow(/balance/i);
+  });
+});

@@ -13,6 +13,8 @@ export interface FakeOkxOptions {
   readonly positions?: ReadonlyArray<{ instId: string; pos: string; posSide?: string }>;
   /** Overrides the accFillSz reported for entry orders (e.g. a fractional partial fill). */
   readonly entryFillSz?: string;
+  /** USDT equity reported by /account/balance (default "10000"); null makes the call fail. */
+  readonly venueEquityUsdt?: string | null;
 }
 
 /**
@@ -30,6 +32,7 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
   const filledPx = new Map<string, string>();
   const filledSz = new Map<string, string>();
   let seq = 0;
+  let venueEquityUsdt = options.venueEquityUsdt === undefined ? "10000" : options.venueEquityUsdt;
 
   const ok = (data: unknown) => ({
     ok: true,
@@ -92,6 +95,18 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
       return ok([{ sCode: "0" }]);
     }
 
+    if (path.startsWith("/api/v5/account/balance")) {
+      if (venueEquityUsdt === null) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: "50001", msg: "Service temporarily unavailable", data: [] }),
+          text: async () => ""
+        };
+      }
+      return ok([{ totalEq: venueEquityUsdt, details: [{ ccy: "USDT", eq: venueEquityUsdt }] }]);
+    }
+
     if (path === "/api/v5/account/positions") {
       return ok(options.positions ?? []);
     }
@@ -103,6 +118,9 @@ export function createFakeOkx(options: FakeOkxOptions = {}) {
     fetchFn,
     requests,
     pendingAlgos: (): readonly FakeAlgo[] => [...algos],
+    setVenueEquityUsdt: (eq: string | null) => {
+      venueEquityUsdt = eq;
+    },
     calls: (pathPrefix: string) => requests.filter((r) => r.path.startsWith(pathPrefix))
   };
 }

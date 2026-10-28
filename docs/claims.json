@@ -406,5 +406,35 @@
     "claim": "Every OKX request in an emergency flatten is signed at the time it is sent.",
     "testFile": "packages/broker/test/foreign-flatten.test.ts",
     "testName": "signs every flatten request with the time it is sent, not the time the flatten began"
+  },
+  {
+    "id": "CLAIM-VENUE-EQUITY-DRIFT-GATE",
+    "claim": "Exchange entries are refused while Venue Book equity exceeds the OKX balance beyond the drift tolerance.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses entry orders while the OKX balance is below the Venue Book equity beyond the drift tolerance"
+  },
+  {
+    "id": "CLAIM-VENUE-EQUITY-UNREADABLE",
+    "claim": "Exchange entries are refused when the OKX balance cannot be read.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses entry orders when the OKX balance cannot be read"
+  },
+  {
+    "id": "CLAIM-VENUE-CAPITAL-REBASE",
+    "claim": "A flat Venue Book can be rebased to the OKX balance only with step-up.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "rebases the flat Venue Book to the OKX balance with step-up, after which entries are sized from it"
+  },
+  {
+    "id": "CLAIM-VENUE-REBASE-REQUIRES-FLAT",
+    "claim": "A Venue Capital Rebase is refused while positions are open; reduce-only closes stay allowed.",
+    "testFile": "packages/api/test/exchange-gates.test.ts",
+    "testName": "refuses a rebase while the Venue Book holds open positions, but still allows reduce-only closes"
+  },
+  {
+    "id": "CLAIM-LEDGER-REBASE-BASELINE",
+    "claim": "A capital rebase resets the high-water mark, day start and week start.",
+    "testFile": "packages/data/test/exchange-book.test.ts",
+    "testName": "rebases the Venue Book to the venue balance and resets the high-water mark and period starts"
   }
 ]

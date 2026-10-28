@@ -191,6 +191,40 @@ export class OkxBroker implements ExchangeBroker {
     return this.getCircuitBreaker();
   }
 
+  /** USDT equity of the venue account for the current Execution Mode; throws if it cannot be read. */
+  public async getVenueEquityUsdt(): Promise<ScaledDecimal> {
+    const creds = this.getCredentials();
+    if (!creds || !creds.apiKey) {
+      throw new Error("OKX credentials are not configured; cannot read the venue balance");
+    }
+    const path = "/api/v5/account/balance?ccy=USDT";
+    const res = await this.fetchFn(`https://www.okx.com${path}`, {
+      method: "GET",
+      headers: buildOkxHeaders({
+        method: "GET",
+        path,
+        credentials: creds,
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
+        isDemo: this.isDemoVenue()
+      })
+    });
+    if (!res.ok) {
+      throw new Error(`OKX balance query failed with HTTP ${res.status}`);
+    }
+    const payload = (await res.json()) as {
+      code?: string;
+      msg?: string;
+      data?: Array<{ details?: Array<{ ccy?: string; eq?: string }> }>;
+    };
+    const usdt = payload.data?.[0]?.details?.find((d) => d.ccy === "USDT");
+    if (payload.code !== "0" || !usdt?.eq) {
+      throw new Error(
+        `OKX balance query returned no USDT equity (code ${payload.code ?? "unknown"}: ${payload.msg ?? ""})`
+      );
+    }
+    return ScaledDecimal.fromString(usdt.eq);
+  }
+
   public getOpenPositions(): readonly PaperPositionRecord[] {
     const nowMs = this.clock.nowMs();
     if (this.marketDataRepo) {
