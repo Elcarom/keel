@@ -94,7 +94,7 @@ jobs:
           docker stop keel-test && docker rm keel-test
 
       - name: Run Trivy vulnerability scanner on image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
           format: "table"
