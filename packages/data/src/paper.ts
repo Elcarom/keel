@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type Clock,
   CircuitBreakerRecordSchema,
   LedgerAccountSchema,
   LedgerEntryRecordSchema,
@@ -154,7 +155,8 @@ CREATE TABLE IF NOT EXISTS strategy_promotions (
   eligible_next_stage TEXT,
   demotion_reason TEXT,
   promoted_at_ms INTEGER,
-  updated_at_ms INTEGER NOT NULL
+  updated_at_ms INTEGER NOT NULL,
+  ramp_allocation_pct REAL NOT NULL DEFAULT 10
 );
 
 CREATE TABLE IF NOT EXISTS paper_processed_bars (
@@ -570,6 +572,7 @@ export function createLedgerRepository(
 
 export function createPaperAccountRepository(
   db: DatabaseSync,
+  clock: Clock,
   book: TradingBook = "paper"
 ): PaperAccountRepository {
   const t = bookTables(book);
@@ -810,7 +813,7 @@ export function createPaperAccountRepository(
         params.instrumentId,
         params.strategyId,
         params.anchorCloseTs,
-        params.createdAtMs ?? Date.now()
+        params.createdAtMs ?? clock.nowMs()
       );
     }
   };
@@ -823,8 +826,9 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
       db.prepare(
         `INSERT INTO strategy_promotions (
           strategy_id, current_stage, latest_experiment_id, replay_gate_passed,
-          paper_trades_count, paper_drawdown_pct, eligible_next_stage, demotion_reason, promoted_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          paper_trades_count, paper_drawdown_pct, eligible_next_stage, demotion_reason, promoted_at_ms, updated_at_ms,
+          ramp_allocation_pct
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(strategy_id) DO UPDATE SET
           current_stage = excluded.current_stage,
           latest_experiment_id = excluded.latest_experiment_id,
@@ -834,7 +838,8 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
           eligible_next_stage = excluded.eligible_next_stage,
           demotion_reason = excluded.demotion_reason,
           promoted_at_ms = excluded.promoted_at_ms,
-          updated_at_ms = excluded.updated_at_ms`
+          updated_at_ms = excluded.updated_at_ms,
+          ramp_allocation_pct = excluded.ramp_allocation_pct`
       ).run(
         record.strategyId,
         record.currentStage,
@@ -845,7 +850,8 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
         record.eligibleNextStage,
         record.demotionReason,
         promotedAt,
-        record.updatedAtMs
+        record.updatedAtMs,
+        record.rampAllocationPct ?? 100
       );
       return { ...record, promotedAtMs: promotedAt };
     },
@@ -872,6 +878,7 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
           row["promoted_at_ms"] !== null && row["promoted_at_ms"] !== undefined
             ? Number(row["promoted_at_ms"])
             : Number(row["updated_at_ms"]),
+        rampAllocationPct: Number(row["ramp_allocation_pct"]),
         updatedAtMs: Number(row["updated_at_ms"])
       });
     },
@@ -898,6 +905,7 @@ export function createPromotionRepository(db: DatabaseSync): PromotionRepository
             row["promoted_at_ms"] !== null && row["promoted_at_ms"] !== undefined
               ? Number(row["promoted_at_ms"])
               : Number(row["updated_at_ms"]),
+          rampAllocationPct: Number(row["ramp_allocation_pct"]),
           updatedAtMs: Number(row["updated_at_ms"])
         })
       );

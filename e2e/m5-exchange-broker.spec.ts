@@ -38,5 +38,9 @@ test.describe("Keel M5 — Exchange Broker panel refuses orders outside exchange
 
     await expect(page.getByTestId("gov-error-banner")).toContainText("Execution Mode");
     await expect(page.getByTestId("exchange-orders-table")).not.toContainText("BTC-USDT-SWAP");
+
+    // 4. The Venue Book rebase is wired to the API and refused outside exchange Execution Modes
+    await page.getByTestId("rebase-venue-capital-btn").click();
+    await expect(page.getByTestId("gov-error-banner")).toContainText("no venue in the Paper");
   });
 });

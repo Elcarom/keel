@@ -86,7 +86,7 @@ Under ADR-0021, the strategy lifecycle is governed by strict mathematical and op
    - Strategies flagged with `synthetic: true` (or prefixed with `synthetic-`) exist exclusively for algorithmic testing and fixture calibration.
    - The promotion endpoint (`POST /api/v1/promotion/promote`) strictly rejects promotion of synthetic strategies to `Demo`, `Live-Ramp`, or `Live` with `403 Forbidden`.
 3. **Promotion Ladder Stages**:
-   - `Research` $\to$ `Paper` (unattended paper trading) $\to$ `Demo` (Gate G2: exchange testnet with attached stops) $\to$ `Live-Ramp` (Gate G2: restricted live capital) $\to$ `Live` (Gate G3: full production allocation).
+   - `Research` $\to$ `Paper` (unattended paper trading) $\to$ `Demo` (Gate G2: exchange testnet with attached stops) $\to$ `Live-Ramp` (Gate G3: restricted real capital) $\to$ `Live` (Gate G3: full production allocation).
 
 ---
 

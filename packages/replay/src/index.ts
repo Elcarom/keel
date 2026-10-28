@@ -3,6 +3,7 @@ import {
   ManualClock,
   SEALED_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_START_TS,
+  overlapsSealed2026Holdout,
   ScaledDecimal,
   computeMarketExitPrice,
   computeNextBarOpenEntry,
@@ -760,8 +761,7 @@ export class ReplayEngine {
   }
 
   public run(input: ReplayRunInput): ReplayRunResult {
-    const touches2026Holdout =
-      input.toTs >= SEALED_2026_HOLDOUT_START_TS || input.fromTs >= SEALED_2026_HOLDOUT_START_TS;
+    const touches2026Holdout = overlapsSealed2026Holdout(input.fromTs, input.toTs);
 
     if (touches2026Holdout) {
       if (!input.allowHoldoutAccess) {
@@ -1357,7 +1357,7 @@ export class ReplayEngine {
   } {
     const total = params.bars.length;
     for (const b of params.bars) {
-      if (b.openTs >= SEALED_2026_HOLDOUT_START_TS) {
+      if (overlapsSealed2026Holdout(b.openTs, b.closeTs)) {
         throw new Error(
           `Sealed 2026 holdout violation: Walk-forward fold contains bars at or after ${SEALED_2026_HOLDOUT_START_TS} (ADR-0011).`
         );

@@ -9,12 +9,14 @@ import {
   ScaledDecimal,
   SEALED_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_START_TS,
+  overlapsSealed2026Holdout,
   SystemClock,
   createDefaultConfig,
   defaultInstrumentSpec,
   diffConfigs,
   getUtcDayStartMs,
   isExchangeExecutionMode,
+  isRealMoneyExecutionMode,
   keelApiContract,
   type CircuitBreakerRecord,
   type CircuitBreakerStatus,
@@ -192,11 +194,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     new OkxBroker({
       clock,
       getRiskConfig: () => getActiveSnapshot().config.risk,
+      // Trading keys come only from the encrypted vault, whose writes need step-up and are audited
+      // (audit-4 M4); there is deliberately no plaintext environment fallback
       getCredentials: () => {
-        const apiKey = getSecretSafe("okxApiKey") ?? process.env["OKX_API_KEY"] ?? null;
-        const secretKey = getSecretSafe("okxSecretKey") ?? process.env["OKX_API_SECRET"] ?? null;
-        const passphrase =
-          getSecretSafe("okxPassphrase") ?? process.env["OKX_API_PASSPHRASE"] ?? null;
+        const apiKey = getSecretSafe("okxApiKey");
+        const secretKey = getSecretSafe("okxSecretKey");
+        const passphrase = getSecretSafe("okxPassphrase");
 
         if (!apiKey || !secretKey || !passphrase) {
           return null;
@@ -297,6 +300,39 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     }
   };
 
+  // Real-money loss limits are watched on every heartbeat, not only when an order is attempted
+  // (audit-4 H1). An active breaker is never re-tripped or overridden here.
+  const checkVenueBookRisk = async (): Promise<void> => {
+    if (dataStore.paperAccountRepo.getCircuitBreaker().status !== "NORMAL") {
+      return;
+    }
+    const nowMs = clock.nowMs();
+    const openUnrealizedPnlUsdt = okxBroker
+      .getOpenPositions()
+      .reduce(
+        (sum, p) => sum.add(ScaledDecimal.fromString(p.unrealizedPnlUsdt)),
+        ScaledDecimal.zero()
+      );
+    const metrics = dataStore.exchangeLedgerRepo.getRiskMetrics({
+      asOfMs: nowMs,
+      strategyId: null,
+      openUnrealizedPnlUsdt
+    });
+    const breach = new RiskGuardian(getActiveSnapshot().config.risk).evaluatePortfolioBreakers(
+      {
+        equityUsdt: metrics.currentEquityUsdt,
+        highWaterMarkEquityUsdt: metrics.highWaterMarkEquityUsdt,
+        dayStartEquityUsdt: metrics.dayStartEquityUsdt
+      },
+      nowMs
+    );
+    if (breach) {
+      const breaker = { ...breach.breaker, reason: `Venue Book: ${breach.breaker.reason}` };
+      dataStore.paperAccountRepo.setCircuitBreaker(breaker);
+      await onCircuitBreakerTripped(breaker);
+    }
+  };
+
   const scheduler =
     options.scheduler ??
     new UnattendedScheduler({
@@ -310,7 +346,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       getRiskConfig: () => getActiveSnapshot().config.risk,
       getSystemConfig: () => getActiveSnapshot().config.system,
       notificationChannel: notifier,
-      intervalMs: options.schedulerIntervalMs
+      intervalMs: options.schedulerIntervalMs,
+      checkVenueBookRisk
     });
 
   if (options.enableScheduler === true) {
@@ -345,6 +382,18 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
       process.stderr.write(`${errorMsg}\n`);
     }
   }
+
+  // Browser hardening for the dashboard: same-origin everything, no framing, no MIME sniffing
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header(
+      "content-security-policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    );
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    reply.header("referrer-policy", "no-referrer");
+    return payload;
+  });
 
   app.addHook("onClose", async () => {
     scheduler.stop();
@@ -403,6 +452,25 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     })
       ? null
       : { status: 403 as const, body: { error, requiresStepUp: true } };
+
+  // Gate G3 is step-up MFA (docs/design/bot-platform.md): no real-money capability is reachable
+  // until a TOTP authenticator is enrolled, after which step-up demands its code (audit-4 H4)
+  const g3MfaDenied = (action: string) =>
+    authManager.isTotpEnabled()
+      ? null
+      : {
+          status: 403 as const,
+          body: {
+            error: `Gate G3: enrol a TOTP authenticator before ${action}`,
+            requiresStepUp: true
+          }
+        };
+
+  /** Denies a config change that would move into a real-money Execution Mode without G3 MFA. */
+  const realMoneySwitchDenied = (from: ExecutionMode, to: ExecutionMode) =>
+    isRealMoneyExecutionMode(to) && to !== from
+      ? g3MfaDenied(`switching to the ${to} Execution Mode`)
+      : null;
 
   const requireAuthenticatedIngress = (
     req: FastifyRequest
@@ -480,20 +548,56 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     });
   });
 
-  const computeStrategyDrawdownPct = (strategyId: string): number => {
-    const openPositions = dataStore.paperAccountRepo.listOpenPositions();
+  const computeStrategyDrawdownPct = (
+    strategyId: string,
+    book: "paper" | "exchange" = "paper"
+  ): number => {
+    const accountRepo =
+      book === "paper" ? dataStore.paperAccountRepo : dataStore.exchangeAccountRepo;
+    const ledgerRepo = book === "paper" ? dataStore.ledgerRepo : dataStore.exchangeLedgerRepo;
+    const openPositions = accountRepo.listOpenPositions();
     let openUnrealized = ScaledDecimal.zero();
     for (const pos of openPositions) {
       if (pos.strategyId === strategyId) {
         openUnrealized = openUnrealized.add(ScaledDecimal.fromString(pos.unrealizedPnlUsdt));
       }
     }
-    const riskMetrics = dataStore.ledgerRepo.getRiskMetrics({
+    const riskMetrics = ledgerRepo.getRiskMetrics({
       asOfMs: clock.nowMs(),
       strategyId,
       openUnrealizedPnlUsdt: openUnrealized
     });
     return Number(riskMetrics.drawdownPct.toFixed(4));
+  };
+
+  // Promotion evidence comes from the book the stage trades in: paper up to Paper, and the Venue
+  // Book from Demo on, counting only trades closed since the strategy entered its stage (audit-4 H3).
+  // The evaluator's paperTradesCount / paperDrawdownPct fields carry whichever book applies.
+  const stageEvidence = (
+    strategyId: string,
+    stage: PromotionStage,
+    stageStartMs: number
+  ): { readonly tradesCount: number; readonly drawdownPct: number } => {
+    const onVenue = stage === "Demo" || stage === "Live-Ramp" || stage === "Live";
+    if (!onVenue) {
+      return {
+        tradesCount: dataStore.paperAccountRepo
+          .listAllPositions()
+          .filter((p) => p.strategyId === strategyId && p.status === "CLOSED").length,
+        drawdownPct: computeStrategyDrawdownPct(strategyId)
+      };
+    }
+    return {
+      tradesCount: dataStore.exchangeAccountRepo
+        .listAllPositions()
+        .filter(
+          (p) =>
+            p.strategyId === strategyId &&
+            p.status === "CLOSED" &&
+            (p.closedAtMs ?? 0) >= stageStartMs
+        ).length,
+      drawdownPct: computeStrategyDrawdownPct(strategyId, "exchange")
+    };
   };
 
   const s = initServer();
@@ -823,6 +927,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         if (strandError) {
           return { status: 403, body: { error: strandError } };
         }
+        const g3Denial = realMoneySwitchDenied(
+          active.config.system.executionMode,
+          body.config.system.executionMode
+        );
+        if (g3Denial) {
+          return g3Denial;
+        }
         const diff = diffConfigs(active.config, body.config, active.config.system.executionMode);
 
         if (!diff.allowed) {
@@ -938,6 +1049,13 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         );
         if (strandError) {
           return { status: 403, body: { error: strandError } };
+        }
+        const g3Denial = realMoneySwitchDenied(
+          active.config.system.executionMode,
+          target.config.system.executionMode
+        );
+        if (g3Denial) {
+          return g3Denial;
         }
 
         const diff = diffConfigs(active.config, target.config, active.config.system.executionMode);
@@ -1228,9 +1346,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             : coverage.latestCloseTs;
         const effectiveToTs = body.toTs ?? defaultToTs;
 
-        const reaches2026Holdout =
-          effectiveFromTs >= SEALED_2026_HOLDOUT_START_TS ||
-          effectiveToTs >= SEALED_2026_HOLDOUT_START_TS;
+        const reaches2026Holdout = overlapsSealed2026Holdout(effectiveFromTs, effectiveToTs);
 
         if (reaches2026Holdout) {
           if (!body.allowHoldoutAccess) {
@@ -1534,18 +1650,15 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         const experiments = dataStore.experimentRepo.listExperiments(50);
         const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
 
-        // Compute actual paper trades count and drawdown from ledger
-        const allPositions = dataStore.paperAccountRepo.listAllPositions();
-        const strategyPositions = allPositions.filter(
-          (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
-        );
-        const actualPaperTradesCount = strategyPositions.length;
-        const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
-
         // Compute actual days in stage from stage entry timestamp (promotedAtMs) (M-H)
         const nowMs = clock.nowMs();
         const stageStartMs = existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs;
         const daysInStage = Math.max(0, (nowMs - stageStartMs) / 86_400_000);
+
+        // Trades and drawdown from the book this stage trades in
+        const evidence = stageEvidence(body.strategyId, currentStage, stageStartMs);
+        const actualPaperTradesCount = evidence.tradesCount;
+        const paperDrawdownPct = evidence.drawdownPct;
 
         // Resolve and query segregated shadow advisor evaluations (T7 / M-H)
         dataStore.shadowRepo.resolvePendingDecisions({
@@ -1682,21 +1795,25 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           }
         }
 
+        if (body.targetStage === "Live-Ramp" || body.targetStage === "Live") {
+          const g3Denial = g3MfaDenied(`promoting a strategy to ${body.targetStage}`);
+          if (g3Denial) {
+            return g3Denial;
+          }
+        }
+
         const active = getActiveSnapshot();
         const evaluator = new PromotionLadderEvaluator(active.config.promotionLadder);
         const experiments = dataStore.experimentRepo.listExperiments(50);
         const latestExp = experiments.find((e) => e.strategyId === body.strategyId) ?? null;
 
-        const allPositions = dataStore.paperAccountRepo.listAllPositions();
-        const strategyPositions = allPositions.filter(
-          (p) => p.strategyId === body.strategyId && p.status === "CLOSED"
-        );
-        const actualPaperTradesCount = strategyPositions.length;
-        const paperDrawdownPct = computeStrategyDrawdownPct(body.strategyId);
-
         const nowMs = clock.nowMs();
         const stageStartMs = existingPromo?.promotedAtMs ?? existingPromo?.updatedAtMs ?? nowMs;
         const daysInStage = Math.max(0, (nowMs - stageStartMs) / 86_400_000);
+
+        const evidence = stageEvidence(body.strategyId, existingPromo.currentStage, stageStartMs);
+        const actualPaperTradesCount = evidence.tradesCount;
+        const paperDrawdownPct = evidence.drawdownPct;
 
         dataStore.shadowRepo.resolvePendingDecisions({
           marketDataRepo: dataStore.marketDataRepo
@@ -2195,6 +2312,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
         }
 
         if (!body.reduceOnly) {
+          if (isRealMoneyExecutionMode(mode)) {
+            const g3Denial = g3MfaDenied(`placing ${mode} orders`);
+            if (g3Denial) {
+              return g3Denial;
+            }
+          }
           // Human gates G2 (any exchange account) and G3 (real money) require a fresh step-up
           const stepUpDenial = stepUpDenied(
             ingress,
@@ -2370,12 +2493,28 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             };
           }
 
+          // Live-Ramp trades a fraction of the 1R size, set per strategy at promotion (audit-4 H2)
+          const rampPct =
+            mode === "Live-Ramp"
+              ? (dataStore.promotionRepo.getPromotion(strategyId)?.rampAllocationPct ?? 0)
+              : 100;
+          const maxLots =
+            rampPct >= 100
+              ? decision.contracts
+              : decision.contracts
+                  .mul(ScaledDecimal.fromString(String(rampPct)))
+                  .divFloor(ScaledDecimal.fromString("100"))
+                  .roundDownToLot(ScaledDecimal.fromString("1"));
           const requestedLots = ScaledDecimal.fromString(String(body.sizeLots));
-          if (requestedLots.gt(decision.contracts)) {
+          if (requestedLots.gt(maxLots)) {
+            const sizingBasis =
+              rampPct >= 100
+                ? "1R risk-sized"
+                : `Live-Ramp allocation ${rampPct}% of the 1R risk-sized`;
             return {
               status: 403,
               body: {
-                error: `Risk veto [SIZING_VETO]: Requested size (${body.sizeLots}) exceeds 1R risk-sized maximum (${decision.contracts.toFixed(0)})`
+                error: `Risk veto [SIZING_VETO]: Requested size (${body.sizeLots}) exceeds ${sizingBasis} maximum (${maxLots.toFixed(0)})`
               }
             };
           }
@@ -2444,6 +2583,12 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
             status: 403,
             body: { error: `The Venue Book has no venue in the ${mode} Execution Mode` }
           };
+        }
+        if (isRealMoneyExecutionMode(mode)) {
+          const g3Denial = g3MfaDenied(`rebasing real-money Venue Book capital`);
+          if (g3Denial) {
+            return g3Denial;
+          }
         }
         const stepUpDenial = stepUpDenied(
           ingress,

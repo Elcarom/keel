@@ -1,5 +1,5 @@
 import {
-  SEALED_2026_HOLDOUT_START_TS,
+  overlapsSealed2026Holdout,
   isExchangeExecutionMode,
   type Clock,
   type RiskConfig,
@@ -23,6 +23,8 @@ export interface UnattendedSchedulerOptions {
   readonly instruments?: readonly string[] | undefined;
   readonly strategies?: readonly string[] | undefined;
   readonly intervalMs?: number | undefined;
+  /** Runs after every DMS heartbeat in exchange modes: watches Venue Book loss limits between orders. */
+  readonly checkVenueBookRisk?: (() => Promise<void>) | undefined;
 }
 
 /**
@@ -61,6 +63,7 @@ export class UnattendedScheduler {
   private dmsTimer: NodeJS.Timeout | null = null;
   private isStepping = false;
   private isBeating = false;
+  private readonly checkVenueBookRisk: (() => Promise<void>) | null;
 
   public constructor(options: UnattendedSchedulerOptions) {
     this.clock = options.clock;
@@ -74,6 +77,7 @@ export class UnattendedScheduler {
     this.instruments = options.instruments ?? ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
     this.strategies = options.strategies ?? [];
     this.intervalMs = options.intervalMs ?? 60_000;
+    this.checkVenueBookRisk = options.checkVenueBookRisk ?? null;
   }
 
   public isRunning(): boolean {
@@ -113,6 +117,19 @@ export class UnattendedScheduler {
           title: "DEAD-MAN SWITCH HEARTBEAT FAILED",
           body: `DMS heartbeat failed: ${String(err)}`,
           dedupKey: `dms-beat-fail-${Math.floor(nowMs / 300_000)}`
+        });
+      }
+    }
+    try {
+      await this.checkVenueBookRisk?.();
+    } catch (err) {
+      if (this.notificationChannel) {
+        const nowMs = this.clock.nowMs();
+        void this.notificationChannel.send({
+          severity: "CRITICAL",
+          title: "VENUE BOOK RISK CHECK FAILED",
+          body: `Venue Book loss-limit check failed: ${String(err)}`,
+          dedupKey: `venue-risk-fail-${Math.floor(nowMs / 300_000)}`
         });
       }
     } finally {
@@ -242,12 +259,9 @@ export class UnattendedScheduler {
                 continue;
               }
 
-              // Scheduler never evaluates bars with closeTs >= SEALED_2026_HOLDOUT_START_TS
-              // unless that is the live present (closeTs within 2 hours of clock.nowMs()) (C2, A1)
-              if (
-                bar.closeTs >= SEALED_2026_HOLDOUT_START_TS ||
-                bar.openTs >= SEALED_2026_HOLDOUT_START_TS
-              ) {
+              // Scheduler never evaluates bars inside the sealed 2026 partition unless that is
+              // the live present (closeTs within 2 hours of clock.nowMs()) (C2, A1, audit-4 M1)
+              if (overlapsSealed2026Holdout(bar.openTs, bar.closeTs)) {
                 const isLivePresent = Math.abs(nowMs - bar.closeTs) <= 2 * 3600_000;
                 if (!isLivePresent) {
                   this.dataStore.paperAccountRepo.recordProcessedBar({

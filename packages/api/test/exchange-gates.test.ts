@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ManualClock,
   createDefaultConfig,
@@ -7,7 +7,7 @@ import {
 } from "@keel/core";
 import { OkxBroker } from "@keel/broker";
 import { createSqliteDataStore } from "@keel/data";
-import { createKeelServer } from "../src/index.js";
+import { TotpEngine, createKeelServer } from "../src/index.js";
 import { createFakeOkx } from "../../broker/test/fake-okx.js";
 
 const PASSWORD = "correct-horse-battery-staple";
@@ -15,7 +15,9 @@ const PASSWORD = "correct-horse-battery-staple";
 async function setup(
   mode: ExecutionMode,
   strategyStage: PromotionStage | null,
-  fakeOptions: Parameters<typeof createFakeOkx>[0] = {}
+  fakeOptions: Parameters<typeof createFakeOkx>[0] = {},
+  // Real-money modes need an enrolled authenticator (Gate G3); enrolled by default there
+  { totp = mode === "Live-Ramp" || mode === "Live" }: { readonly totp?: boolean } = {}
 ) {
   const clock = new ManualClock(1_730_000_000_000);
   const config = createDefaultConfig();
@@ -70,6 +72,15 @@ async function setup(
   const cookie = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
   // Let any login-time step-up lapse so every gate below must be satisfied explicitly
   clock.advanceMs(10 * 60 * 1000);
+  if (totp) {
+    const secret = String(bootRes.json().totpSecretBase32);
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/totp/verify",
+      headers: { cookie },
+      payload: { code: TotpEngine.generateCode(secret, clock.nowMs()) }
+    });
+  }
 
   const order = (extra: Record<string, unknown> = {}) =>
     app.inject({
@@ -402,6 +413,140 @@ describe("Venue Book equity is reconciled to the OKX balance before sizing", () 
         protectiveStopPrice: undefined
       });
       expect(close.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Venue Book losses are watched between orders (audit-4 H1)", () => {
+  it("trips the drawdown Kill Switch from the heartbeat when Venue Book losses breach the limit, with no order attempted", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { app, order, okxBroker, dataStore, clock } = await setup("Demo", "Demo");
+    try {
+      expect((await order({ stepUpPassword: PASSWORD })).statusCode).toBe(200);
+      dataStore.exchangeLedgerRepo.recordJournal({
+        txGroupId: "loss-heartbeat",
+        ts: clock.nowMs(),
+        strategyId: "donchian-trend-v1",
+        instrumentId: "BTC-USDT-SWAP",
+        debitAccount: "realized_pnl:usdt",
+        creditAccount: "cash:usdt",
+        amountUsdt: "1500.00000000",
+        description: "Realised loss"
+      });
+      expect(dataStore.paperAccountRepo.getCircuitBreaker().status).toBe("NORMAL");
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(dataStore.paperAccountRepo.getCircuitBreaker().status).toBe("DRAWDOWN_KILL_SWITCH");
+      expect(okxBroker.getOpenPositions()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+  });
+});
+
+describe("Live-Ramp sizes from the strategy's ramp allocation (audit-4 H2)", () => {
+  const maxLotsFrom = (error: string) => Number(/maximum \((\d+)\)/.exec(error)?.[1] ?? NaN);
+
+  it("caps a Live-Ramp entry at the strategy's ramp allocation of its 1R size", async () => {
+    const { app, order, dataStore } = await setup("Live-Ramp", "Live-Ramp");
+    try {
+      const full = await order({ sizeLots: 1_000_000, stepUpPassword: PASSWORD });
+      expect(full.statusCode).toBe(403);
+      const fullMax = maxLotsFrom(full.json().error);
+      expect(fullMax).toBeGreaterThanOrEqual(4);
+
+      const promo = dataStore.promotionRepo.getPromotion("donchian-trend-v1");
+      if (!promo) throw new Error("promotion missing");
+      dataStore.promotionRepo.upsertPromotion({ ...promo, rampAllocationPct: 25 });
+
+      const ramped = await order({ sizeLots: 1_000_000, stepUpPassword: PASSWORD });
+      expect(ramped.statusCode).toBe(403);
+      expect(ramped.json().error).toMatch(/Live-Ramp allocation 25%/);
+      expect(maxLotsFrom(ramped.json().error)).toBe(Math.floor(fullMax / 4));
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Venue stages are promoted on Venue Book evidence (audit-4 H3)", () => {
+  const closedPosition = (n: number) => ({
+    positionId: `pos_paper_${n}`,
+    strategyId: "donchian-trend-v1",
+    instrumentId: "BTC-USDT-SWAP",
+    side: "long" as const,
+    contracts: "1",
+    entryPrice: "50000",
+    protectiveStopPrice: "49000",
+    takeProfitPrice: null,
+    initialRiskUsdt: "10.00",
+    unrealizedPnlUsdt: "0.00000000",
+    realizedPnlUsdt: "5.00000000",
+    feesPaidUsdt: "0.30000000",
+    fundingPaidUsdt: "0.00000000",
+    openedAtMs: 1_730_000_000_000,
+    lastFundingSettledTs: 1_730_000_000_000,
+    status: "CLOSED" as const,
+    closedAtMs: 1_730_000_100_000,
+    exitPrice: "50500",
+    exitReason: "TAKE_PROFIT"
+  });
+
+  it("does not make a Demo strategy eligible for Live-Ramp on paper trades alone", async () => {
+    const { app, cookie, dataStore } = await setup("Demo", "Demo");
+    try {
+      for (let n = 0; n < 60; n += 1) {
+        dataStore.paperAccountRepo.savePosition(closedPosition(n));
+      }
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/promotion/evaluate",
+        headers: { cookie },
+        payload: { strategyId: "donchian-trend-v1" }
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().promotion.eligibleNextStage).not.toBe("Live-Ramp");
+      expect(res.json().promotion.paperTradesCount).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Gate G3 requires MFA for real money (audit-4 H4)", () => {
+  it("refuses real-money orders until a TOTP authenticator is enrolled", async () => {
+    const { app, order, fake } = await setup("Live-Ramp", "Live-Ramp", {}, { totp: false });
+    try {
+      const res = await order({ stepUpPassword: PASSWORD });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/Gate G3: enrol a TOTP authenticator/);
+      expect(placedOrders(fake)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses switching into a real-money Execution Mode without an enrolled authenticator", async () => {
+    const { app, cookie, config } = await setup("Demo", "Demo");
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/v1/config",
+        headers: { cookie },
+        payload: {
+          config: { ...config, system: { ...config.system, executionMode: "Live-Ramp" } },
+          reason: "Go live",
+          stepUpPassword: PASSWORD
+        }
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/Gate G3/);
     } finally {
       await app.close();
     }

@@ -14,6 +14,7 @@ import { createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createKeelServer, redactLogObject } from "../src/index.js";
 import { createFakeOkx } from "../../broker/test/fake-okx.js";
+import { enrollTotp } from "./totp.js";
 
 const TEST_OKX_CREDENTIALS = {
   apiKey: "test-api-key",
@@ -30,6 +31,23 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("sends browser security headers on every response (audit-4 L2)", async () => {
+    const app = await createKeelServer({
+      config: createDefaultConfig(),
+      clock: new ManualClock(1_730_000_000_000)
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: "/healthz" });
+      expect(res.headers["content-security-policy"]).toContain("default-src 'self'");
+      expect(res.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(res.headers["x-content-type-options"]).toBe("nosniff");
+      expect(res.headers["x-frame-options"]).toBe("DENY");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+    } finally {
+      await app.close();
+    }
   });
 
   it("serves /healthz, /readyz, and Prometheus /metrics", async () => {
@@ -270,6 +288,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
           executionMode: "Live-Ramp" as const
         }
       };
+      // Gate G3: real-money modes need an enrolled authenticator (audit-4 H4)
+      await enrollTotp(app, cookieHeader, String(bootRes.json().totpSecretBase32), clock);
       const modeUpdateRes = await app.inject({
         method: "PUT",
         url: "/api/v1/config",
@@ -316,6 +336,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(actions).toEqual([
         "config.update_blocked",
         "config.update",
+        "auth.totp_verify",
         "system.backup",
         "config.rollback",
         "secrets.upsert",

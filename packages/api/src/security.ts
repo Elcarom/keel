@@ -600,6 +600,11 @@ export class AuthManager {
     this.authRepo.updateSessionStepUp(hashSessionToken(sessionToken), nowMs);
   }
 
+  /** True once the operator has enrolled and verified a TOTP authenticator. */
+  public isTotpEnabled(): boolean {
+    return this.authRepo.getAdminUser()?.totpEnabled === true;
+  }
+
   public verifyStepUp(input: {
     sessionToken: string | null;
     password?: string | undefined;
@@ -847,7 +852,7 @@ export function resolveIngressContext(input: {
   fallbackIp: string;
   config: KeelConfig;
   authManager: AuthManager;
-  nowMs?: number | undefined;
+  nowMs: number;
 }): IngressContext {
   const trustCf = input.config.system.trustCloudflareHeaders;
   const cfIp = input.headers["cf-connecting-ip"];
@@ -884,7 +889,7 @@ export function resolveIngressContext(input: {
     verifyCloudflareAccessJwt({
       jwt: cfJwt,
       config: input.config,
-      nowMs: input.nowMs ?? Date.now()
+      nowMs: input.nowMs
     });
 
   const sessionToken = parseSessionTokenFromHeaders(input.headers);

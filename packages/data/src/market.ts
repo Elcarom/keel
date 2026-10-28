@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type Clock,
   ALL_BAR_TIMEFRAMES,
   BarTimeframeSchema,
   ExperimentRecordSchema,
@@ -591,7 +592,7 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
   };
 }
 
-export function createExperimentRepository(db: DatabaseSync): ExperimentRepository {
+export function createExperimentRepository(db: DatabaseSync, clock: Clock): ExperimentRepository {
   return {
     saveExperiment(record: ExperimentRecord, options?: SaveExperimentOptions): ExperimentRecord {
       const validated = ExperimentRecordSchema.parse(record);
@@ -615,7 +616,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
              SET consumed_at_ms = ?
              WHERE partition = ? AND token = ? AND consumed_at_ms IS NULL`
           );
-          const nowMs = options.nowMs ?? Date.now();
+          const nowMs = options.nowMs ?? clock.nowMs();
           const res = updateStmt.run(nowMs, options.consumeHoldoutPartition, row.token);
           if (res.changes === 0) {
             throw new Error(
@@ -699,7 +700,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
     },
 
     recordTrial(trial: ResearchTrialInput): number {
-      const nowMs = trial.recordedAtMs ?? Date.now();
+      const nowMs = trial.recordedAtMs ?? clock.nowMs();
       db.prepare(
         `INSERT OR IGNORE INTO research_trials (
           strategy_id, parameter_hash, instrument_id, timeframe, first_recorded_at_ms
@@ -719,7 +720,7 @@ export function createExperimentRepository(db: DatabaseSync): ExperimentReposito
     },
 
     createHoldoutToken(input: HoldoutTokenInput): void {
-      const nowMs = input.createdAtMs ?? Date.now();
+      const nowMs = input.createdAtMs ?? clock.nowMs();
       db.prepare(
         `INSERT INTO holdout_tokens (token, partition, created_at_ms, consumed_at_ms)
          VALUES (?, ?, ?, NULL)`

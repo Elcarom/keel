@@ -101,6 +101,58 @@ export class RiskGuardian {
     this.config = config;
   }
 
+  /**
+   * Portfolio drawdown kill switch and daily loss halt, independent of any proposal, so a book can
+   * be watched continuously and not only when an order is attempted.
+   */
+  public evaluatePortfolioBreakers(
+    portfolioState: Pick<
+      PortfolioRiskState,
+      "equityUsdt" | "highWaterMarkEquityUsdt" | "dayStartEquityUsdt"
+    >,
+    asOfMs: number
+  ): {
+    readonly vetoCode: "PORTFOLIO_DRAWDOWN_KILL_SWITCH" | "PORTFOLIO_DAILY_LOSS_HALT";
+    readonly breaker: CircuitBreakerRecord;
+  } | null {
+    const portfolioDrawdown = computeDrawdownFraction(
+      portfolioState.equityUsdt,
+      portfolioState.highWaterMarkEquityUsdt
+    );
+    const portfolioKillSwitchFraction = pctToFractionDecimal(
+      this.config.portfolio.maxDrawdownKillSwitchPct
+    );
+    if (portfolioDrawdown.gte(portfolioKillSwitchFraction)) {
+      const triggered: CircuitBreakerRecord = {
+        status: "DRAWDOWN_KILL_SWITCH",
+        reason: `Portfolio drawdown reached kill-switch threshold (${this.config.portfolio.maxDrawdownKillSwitchPct}%)`,
+        triggeredAtMs: asOfMs,
+        cooldownUntilMs: null,
+        updatedBy: "RiskGuardian"
+      };
+      return { vetoCode: "PORTFOLIO_DRAWDOWN_KILL_SWITCH", breaker: triggered };
+    }
+
+    const portfolioDailyLoss = computeDrawdownFraction(
+      portfolioState.equityUsdt,
+      portfolioState.dayStartEquityUsdt
+    );
+    const portfolioDailyLossFraction = pctToFractionDecimal(this.config.portfolio.dailyLossStopPct);
+    if (portfolioDailyLoss.gte(portfolioDailyLossFraction)) {
+      const nextUtcMidnightMs = (Math.floor(asOfMs / 86_400_000) + 1) * 86_400_000;
+      const triggered: CircuitBreakerRecord = {
+        status: "DAILY_LOSS_HALT",
+        reason: `Portfolio daily loss reached cap (${this.config.portfolio.dailyLossStopPct}%)`,
+        triggeredAtMs: asOfMs,
+        cooldownUntilMs: nextUtcMidnightMs,
+        updatedBy: "RiskGuardian"
+      };
+      return { vetoCode: "PORTFOLIO_DAILY_LOSS_HALT", breaker: triggered };
+    }
+
+    return null;
+  }
+
   public evaluateProposal(input: {
     readonly proposal: Proposal;
     readonly instrument: InstrumentSpec;
@@ -128,48 +180,13 @@ export class RiskGuardian {
     }
 
     // 2. Portfolio-Level Drawdown Kill Switch & Daily Loss Halt
-    const portfolioDrawdown = computeDrawdownFraction(
-      portfolioState.equityUsdt,
-      portfolioState.highWaterMarkEquityUsdt
-    );
-    const portfolioKillSwitchFraction = pctToFractionDecimal(
-      this.config.portfolio.maxDrawdownKillSwitchPct
-    );
-    if (portfolioDrawdown.gte(portfolioKillSwitchFraction)) {
-      const triggered: CircuitBreakerRecord = {
-        status: "DRAWDOWN_KILL_SWITCH",
-        reason: `Portfolio drawdown reached kill-switch threshold (${this.config.portfolio.maxDrawdownKillSwitchPct}%)`,
-        triggeredAtMs: asOfMs,
-        cooldownUntilMs: null,
-        updatedBy: "RiskGuardian"
-      };
+    const portfolioBreach = this.evaluatePortfolioBreakers(portfolioState, asOfMs);
+    if (portfolioBreach) {
       return {
         approved: false,
-        vetoCode: "PORTFOLIO_DRAWDOWN_KILL_SWITCH",
-        vetoReason: triggered.reason,
-        triggeredCircuitBreaker: triggered
-      };
-    }
-
-    const portfolioDailyLoss = computeDrawdownFraction(
-      portfolioState.equityUsdt,
-      portfolioState.dayStartEquityUsdt
-    );
-    const portfolioDailyLossFraction = pctToFractionDecimal(this.config.portfolio.dailyLossStopPct);
-    if (portfolioDailyLoss.gte(portfolioDailyLossFraction)) {
-      const nextUtcMidnightMs = (Math.floor(asOfMs / 86_400_000) + 1) * 86_400_000;
-      const triggered: CircuitBreakerRecord = {
-        status: "DAILY_LOSS_HALT",
-        reason: `Portfolio daily loss reached cap (${this.config.portfolio.dailyLossStopPct}%)`,
-        triggeredAtMs: asOfMs,
-        cooldownUntilMs: nextUtcMidnightMs,
-        updatedBy: "RiskGuardian"
-      };
-      return {
-        approved: false,
-        vetoCode: "PORTFOLIO_DAILY_LOSS_HALT",
-        vetoReason: triggered.reason,
-        triggeredCircuitBreaker: triggered
+        vetoCode: portfolioBreach.vetoCode,
+        vetoReason: portfolioBreach.breaker.reason,
+        triggeredCircuitBreaker: portfolioBreach.breaker
       };
     }
 

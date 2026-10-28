@@ -328,7 +328,8 @@ export function App() {
       body: {
         config: draftConfig,
         reason: changeReason,
-        stepUpPassword: stepUpPassword || undefined
+        stepUpPassword: stepUpPassword || undefined,
+        stepUpTotpCode: stepUpTotpCode || undefined
       }
     });
     if (res.status === 200) {
@@ -348,7 +349,8 @@ export function App() {
       body: {
         targetVersion,
         reason: `Rollback to v${targetVersion}`,
-        stepUpPassword: stepUpPassword || undefined
+        stepUpPassword: stepUpPassword || undefined,
+        stepUpTotpCode: stepUpTotpCode || undefined
       }
     });
     if (res.status === 200) {
@@ -368,7 +370,8 @@ export function App() {
       body: {
         keyName: selectedSecretKey,
         plaintextValue: secretPlaintext,
-        stepUpPassword: stepUpPassword || undefined
+        stepUpPassword: stepUpPassword || undefined,
+        stepUpTotpCode: stepUpTotpCode || undefined
       }
     });
     if (res.status === 200) {
@@ -1402,7 +1405,8 @@ export function App() {
                             ? "Operator re-armed system"
                             : "Manual operator emergency halt",
                         // Re-arming after a Kill Switch requires step-up (audit-3 H9)
-                        stepUpPassword: stepUpPassword || undefined
+                        stepUpPassword: stepUpPassword || undefined,
+                        stepUpTotpCode: stepUpTotpCode || undefined
                       }
                     });
                     if (res.status === 200) {
@@ -2494,6 +2498,17 @@ export function App() {
                       className={inputClass}
                     />
                   </div>
+                  <div>
+                    <label className="mb-1 block opacity-70">TOTP Code (G3 real money)</label>
+                    <input
+                      data-testid="order-step-up-totp-input"
+                      type="text"
+                      inputMode="numeric"
+                      value={stepUpTotpCode}
+                      onChange={(e) => setStepUpTotpCode(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
                 </div>
 
                 <div className="mt-3 flex justify-end">
@@ -2515,7 +2530,8 @@ export function App() {
                             protectiveStopPrice: orderStopPrice,
                             takeProfitPrice: orderTakeProfitPrice,
                             reduceOnly: false,
-                            stepUpPassword: stepUpPassword || undefined
+                            stepUpPassword: stepUpPassword || undefined,
+                            stepUpTotpCode: stepUpTotpCode || undefined
                           }
                         });
                         if (res.status === 200) {
@@ -2538,6 +2554,42 @@ export function App() {
                     {submittingOrder
                       ? "Submitting Protected Order..."
                       : "Submit Protected Exchange Order"}
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
+                  <p className="text-xs opacity-70">
+                    Entries are refused while Venue Book equity is above the OKX balance. Rebase
+                    sets the flat Venue Book to the venue balance (step-up required).
+                  </p>
+                  <button
+                    type="button"
+                    data-testid="rebase-venue-capital-btn"
+                    onClick={async () => {
+                      setGovMessage(null);
+                      setGovError(null);
+                      try {
+                        const res = await apiClient.broker.rebaseVenueCapital({
+                          body: {
+                            reason: "Operator rebase to the OKX balance from the dashboard",
+                            stepUpPassword: stepUpPassword || undefined,
+                            stepUpTotpCode: stepUpTotpCode || undefined
+                          }
+                        });
+                        if (res.status === 200) {
+                          setGovMessage(
+                            `Venue Book rebased from ${res.body.previousEquityUsdt} to ${res.body.venueEquityUsdt} USDT`
+                          );
+                          await refreshGovernanceData();
+                        } else {
+                          setGovError(extractApiError(res.body, "Venue Book rebase failed"));
+                        }
+                      } catch (err) {
+                        setGovError(String(err));
+                      }
+                    }}
+                    className="shrink-0 rounded border border-amber-500/60 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/10"
+                  >
+                    Rebase Venue Book to OKX Balance
                   </button>
                 </div>
               </div>

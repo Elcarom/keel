@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type {
+  Clock,
   ExperimentRepository,
   SaveStrategySpecInput,
   StrategySpecNameRecord,
@@ -27,12 +28,13 @@ CREATE TABLE IF NOT EXISTS strategy_spec_names (
 
 export function createStrategySpecRepository(
   db: DatabaseSync,
+  clock: Clock,
   experimentRepo?: ExperimentRepository
 ): StrategySpecRepository {
   return {
     saveSpec(input: SaveStrategySpecInput): StrategySpecRecord {
       const isSyntheticNum = input.isSynthetic ? 1 : 0;
-      const createdAtMs = input.createdAtMs ?? Date.now();
+      const createdAtMs = input.createdAtMs ?? clock.nowMs();
 
       const existing = db
         .prepare(`SELECT * FROM strategy_specs WHERE spec_hash = ?`)
@@ -128,7 +130,7 @@ export function createStrategySpecRepository(
     setActiveSpec(
       name: string,
       specHash: string,
-      updatedAtMs = Date.now()
+      updatedAtMs = clock.nowMs()
     ): StrategySpecNameRecord {
       db.prepare(
         `INSERT INTO strategy_spec_names (name, active_spec_hash, updated_at_ms)
