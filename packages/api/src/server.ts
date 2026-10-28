@@ -709,7 +709,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return {
             status: 502,
             body: {
-              error: `The bot designer could not answer: ${err instanceof Error ? err.message : String(err)}`
+              error: `The boat designer could not answer: ${err instanceof Error ? err.message : String(err)}`
             }
           };
         }

@@ -25,3 +25,4 @@ The owner asked for a simpler product: a Fleet screen listing every bot with its
 - The Shipyard works without an Anthropic key: it drafts deterministic sample Propositions and labels them as samples.
 - Live Bots would need a Venue Book per Bot or per-Bot attribution inside the Venue Book, plus the G2/G3 reviews ADR-0023 describes. The launch form shows Live as unavailable.
 - Bot Books add tables per Bot. Deleting a Bot drops them; retiring keeps them, so the logbook stays readable.
+- The operator-facing name is **Boat**, not Bot (renamed after the prototype review). Code identifiers, API paths and tables keep `bot`, so existing deployments need no data migration.

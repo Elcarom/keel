@@ -41,7 +41,7 @@ The actual periodic funding payment exchanged between long and short perpetual h
 _Avoid_: Funding fee, current funding
 
 **Trading Book**:
-The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills), the **Venue Book** (real fills on a Venue's Demo or real-money account), or a **Bot Book** (the simulated fills of one Bot, funded by its stake). Books never share positions or equity; only the Kill Switch state spans them all.
+The isolated set of positions, orders, and ledger accounts belonging to one kind of execution: the **Paper Book** (simulated fills), the **Venue Book** (real fills on a Venue's Demo or real-money account), or a **Boat Book** (the simulated fills of one Boat, funded by its stake). Books never share positions or equity; only the Kill Switch state spans them all.
 _Avoid_: Account, portfolio (when meaning one book)
 
 **Venue Capital Rebase**:
@@ -56,7 +56,7 @@ _Avoid_: Dry run, backtest mode, sim mode
 
 **Strategy**:
 A pure, deterministic function mapping a point-in-time feature snapshot of Confirmed Bars and context features to a menu of candidate trade **Proposals**.
-_Avoid_: Bee, agent, brain (a **Bot** is a funded, running instance of a Strategy, not the Strategy itself)
+_Avoid_: Bee, agent, brain (a **Boat** is a funded, running instance of a Strategy, not the Strategy itself)
 
 **Proposal**:
 A candidate trade intent (open, add, reduce, close, or hold) emitted by a Strategy, annotated with target sizing parameters and initial stop placement before Risk Engine evaluation.
@@ -161,29 +161,29 @@ _Avoid_: Free-running tick, repeated bar processing
 ## The Fleet
 
 **Fleet**:
-Every Bot the operator has launched, with the Wallets that fund them.
+Every Boat the operator has launched, with the Wallets that fund them.
 _Avoid_: Portfolio, swarm, hive
 
-**Bot**:
-A running instance of one Strategy compiled from a Blueprint, with a name, a stake drawn from a Wallet, and its own Bot Book. A Bot is running (at sea), paused (in harbour, flat and not trading) or retired (flat for good, its equity returned to the Wallet).
-_Avoid_: Strategy, agent, bee
+**Boat**:
+A running instance of one Strategy compiled from a Blueprint, with a name, a stake drawn from a Wallet, and its own Boat Book. A Boat is running (at sea), paused (in harbour, flat and not trading) or retired (flat for good, its equity returned to the Wallet).
+_Avoid_: Bot (in operator-facing text), Strategy, agent, bee
 
 **Wallet**:
-A pool of cash that stakes Bots. A Bot's stake leaves the Wallet when it launches and its equity returns when it retires. Paper Wallets hold simulated cash only.
+A pool of cash that stakes Boats. A Boat's stake leaves the Wallet when it launches and its equity returns when it retires. Paper Wallets hold simulated cash only.
 _Avoid_: Account, sub-account, balance
 
 **Stake**:
-The cash a Bot is launched with, drawn from its Wallet; the Bot's starting equity.
+The cash a Boat is launched with, drawn from its Wallet; the Boat's starting equity.
 _Avoid_: Allocation (in operator-facing text), budget
 
 **Blueprint**:
-A bounded description of a Bot's trading idea: one of a fixed set of archetypes plus clamped parameters, compiled deterministically into a Strategy Spec.
+A bounded description of a Boat's trading idea: one of a fixed set of archetypes plus clamped parameters, compiled deterministically into a Strategy Spec.
 _Avoid_: Prompt, config, recipe
 
 **Proposition**:
-A Blueprint offered as a candidate Bot, with its backtest Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
+A Blueprint offered as a candidate Boat, with its backtest Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
 _Avoid_: Proposal, idea, candidate strategy
 
 **Shipyard**:
-Where the operator writes a guided brief, the Bot designer drafts Propositions, and every Proposition is backtested and ranked before it can be launched.
+Where the operator writes a guided brief, the Boat designer drafts Propositions, and every Proposition is backtested and ranked before it can be launched.
 _Avoid_: Strategy Lab (the older research surface), generator

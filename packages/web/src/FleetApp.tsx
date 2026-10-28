@@ -673,13 +673,13 @@ function FleetView({
     <div className="space-y-6">
       {overview.killSwitchActive && (
         <Banner kind="danger" testId="kill-switch-banner">
-          <strong>Kill Switch is on.</strong> Every position was closed and no bot can open a new
+          <strong>Kill Switch is on.</strong> Every position was closed and no boat can open a new
           one until it is reset in the Engine Room. {overview.killSwitchReason}
         </Banner>
       )}
       {!overview.schedulerRunning && active.some((b) => b.status === "running") && (
         <Banner kind="warn" testId="scheduler-off-banner">
-          <strong>The tide isn&apos;t running.</strong> Bots only trade when the scheduler fetches
+          <strong>The tide isn&apos;t running.</strong> Boats only trade when the scheduler fetches
           new hourly bars. Set <code className="font-mono-tabular">KEEL_ENABLE_SCHEDULER=true</code>{" "}
           on the container and restart it.
         </Banner>
@@ -700,7 +700,7 @@ function FleetView({
         </div>
         <div className={card}>
           <Stat
-            label="Bots at sea"
+            label="Boats at sea"
             value={String(overview.totals.activeBots)}
             hint={`${active.length} in the fleet`}
           />
@@ -724,14 +724,14 @@ function FleetView({
           </Chip>
         </div>
         <button type="button" className={primaryBtn} onClick={goShipyard}>
-          + Design new bots
+          + Design new boats
         </button>
       </div>
 
       {shown.length === 0 ? (
         <div className={`${card} py-12 text-center`} data-testid="fleet-empty">
           <p className="text-lg font-semibold text-slate-100">
-            {showRetired ? "No bots have retired yet." : "The harbour is quiet."}
+            {showRetired ? "No boats have retired yet." : "The harbour is quiet."}
           </p>
           {!showRetired && (
             <p className="mt-1 text-sm text-slate-400">
@@ -966,7 +966,7 @@ function BriefForm({
           maxLength={1000}
           value={brief.notes}
           onChange={(e) => setBrief((b) => ({ ...b, notes: e.target.value }))}
-          placeholder="e.g. something calm that holds trades for a day or two, or a quick bot that only trades ETH breakouts"
+          placeholder="e.g. something calm that holds trades for a day or two, or a quick boat that only trades ETH breakouts"
           className={input}
         />
       </div>
@@ -1241,7 +1241,7 @@ function PropositionCard({
             className={primaryBtn}
             onClick={() => setLaunching(true)}
           >
-            Launch as a bot
+            Launch as a boat
           </button>
         )}
         {(proposition.status === "ranked" || proposition.status === "failed") && !launching && (
@@ -1317,9 +1317,43 @@ function ShipyardView({
     return () => clearInterval(t);
   }, [assessing, load]);
 
+  // Launched and set-aside propositions are filed away so the slipway only shows open choices
+  const [showFiled, setShowFiled] = useState(false);
+  const isFiled = (p: Proposition) => p.status === "launched" || p.status === "discarded";
+  const all = batches.flatMap((b) => b.propositions);
+  const filedCount = all.filter(isFiled).length;
+  const openCount = all.length - filedCount;
+  const shownBatches = batches
+    .map((b) => ({
+      ...b,
+      propositions: b.propositions.filter((p) => isFiled(p) === showFiled)
+    }))
+    .filter((b) => b.propositions.length > 0);
+
   return (
     <div className="space-y-6">
       <BriefForm designer={overview.designer} onDesigned={load} />
+      {all.length > 0 && (
+        <div className="flex gap-2">
+          <Chip selected={!showFiled} onClick={() => setShowFiled(false)}>
+            On the slipway ({openCount})
+          </Chip>
+          <Chip
+            selected={showFiled}
+            onClick={() => setShowFiled(true)}
+            testId="show-filed-propositions"
+          >
+            Launched or set aside ({filedCount})
+          </Chip>
+        </div>
+      )}
+      {all.length > 0 && shownBatches.length === 0 && (
+        <p className="text-sm text-slate-400" data-testid="shipyard-empty">
+          {showFiled
+            ? "Nothing launched or set aside yet."
+            : "Every proposition has been launched or set aside. Draw up a new brief for more."}
+        </p>
+      )}
       {launched && (
         <Banner kind="ok" testId="launch-success-banner">
           <strong>{launched}</strong> has been launched and is now paper trading.{" "}
@@ -1328,7 +1362,7 @@ function ShipyardView({
           </button>
         </Banner>
       )}
-      {batches.map((batch) => (
+      {shownBatches.map((batch) => (
         <section key={batch.batchId} className="space-y-3" data-testid="design-batch">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="text-base font-bold text-slate-100">
@@ -1414,7 +1448,7 @@ function TreasuryView({
   return (
     <div className="space-y-6">
       <Banner kind="info">
-        These are paper wallets: play money for paper-trading bots. Real-money wallets arrive with
+        These are paper wallets: play money for paper-trading boats. Real-money wallets arrive with
         live trading, which isn&apos;t part of this prototype.
       </Banner>
       {error && <Banner kind="danger">{error}</Banner>}
@@ -1430,9 +1464,9 @@ function TreasuryView({
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Stat label="Free to allocate" value={money(w.availableUsdt)} />
               <Stat
-                label="With bots"
+                label="With boats"
                 value={money(w.allocatedUsdt)}
-                hint={`${w.botCount} bot${w.botCount === 1 ? "" : "s"}`}
+                hint={`${w.botCount} boat${w.botCount === 1 ? "" : "s"}`}
               />
             </div>
             <div className="mt-4 flex gap-2">

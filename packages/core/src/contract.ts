@@ -151,7 +151,7 @@ export const keelApiContract = c.router({
         200: FleetOverviewSchema,
         401: ApiErrorSchema
       },
-      summary: "Every bot with its live paper results, plus wallets and fleet totals"
+      summary: "Every boat with its live paper results, plus wallets and fleet totals"
     },
     createWallet: {
       method: "POST",
@@ -204,7 +204,7 @@ export const keelApiContract = c.router({
         409: ApiErrorSchema,
         502: ApiErrorSchema
       },
-      summary: "Ask the bot designer for propositions; each is then backtested and ranked"
+      summary: "Ask the boat designer for propositions; each is then backtested and ranked"
     },
     discardProposition: {
       method: "POST",
@@ -237,7 +237,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Turn a ranked proposition into a paper-trading bot funded from a wallet"
+      summary: "Turn a ranked proposition into a paper-trading boat funded from a wallet"
     },
     pauseBot: {
       method: "POST",
@@ -251,7 +251,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Close the bot's position and stop it trading"
+      summary: "Close the boat's position and stop it trading"
     },
     resumeBot: {
       method: "POST",
@@ -265,7 +265,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Let a paused bot trade again from the next confirmed bar"
+      summary: "Let a paused boat trade again from the next confirmed bar"
     },
     retireBot: {
       method: "POST",
@@ -279,7 +279,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Close the bot's position for good and return its equity to the wallet"
+      summary: "Close the boat's position for good and return its equity to the wallet"
     },
     deleteBot: {
       method: "DELETE",
@@ -293,7 +293,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Retire the bot if needed, then remove it and its trading history"
+      summary: "Retire the boat if needed, then remove it and its trading history"
     }
   },
   system: {

@@ -41,9 +41,9 @@ const DESIGN_RESPONSE_JSON_SCHEMA: Readonly<Record<string, unknown>> = {
   }
 };
 
-const SYSTEM_PROMPT = `You design trading bots for Keel, a self-hosted crypto perpetual-futures lab. Keel's theme is the sea: a keel keeps a ship steady, bots are vessels in a fleet, and every bot gets a short nautical name (1-3 words) that hints at how it trades, e.g. "Trade Wind" for a momentum rider or "Undertow" for a mean-reversion fader. Never use real people, brands or existing products as names.
+const SYSTEM_PROMPT = `You design automated trading boats for Keel, a self-hosted crypto perpetual-futures lab. Keel's theme is the sea: a keel keeps a ship steady, each trading bot is a boat in the operator's fleet, and every boat gets a short nautical name (1-3 words) that hints at how it trades, e.g. "Trade Wind" for a momentum rider or "Undertow" for a mean-reversion fader. Never use real people, brands or existing products as names.
 
-Each bot trades one instrument on confirmed 1-hour bars and is one of five archetypes. Fill the parameters each archetype uses with sensible values; unused parameters still need a value.
+Each boat trades one instrument on confirmed 1-hour bars and is one of five archetypes. Fill the parameters each archetype uses with sensible values; unused parameters still need a value.
 - breakout: enters when the close breaks the highest high (long) or lowest low (short) of the previous lookbackPeriod bars.
 - mean_reversion: fades stretched prices; enters when the lookbackPeriod z-score of the close is beyond -entryThreshold (long) or +entryThreshold (short).
 - momentum: rides impulses; enters when the lookbackPeriod change in close, scaled by ATR, exceeds entryThreshold (long) or -entryThreshold (short).
@@ -162,12 +162,12 @@ export class BotDesigner {
       return {
         source: "sample",
         blueprints: this.finish(sampleBlueprints(brief), brief, takenNames),
-        note: "No Anthropic API key is set, so these are sample propositions. Add the key under Engine Room → Secrets to have Claude design your bots."
+        note: "No Anthropic API key is set, so these are sample propositions. Add the key under Engine Room → Secrets to have Claude design your boats."
       };
     }
 
     const userPrompt = JSON.stringify({
-      request: `Propose ${brief.count} bots.`,
+      request: `Propose ${brief.count} boats.`,
       instruments: brief.instruments,
       preferredStyles: brief.styles.length > 0 ? brief.styles : "any",
       riskAppetite: brief.riskAppetite,

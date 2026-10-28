@@ -423,7 +423,7 @@ export class FleetService {
   public discard(propositionId: string): Proposition {
     const p = this.repo.getProposition(propositionId);
     if (!p) throw new FleetError(404, "Proposition not found");
-    if (p.status === "launched") throw new FleetError(409, "This proposition is already a bot");
+    if (p.status === "launched") throw new FleetError(409, "This proposition is already a boat");
     return this.repo.saveProposition({ ...p, status: "discarded" });
   }
 
@@ -450,11 +450,11 @@ export class FleetService {
       throw new FleetError(400, `The wallet only has ${available.toFixed(2)} USDT available`);
     }
     if (allocation.lt(ScaledDecimal.fromString("100"))) {
-      throw new FleetError(400, "Give the bot at least 100 USDT so it can size a trade");
+      throw new FleetError(400, "Give the boat at least 100 USDT so it can size a trade");
     }
     const name = input.name.trim();
     if (this.repo.listBots().some((b) => b.name.toLowerCase() === name.toLowerCase())) {
-      throw new FleetError(409, `There is already a bot called ${name}`);
+      throw new FleetError(409, `There is already a boat called ${name}`);
     }
 
     const nowMs = this.clock.nowMs();
@@ -522,7 +522,7 @@ export class FleetService {
 
   private requireBot(botId: string): BotRecord {
     const bot = this.repo.getBot(botId);
-    if (!bot) throw new FleetError(404, "Bot not found");
+    if (!bot) throw new FleetError(404, "Boat not found");
     return bot;
   }
 
@@ -545,14 +545,14 @@ export class FleetService {
 
   public pause(botId: string, reason = "Docked by the operator"): Bot {
     const bot = this.requireBot(botId);
-    if (bot.status !== "running") throw new FleetError(409, `The bot is ${bot.status}`);
+    if (bot.status !== "running") throw new FleetError(409, `The boat is ${bot.status}`);
     this.flattenBot(bot, reason);
     return this.botView(this.repo.saveBot({ ...bot, status: "paused", statusReason: reason }));
   }
 
   public resume(botId: string): Bot {
     const bot = this.requireBot(botId);
-    if (bot.status !== "paused") throw new FleetError(409, `The bot is ${bot.status}`);
+    if (bot.status !== "paused") throw new FleetError(409, `The boat is ${bot.status}`);
     const engine = this.engineFor(bot);
     const nowMs = this.clock.nowMs();
     // Skip the bars that closed while docked, and forget any entry queued before the pause
@@ -571,7 +571,7 @@ export class FleetService {
 
   public retire(botId: string): Bot {
     const bot = this.requireBot(botId);
-    if (bot.status === "retired") throw new FleetError(409, "The bot is already retired");
+    if (bot.status === "retired") throw new FleetError(409, "The boat is already retired");
     this.flattenBot(bot, "Retired");
     const equity = this.equityOf(bot);
     const nowMs = this.clock.nowMs();

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Keel Fleet — design, rank, launch and manage paper bots", () => {
+test.describe("Keel Fleet — design, rank, launch and manage paper boats", () => {
   test("signs in to the Fleet, drafts ranked propositions, launches one and retires it", async ({
     page
   }) => {
@@ -43,7 +43,12 @@ test.describe("Keel Fleet — design, rank, launch and manage paper bots", () =>
     await form.getByTestId("launch-submit-btn").click();
     await expect(page.getByTestId("launch-success-banner")).toContainText("E2E Voyager");
 
-    // Fleet: the bot is at sea on paper with its stake
+    // The launched proposition leaves the slipway and is filed with the set-aside ones
+    await expect(page.getByText("Launched into the fleet")).toHaveCount(0);
+    await page.getByTestId("show-filed-propositions").click();
+    await expect(page.getByText("Launched into the fleet")).toBeVisible();
+
+    // Fleet: the boat is at sea on paper with its stake
     await page.getByTestId("tab-fleet").click();
     const botCard = page.getByTestId("bot-card").filter({ hasText: "E2E Voyager" });
     await expect(botCard).toBeVisible();
