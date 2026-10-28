@@ -224,7 +224,8 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
   {
     path: "risk.liveRampMultipliers",
     label: "Live-Ramp Size Multipliers",
-    helpText: "Three-step progression multipliers applied to 1R sizing during Live-Ramp.",
+    helpText:
+      "Fractions of the 1R size a Live-Ramp strategy may trade: below 20 Venue Book trades in stage, from 20, and from 40.",
     unit: "x",
     defaultValue: [0.25, 0.5, 1.0],
     riskClass: "locked-in-live"

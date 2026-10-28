@@ -126,6 +126,11 @@ export interface AuthRateLimitRecord {
 export interface AuthRepository {
   getAdminUser(): AdminUserRecord | null;
   upsertAdminUser(user: AdminUserRecord): void;
+  /**
+   * Records TOTP time step `step` as used, atomically. Returns false when that step or a later one
+   * was already accepted, so a code can never be accepted twice.
+   */
+  consumeTotpStep(step: number): boolean;
   createSession(session: AdminSessionRecord): void;
   getSession(sessionIdHash: string): AdminSessionRecord | null;
   updateSessionStepUp(sessionIdHash: string, stepUpAtMs: number): void;

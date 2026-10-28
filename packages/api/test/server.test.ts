@@ -33,6 +33,24 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("rejects request bodies over 1 MiB before validation runs (zod advisory mitigation)", async () => {
+    const app = await createKeelServer({
+      config: createDefaultConfig(),
+      clock: new ManualClock(1_730_000_000_000)
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ username: "x".repeat(1_100_000), password: "y" })
+      });
+      expect(res.statusCode).toBe(413);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("sends browser security headers on every response (audit-4 L2)", async () => {
     const app = await createKeelServer({
       config: createDefaultConfig(),
@@ -508,6 +526,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       });
       expect(bootRes.statusCode).toBe(200);
       const cookieHeader = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
+      // Gate G2: exchange orders, even on Demo, need an enrolled authenticator
+      await enrollTotp(app, cookieHeader, String(bootRes.json().totpSecretBase32), clock);
 
       // 2. Reject order breaching risk caps (e.g. massive leverage / size beyond 1R risk budget) with 403
       const breachRes = await app.inject({

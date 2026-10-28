@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
   password_salt_hex TEXT NOT NULL,
   totp_secret_base32 TEXT,
   totp_enabled INTEGER NOT NULL DEFAULT 0,
+  totp_last_step INTEGER,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
@@ -250,6 +251,11 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   db.exec(bookSchemaSql("exchange"));
   db.exec(PAPER_SCHEMA_SQL);
   db.exec(SPEC_SCHEMA_SQL);
+  try {
+    db.exec("ALTER TABLE admin_users ADD COLUMN totp_last_step INTEGER");
+  } catch {
+    // Column already exists
+  }
   try {
     db.exec("ALTER TABLE strategy_promotions ADD COLUMN promoted_at_ms INTEGER");
   } catch {
@@ -552,6 +558,16 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
     pruneExpiredSessions(nowMs: number): number {
       const res = db.prepare("DELETE FROM admin_sessions WHERE expires_at_ms <= ?").run(nowMs);
       return Number(res.changes);
+    },
+
+    consumeTotpStep(step: number): boolean {
+      const result = db
+        .prepare(
+          `UPDATE admin_users SET totp_last_step = ?
+           WHERE id = 1 AND (totp_last_step IS NULL OR totp_last_step < ?)`
+        )
+        .run(step, step);
+      return Number(result.changes) === 1;
     },
 
     getRateLimit(key: string): AuthRateLimitRecord | null {
