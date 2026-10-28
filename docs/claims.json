@@ -382,5 +382,29 @@
     "claim": "Synthetic seed data is anchored in the in-sample period, so a default replay never reaches a sealed holdout even when the clock is in 2026 (ADR-0011)",
     "testFile": "packages/api/test/server.test.ts",
     "testName": "anchors synthetic seed data in the in-sample period so a default replay never touches a sealed holdout, even when the clock is in 2026 (ADR-0011)"
+  },
+  {
+    "id": "CLAIM-AUDIT3-EXACT-FILL-SIZE",
+    "claim": "Confirmed fill sizes, including fractional partial fills, are recorded as exact decimal contract quantities.",
+    "testFile": "packages/broker/test/submit-truthfulness.test.ts",
+    "testName": "records a fractional partial fill as an exact decimal contract quantity"
+  },
+  {
+    "id": "CLAIM-AUDIT3-FOREIGN-SHORT-SIDE",
+    "claim": "Emergency flatten buys back an untracked short reported in long/short mode, where OKX reports pos unsigned.",
+    "testFile": "packages/broker/test/foreign-flatten.test.ts",
+    "testName": "buys back an untracked short reported in long/short mode, where pos is unsigned"
+  },
+  {
+    "id": "CLAIM-AUDIT3-FOREIGN-ALL-TRACKED",
+    "claim": "Emergency flatten counts every tracked position on an instrument, so none is double-closed as foreign.",
+    "testFile": "packages/broker/test/foreign-flatten.test.ts",
+    "testName": "does not treat a second tracked position on the same instrument as foreign"
+  },
+  {
+    "id": "CLAIM-AUDIT3-FRESH-SIGNING-TIME",
+    "claim": "Every OKX request in an emergency flatten is signed at the time it is sent.",
+    "testFile": "packages/broker/test/foreign-flatten.test.ts",
+    "testName": "signs every flatten request with the time it is sent, not the time the flatten began"
   }
 ]

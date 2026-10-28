@@ -49,13 +49,21 @@ A two-axis review (standards and spec) of `4e266b3..HEAD` found five gaps in the
   - **M2**: the synthetic seed ended at the current time, which is inside the sealed 2026 holdout, so the replay was correctly refused. The seed is now anchored no later than the start of the in-sample cutoff (2025-01-01), as ADR-0011 requires for test evaluations.
 - **Domain docs**: `GLOSSARY.md` gained Trading Book, Kill Switch and Kill Switch Flatten entries that match the code. ADR-0022 records the book split.
 
-## 4. Still open
+## 4. Medium findings
 
-| Item                                                                                                                 | Risk                                                                                     |
-| :------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------- |
-| Exchange-book equity is seeded from configured capital, not the real OKX balance                                     | Live-Ramp position sizing can be wrong. Reconcile against the account before trusting it |
-| `sizeLots` is `z.number()` and fill size is parsed with `Number(accFillSz)`                                          | Breaks the exact-decimal rule for contract quantities                                    |
-| Flattening untracked (foreign) positions assumes their side, and all closes in one flatten share a signing timestamp | Wrong-side close on an untracked short; possible timestamp rejection                     |
-| `check-claims` matches test names as text only                                                                       | A claim can pass without its test asserting anything                                     |
-| The G2 runbook expects attached-stop fields the code deliberately omits                                              | Operator confusion during G2                                                             |
-| Reviewer cleanups: duplicated step-up check, `"manual-execution"` placeholder strategy ID                            | Maintainability only                                                                     |
+Fixed in a follow-up, each with a failing-first test and a claim where it changes behaviour:
+
+| Finding                                                                | Fix                                                                                                                                                                                      |
+| :--------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fill size parsed with `Number(accFillSz)` and returned as `z.number()` | Fill sizes stay `ScaledDecimal` end to end; `ExchangeOrderResult.sizeLots` is a decimal string. Order input stays an integer lot count, which is exact                                   |
+| Flattening untracked (foreign) positions assumed their side            | In long/short mode OKX reports `pos` unsigned, so the side now comes from `posSide`. Every tracked position on the instrument is subtracted, not just the first, so none is closed twice |
+| All requests in one flatten shared a signing timestamp                 | Every OKX request is signed at the time it is sent, so a slow flatten no longer outlives OKX's 30-second timestamp window                                                                |
+| `check-claims` matched test names as text only                         | `pnpm test` writes Vitest's JSON report, and a claim passes only when its test ran and passed. Skipped, failing or deleted tests now fail the check                                      |
+| The G2 runbook expected attached-stop fields the code omits            | `go-live-checklist.md` now describes the real attached stop, the 15s heartbeat, the Demo-only venue, and the Kill Switch lock                                                            |
+| Duplicated step-up check and `"manual-execution"` literal              | One `stepUpDenied` helper serves all six human-gated routes and always rate-limits on the request IP. The literal is now `MANUAL_EXECUTION_STRATEGY_ID` in `@keel/core`                  |
+
+## 5. Still open
+
+| Item                                                                             | Risk                                                                                                                                                |
+| :------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exchange-book equity is seeded from configured capital, not the real OKX balance | Live-Ramp position sizing can be wrong. Needs an owner decision on how to reconcile, because the ledger's high-water mark and drawdown are affected |
