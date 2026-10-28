@@ -616,5 +616,41 @@
     "claim": "A failed-breakout boat enters only once the close is back inside the channel.",
     "testFile": "packages/spec/test/blueprint.test.ts",
     "testName": "fades a failed breakout only once the close is back inside the channel"
+  },
+  {
+    "id": "CLAIM-INVENTION-CHECK",
+    "claim": "Every invented rule is checked against the Spec language before it can compile, with an error Claude can act on.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "names exactly what is wrong so Claude can repair it"
+  },
+  {
+    "id": "CLAIM-INVENTION-BUDGET",
+    "claim": "Inventions beyond the Spec's size limits are rejected.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "rejects rules beyond Keel's size limits"
+  },
+  {
+    "id": "CLAIM-INVENTION-BRIEF",
+    "claim": "An invention follows the brief's instruments and direction whatever Claude asked for.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "follows the brief's waters and direction whatever the invention asked for"
+  },
+  {
+    "id": "CLAIM-INVENTOR-REPAIR",
+    "claim": "A failed invention goes back to Claude once with Keel's exact complaint.",
+    "testFile": "packages/ai/test/bot-designer.test.ts",
+    "testName": "sends a failed invention back once with Keel's exact complaint"
+  },
+  {
+    "id": "CLAIM-INVENTOR-NO-PRETENDING",
+    "claim": "When nothing Claude invented passes Keel's checks, the Shipyard says so instead of inventing propositions.",
+    "testFile": "packages/ai/test/bot-designer.test.ts",
+    "testName": "refuses to pretend when nothing Claude invented passes"
+  },
+  {
+    "id": "CLAIM-INVENTION-SEA-TRIAL",
+    "claim": "Inventions face the full sea trial, with every window and threshold nudged, before they can launch.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "sea-trials inventions with nudged windows and thresholds, and launches one as a boat"
   }
 ]

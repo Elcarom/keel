@@ -849,6 +849,8 @@ export interface LlmCompletionRequest {
   readonly modelCutoffDate?: string | undefined;
   /** JSON Schema for providers that constrain decoding to a schema; the zod schema still validates. */
   readonly outputJsonSchema?: Readonly<Record<string, unknown>> | undefined;
+  /** "deep" asks providers that support it to think before answering, at higher cost. */
+  readonly reasoning?: "standard" | "deep" | undefined;
 }
 
 export interface LlmCompletionResponse<T = unknown> {

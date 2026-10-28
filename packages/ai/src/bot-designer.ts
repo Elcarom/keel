@@ -12,6 +12,13 @@ import {
   type LlmGateway
 } from "@keel/core";
 import { z } from "zod";
+import {
+  INVENTOR_REPAIR_PROMPT,
+  INVENTOR_SYSTEM_PROMPT,
+  sampleInventions,
+  type InventionChecker,
+  type InventionCheckResult
+} from "./inventor.js";
 
 export interface BotDesignResult {
   readonly source: DesignSource;
@@ -25,7 +32,13 @@ export interface BotDesignerOptions {
   readonly gateway: LlmGateway;
   /** True when a real model can be called; otherwise the designer drafts sample propositions. */
   readonly isLive: () => boolean;
+  /** Checks Inventor-mode rules (from @keel/spec); without it Inventor mode is unavailable. */
+  readonly checkInvention?: InventionChecker | undefined;
 }
+
+const InventionResponseSchema = z.object({
+  propositions: z.array(z.unknown()).min(1).max(8)
+});
 
 const DesignResponseSchema = z.object({
   propositions: z.array(BotBlueprintDraftSchema).min(1).max(8)
@@ -270,14 +283,17 @@ export class BotDesigner {
   private readonly clock: Clock;
   private readonly gateway: LlmGateway;
   private readonly isLive: () => boolean;
+  private readonly checkInvention: InventionChecker | null;
 
   public constructor(options: BotDesignerOptions) {
     this.clock = options.clock;
     this.gateway = options.gateway;
     this.isLive = options.isLive;
+    this.checkInvention = options.checkInvention ?? null;
   }
 
   public async design(brief: DesignBrief, takenNames: readonly string[]): Promise<BotDesignResult> {
+    if (brief.mode === "inventor") return this.invent(brief, takenNames);
     if (!this.isLive()) {
       return {
         source: "sample",
@@ -313,6 +329,96 @@ export class BotDesigner {
     };
   }
 
+  /**
+   * Inventor mode: Claude writes the rules. Every invention is checked; failures go back to Claude
+   * once with Keel's exact complaint, and anything still failing is dropped and named in the note.
+   */
+  private async invent(
+    brief: DesignBrief,
+    takenNames: readonly string[]
+  ): Promise<BotDesignResult> {
+    const check = this.checkInvention;
+    if (!check) throw new Error("Inventor mode is not available on this server");
+    const checkAll = (raws: readonly unknown[]) => raws.map((raw) => check(raw, brief));
+
+    if (!this.isLive()) {
+      const results = checkAll(sampleInventions(brief));
+      return {
+        source: "sample",
+        blueprints: this.uniqueNames(okBlueprints(results), takenNames),
+        note: "No Anthropic API key is set, so these are Keel's own sample inventions. Add the key under Engine Room → Secrets to have Claude invent strategies for you."
+      };
+    }
+
+    const request = (systemPrompt: string, userPrompt: string) =>
+      this.gateway.completeStructured(
+        {
+          featureName: "strategyLab",
+          systemPrompt,
+          userPrompt,
+          asOfMs: this.clock.nowMs(),
+          reasoning: "deep"
+        },
+        InventionResponseSchema
+      );
+
+    const first = await request(
+      INVENTOR_SYSTEM_PROMPT,
+      JSON.stringify({
+        request: `Invent ${brief.count} strategies.`,
+        instruments: brief.instruments,
+        riskAppetite: brief.riskAppetite,
+        direction: brief.direction,
+        operatorNotes: brief.notes || "none",
+        namesAlreadyInTheFleet: takenNames
+      })
+    );
+    let results = checkAll(first.parsed.propositions.slice(0, brief.count));
+
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length > 0) {
+      const repairs = await request(
+        INVENTOR_SYSTEM_PROMPT,
+        `${INVENTOR_REPAIR_PROMPT}\n\n${JSON.stringify(
+          results.flatMap((r, i) =>
+            r.ok ? [] : [{ invention: first.parsed.propositions[i], problem: r.error }]
+          )
+        )}`
+      );
+      const repaired = checkAll(repairs.parsed.propositions.slice(0, failed.length));
+      let next = 0;
+      results = results.map((r) => (r.ok ? r : (repaired[next++] ?? r)));
+    }
+
+    const blueprints = okBlueprints(results);
+    const dropped = results.filter((r): r is Extract<InventionCheckResult, { ok: false }> => !r.ok);
+    if (blueprints.length === 0) {
+      throw new Error(
+        `None of Claude's inventions passed Keel's checks: ${dropped.map((d) => `${d.name} (${d.error})`).join("; ")}`
+      );
+    }
+    return {
+      source: "claude",
+      blueprints: this.uniqueNames(blueprints, takenNames),
+      note:
+        dropped.length > 0
+          ? `${dropped.length} invention${dropped.length === 1 ? "" : "s"} still broke Keel's rule limits after a repair attempt and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.map((d) => d.name).join(", ")}.`
+          : null
+    };
+  }
+
+  private uniqueNames(
+    blueprints: readonly BotBlueprint[],
+    takenNames: readonly string[]
+  ): BotBlueprint[] {
+    const taken = new Set(takenNames.map((n) => n.toLowerCase()));
+    return blueprints.map((b) => {
+      const name = uniqueName(b.name, taken);
+      taken.add(name.toLowerCase());
+      return { ...b, name };
+    });
+  }
+
   private finish(
     drafts: readonly BotBlueprintDraft[],
     brief: DesignBrief,
@@ -332,4 +438,8 @@ export class BotDesigner {
       return { ...blueprint, name };
     });
   }
+}
+
+function okBlueprints(results: readonly InventionCheckResult[]): BotBlueprint[] {
+  return results.flatMap((r) => (r.ok ? [r.blueprint] : []));
 }

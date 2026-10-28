@@ -53,7 +53,7 @@ import {
 } from "@keel/ai";
 import { OkxBroker, okxDemoVenueFor } from "@keel/broker";
 import { ReplayEngine } from "@keel/replay";
-import { StrategySpecV1Schema, computeSpecHash, describeSpec } from "@keel/spec";
+import { StrategySpecV1Schema, checkInvention, computeSpecHash, describeSpec } from "@keel/spec";
 import { BaselineChooser, DEFAULT_STRATEGIES, resolveStrategyById } from "@keel/strategy";
 import { initServer } from "@ts-rest/fastify";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
@@ -192,7 +192,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     claudeGateway.hasApiKey() && !getActiveSnapshot().config.ai.simulateResponses;
   const botDesigner =
     options.botDesigner ??
-    new BotDesigner({ clock, gateway: claudeGateway, isLive: designerIsLive });
+    new BotDesigner({ clock, gateway: claudeGateway, isLive: designerIsLive, checkInvention });
 
   const okxIngestor =
     options.marketIngestor ?? new OkxPublicIngestor({ marketDataRepo: dataStore.marketDataRepo });

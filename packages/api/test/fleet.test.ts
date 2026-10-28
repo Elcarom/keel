@@ -168,6 +168,63 @@ describe("Fleet API", () => {
     }
   }, 60_000);
 
+  it("sea-trials inventions with nudged windows and thresholds, and launches one as a boat", async () => {
+    const { call, clock, dataStore, overview } = await setup();
+    const res = await call("POST", "/api/v1/fleet/designs", {
+      mode: "inventor",
+      instruments: ["BTC-USDT-SWAP"],
+      styles: [],
+      riskAppetite: "balanced",
+      direction: "any",
+      count: 2,
+      notes: "session effects"
+    });
+    expect(res.status).toBe(200);
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 400 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+    }
+    const propositions = batch?.propositions ?? [];
+    expect(propositions).toHaveLength(2);
+    for (const p of propositions) {
+      expect(p.blueprint.archetype).toBe("invented");
+      expect(p.blueprint.invention?.rules[0]).toMatch(/^Long when /);
+      expect(p.assessment?.seaTrial?.neighbours.map((n) => n.label)).toEqual([
+        "Windows −25%",
+        "Windows +33%",
+        "Thresholds −10%",
+        "Thresholds +10%"
+      ]);
+    }
+
+    const wallet = (await overview()).wallets[0] as Wallet;
+    const launched = await call(
+      "POST",
+      `/api/v1/fleet/propositions/${propositions[0]?.propositionId}/launch`,
+      { name: "Inventor One", walletId: wallet.walletId, allocationUsdt: "1000", mode: "paper" }
+    );
+    expect(launched.status).toBe(200);
+    const bot = launched.body["bot"] as Bot;
+    expect(bot.blueprint.invention?.rules).toEqual(propositions[0]?.blueprint.invention?.rules);
+
+    // The invented boat trades confirmed bars after launch like any other
+    clock.advanceMs(10 * 3_600_000);
+    seedSyntheticMarketSeries({
+      marketDataRepo: dataStore.marketDataRepo,
+      instrumentId: "BTC-USDT-SWAP",
+      endCloseTs: clock.nowMs(),
+      barCount1H: 600
+    });
+    const step = await call("POST", "/api/v1/system/scheduler/step");
+    expect(step.status).toBe(200);
+    expect((await overview()).bots[0]?.lastBarAtMs).toBe(
+      Math.floor(clock.nowMs() / 3_600_000) * 3_600_000
+    );
+  }, 90_000);
+
   it("launches a ranked proposition as a paper bot funded from the wallet", async () => {
     const { designAndWait, launch, overview } = await setup();
     const batch = await designAndWait(2);

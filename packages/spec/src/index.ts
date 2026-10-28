@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  INDICATOR_KINDS,
   ScaledDecimal,
   sha256Hex,
   type ConfirmedBar,
@@ -161,7 +162,8 @@ export type NumExpr =
   | { readonly type: "constant"; readonly value: number }
   | {
       readonly type: "bar_field";
-      readonly field: "open" | "high" | "low" | "close" | "volume";
+      /** `hour` (0-23) and `weekday` (0 = Sunday) are UTC, from the bar's open time. */
+      readonly field: "open" | "high" | "low" | "close" | "volume" | "hour" | "weekday";
       readonly shift?: number | undefined;
     }
   | {
@@ -185,7 +187,7 @@ export const NumExprSchema: z.ZodType<NumExpr> = z.lazy(() =>
     }),
     z.object({
       type: z.literal("bar_field"),
-      field: z.enum(["open", "high", "low", "close", "volume"]),
+      field: z.enum(["open", "high", "low", "close", "volume", "hour", "weekday"]),
       shift: z.number().int().min(0).max(500).optional()
     }),
     z.object({
@@ -254,17 +256,7 @@ export const ConditionSchema: z.ZodType<Condition> = z.lazy(() =>
 
 export const IndicatorDefSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum([
-    "donchian",
-    "atr",
-    "sma",
-    "stddev",
-    "zscore",
-    "momentum",
-    "ema",
-    "rsi",
-    "volume_sma"
-  ]),
+  kind: z.enum(INDICATOR_KINDS),
   period: z.number().int().min(2).max(500),
   params: z.record(z.string(), z.union([z.number(), z.string()])).optional()
 });
@@ -657,6 +649,10 @@ function evaluateNumExpr(
           return Number(bar.close);
         case "volume":
           return Number(bar.volumeContracts);
+        case "hour":
+          return new Date(bar.openTs).getUTCHours();
+        case "weekday":
+          return new Date(bar.openTs).getUTCDay();
       }
       return 0;
     }
@@ -1105,3 +1101,5 @@ export const SYNTHETIC_DONCHIAN_FIXTURE_SPEC: StrategySpecV1 = {
   synthetic: true
 };
 export * from "./blueprint.js";
+export * from "./invention.js";
+export * from "./invention-check.js";

@@ -24,6 +24,45 @@ export const BOT_ARCHETYPES = [
 export const BotArchetypeSchema = z.enum(BOT_ARCHETYPES);
 export type BotArchetype = z.infer<typeof BotArchetypeSchema>;
 
+/** A blueprint is one of the reviewed archetypes, or rules Claude invented (see Invention). */
+export const BlueprintArchetypeSchema = z.enum([...BOT_ARCHETYPES, "invented"]);
+export type BlueprintArchetype = z.infer<typeof BlueprintArchetypeSchema>;
+
+/** Indicator kinds the Strategy Spec language can compute; the single source for every layer. */
+export const INDICATOR_KINDS = [
+  "donchian",
+  "atr",
+  "sma",
+  "stddev",
+  "zscore",
+  "momentum",
+  "ema",
+  "rsi",
+  "volume_sma"
+] as const;
+export type IndicatorKind = (typeof INDICATOR_KINDS)[number];
+
+/**
+ * Rules Claude wrote itself, in the Strategy Spec condition language. Stored as data and
+ * validated by @keel/spec before anything compiles; `rules` is Keel's plain-English rendering.
+ */
+export const InventionSchema = z.object({
+  indicators: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(24),
+        kind: z.enum(INDICATOR_KINDS),
+        period: z.number().int().min(2).max(200)
+      })
+    )
+    .min(1)
+    .max(6),
+  longEntry: z.unknown(),
+  shortEntry: z.unknown(),
+  rules: z.array(z.string())
+});
+export type Invention = z.infer<typeof InventionSchema>;
+
 export const FLEET_INSTRUMENTS = [
   "BTC-USDT-SWAP",
   "ETH-USDT-SWAP",
@@ -60,7 +99,8 @@ export const BOT_DIRECTIONS = ["both", "long_only", "short_only"] as const;
 export const BotDirectionSchema = z.enum(BOT_DIRECTIONS);
 export type BotDirection = z.infer<typeof BotDirectionSchema>;
 
-export const ARCHETYPE_LABELS: Readonly<Record<BotArchetype, string>> = {
+export const ARCHETYPE_LABELS: Readonly<Record<BlueprintArchetype, string>> = {
+  invented: "Invented rules",
   breakout: "Channel breakout",
   mean_reversion: "Mean reversion",
   momentum: "Momentum",
@@ -112,6 +152,9 @@ export const BotBlueprintDraftSchema = z.object({
 export type BotBlueprintDraft = z.infer<typeof BotBlueprintDraftSchema>;
 
 export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
+  archetype: BlueprintArchetypeSchema,
+  /** Present exactly when archetype is "invented". */
+  invention: InventionSchema.nullable().default(null),
   name: z.string().min(1).max(40),
   tagline: z.string().min(1).max(160),
   lookbackPeriod: z.number().int().min(5).max(200),
@@ -192,15 +235,24 @@ export function normalizeBlueprint(draft: BotBlueprintDraft): BotBlueprint {
     entryThreshold: clampNum(draft.entryThreshold, 0.2, 4),
     stopAtrMultiple: clampNum(draft.stopAtrMultiple, 0.5, 6),
     rewardMultiple: clampNum(draft.rewardMultiple, 0.8, 6),
-    rationale: draft.rationale.trim().slice(0, 600)
+    rationale: draft.rationale.trim().slice(0, 600),
+    invention: null
   });
 }
 
 export const RiskAppetiteSchema = z.enum(["cautious", "balanced", "bold"]);
 export type RiskAppetite = z.infer<typeof RiskAppetiteSchema>;
 
+/**
+ * Blueprint mode fills one of the reviewed archetypes; Inventor mode lets Claude write new rules
+ * in the Strategy Spec language.
+ */
+export const DesignModeSchema = z.enum(["blueprint", "inventor"]);
+export type DesignMode = z.infer<typeof DesignModeSchema>;
+
 /** The operator's guided request to the Shipyard. */
 export const DesignBriefSchema = z.object({
+  mode: DesignModeSchema.default("blueprint"),
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
   /** Empty means "surprise me": any archetype. */
   styles: z.array(BotArchetypeSchema).max(BOT_ARCHETYPES.length),

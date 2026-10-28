@@ -18,6 +18,7 @@ import {
   splitIntoPeriods,
   type ReplayRunResult
 } from "@keel/replay";
+import { nudgeInvention } from "@keel/spec";
 
 // ============================================================================
 // Sea trials: how a Proposition is judged before it may launch. One full backtest plus re-runs
@@ -71,7 +72,18 @@ const IGNORES_THRESHOLD: ReadonlySet<BotArchetype> = new Set([
 export function neighbourBlueprints(
   b: BotBlueprint
 ): readonly { readonly label: string; readonly blueprint: BotBlueprint }[] {
-  const nudge = (changes: Partial<BotBlueprint>) => normalizeBlueprint({ ...b, ...changes });
+  // Inventions have no fixed parameters: nudge every window, then every threshold in the rules
+  const archetype = b.archetype;
+  if (archetype === "invented") {
+    return [
+      { label: "Windows −25%", blueprint: nudgeInvention(b, 0.75, 1) },
+      { label: "Windows +33%", blueprint: nudgeInvention(b, 1.33, 1) },
+      { label: "Thresholds −10%", blueprint: nudgeInvention(b, 1, 0.9) },
+      { label: "Thresholds +10%", blueprint: nudgeInvention(b, 1, 1.1) }
+    ];
+  }
+  const nudge = (changes: Partial<BotBlueprint>) =>
+    normalizeBlueprint({ ...b, ...changes, archetype });
   const windows = [
     {
       label: "Window −25%",
@@ -88,7 +100,7 @@ export function neighbourBlueprints(
       })
     }
   ];
-  if (IGNORES_THRESHOLD.has(b.archetype)) {
+  if (IGNORES_THRESHOLD.has(archetype)) {
     return [
       ...windows,
       { label: "Stop −25%", blueprint: nudge({ stopAtrMultiple: b.stopAtrMultiple * 0.75 }) },

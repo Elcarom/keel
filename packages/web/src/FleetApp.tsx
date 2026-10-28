@@ -8,8 +8,10 @@ import {
   keelApiContract,
   type ArchetypeFamily,
   type Assessment,
+  type BlueprintArchetype,
   type Bot,
   type BotArchetype,
+  type DesignMode,
   type DesignBatch,
   type DesignBrief,
   type FleetInstrument,
@@ -92,7 +94,7 @@ function ArchetypeIcon({
   archetype,
   className = "h-5 w-5"
 }: {
-  archetype: BotArchetype;
+  archetype: BlueprintArchetype;
   className?: string;
 }) {
   const common = {
@@ -193,6 +195,13 @@ function ArchetypeIcon({
           <path d="M3 19h4l4-15 3 9h7" />
         </svg>
       );
+    case "invented":
+      return (
+        <svg {...common}>
+          <path d="M12 2.5 14 10l7.5 2-7.5 2-2 7.5-2-7.5-7.5-2 7.5-2Z" />
+          <circle cx="12" cy="12" r="1.2" />
+        </svg>
+      );
     case "capitulation_fade":
       return (
         <svg {...common}>
@@ -202,6 +211,30 @@ function ArchetypeIcon({
         </svg>
       );
   }
+}
+
+/** An invention's rules as Keel reads them, one line each. */
+function InventionRules({ rules }: { rules: readonly string[] }) {
+  return (
+    <ul className="space-y-1 rounded-xl border border-violet-400/25 bg-violet-400/5 p-3 text-xs text-slate-200">
+      {rules.map((r) => (
+        <li key={r} className="flex gap-2">
+          <span aria-hidden className="text-violet-300">
+            ›
+          </span>
+          {r}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function InventedBadge({ sample }: { sample: boolean }) {
+  return (
+    <span className="rounded-full border border-violet-400/40 bg-violet-400/10 px-2 py-0.5 text-[11px] font-semibold text-violet-200">
+      {sample ? "✦ Sample invention" : "✦ Invented by Claude"}
+    </span>
+  );
 }
 
 function KeelMark() {
@@ -660,18 +693,24 @@ function BotLogbook({ bot }: { bot: Bot }) {
       <div>
         <h4 className="mb-2 font-semibold text-slate-200">How it sails</h4>
         <p className="text-slate-300">{b.rationale}</p>
-        <p className="mt-2 font-mono-tabular text-slate-400">
-          window {b.lookbackPeriod}h
-          {b.archetype === "ma_crossover" || b.archetype === "trend_pullback"
-            ? ` · fast ${b.fastPeriod}h`
-            : ""}
-          {b.archetype === "mean_reversion" ||
-          b.archetype === "momentum" ||
-          b.archetype === "trend_pullback"
-            ? ` · trigger ${b.entryThreshold}`
-            : ""}{" "}
-          · stop {b.stopAtrMultiple}× ATR · target {b.rewardMultiple}R
-        </p>
+        {b.invention ? (
+          <div className="mt-2">
+            <InventionRules rules={b.invention.rules} />
+          </div>
+        ) : (
+          <p className="mt-2 font-mono-tabular text-slate-400">
+            window {b.lookbackPeriod}h
+            {b.archetype === "ma_crossover" || b.archetype === "trend_pullback"
+              ? ` · fast ${b.fastPeriod}h`
+              : ""}
+            {b.archetype === "mean_reversion" ||
+            b.archetype === "momentum" ||
+            b.archetype === "trend_pullback"
+              ? ` · trigger ${b.entryThreshold}`
+              : ""}{" "}
+            · stop {b.stopAtrMultiple}× ATR · target {b.rewardMultiple}R
+          </p>
+        )}
       </div>
       {bot.backtest && (
         <div>
@@ -868,6 +907,7 @@ function BriefForm({
   designer: FleetOverview["designer"];
 }) {
   const [brief, setBrief] = useState<DesignBrief>({
+    mode: "blueprint",
     instruments: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
     styles: [],
     riskAppetite: "balanced",
@@ -913,9 +953,9 @@ function BriefForm({
         <div>
           <h2 className="text-lg font-bold text-slate-50">Draw up a brief</h2>
           <p className="text-sm text-slate-400">
-            Claude drafts the propositions. Keel then puts every one through a sea trial: two years
-            of hourly data, doubled costs, walk-forward, nudged settings and a sibling market. Then
-            it ranks them.
+            {brief.mode === "inventor"
+              ? "Claude invents brand-new entry rules. Keel checks every rule, attaches the stop and puts each invention through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged windows and thresholds, and a sibling market. Then it ranks them."
+              : "Claude drafts the propositions. Keel then puts every one through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market. Then it ranks them."}
           </p>
         </div>
         <span
@@ -930,6 +970,45 @@ function BriefForm({
             ? `Designer: Claude (${designer.model})`
             : "Designer: sample mode (no Anthropic key)"}
         </span>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Design mode">
+        {(
+          [
+            [
+              "blueprint",
+              "Blueprints",
+              "Claude picks and tunes one of 13 reviewed strategy shapes."
+            ],
+            [
+              "inventor",
+              "✦ Inventor",
+              "Claude writes brand-new rules from indicators, price, volume and the clock. Thinks harder; costs a little more per brief."
+            ]
+          ] as const
+        ).map(([mode, label, hint]) => {
+          const selected = brief.mode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              data-testid={`mode-${mode}`}
+              onClick={() => setBrief((b) => ({ ...b, mode: mode as DesignMode }))}
+              className={`rounded-xl border p-3 text-left transition ${
+                selected
+                  ? mode === "inventor"
+                    ? "border-violet-400 bg-violet-400/10"
+                    : "border-teal-400 bg-teal-400/10"
+                  : "border-[#2B3947] hover:border-slate-400"
+              }`}
+            >
+              <span className="block text-sm font-semibold text-slate-100">{label}</span>
+              <span className="block text-xs text-slate-400">{hint}</span>
+            </button>
+          );
+        })}
       </div>
 
       <fieldset>
@@ -966,52 +1045,54 @@ function BriefForm({
         </div>
       </fieldset>
 
-      <fieldset>
-        <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Styles{" "}
-          <span className="tracking-normal normal-case text-slate-500">
-            — pick none to let Claude surprise you
-          </span>
-        </legend>
-        <div className="space-y-3">
-          {ARCHETYPE_FAMILIES.map((family) => (
-            <div key={family}>
-              <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
-                {FAMILY_LABELS[family]}
-              </p>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {BOT_ARCHETYPES.filter((a) => ARCHETYPE_FAMILY[a] === family).map((s) => {
-                  const selected = brief.styles.includes(s);
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      aria-pressed={selected}
-                      data-testid={`style-${s}`}
-                      onClick={() => toggleStyle(s)}
-                      className={`flex items-start gap-3 rounded-xl border p-3 text-left transition ${
-                        selected
-                          ? "border-teal-400 bg-teal-400/10"
-                          : "border-[#2B3947] hover:border-slate-400"
-                      }`}
-                    >
-                      <span className={selected ? "text-teal-200" : "text-slate-400"}>
-                        <ArchetypeIcon archetype={s} />
-                      </span>
-                      <span>
-                        <span className="block text-sm font-semibold text-slate-100">
-                          {ARCHETYPE_LABELS[s]}
+      {brief.mode === "blueprint" && (
+        <fieldset>
+          <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+            Styles{" "}
+            <span className="tracking-normal normal-case text-slate-500">
+              — pick none to let Claude surprise you
+            </span>
+          </legend>
+          <div className="space-y-3">
+            {ARCHETYPE_FAMILIES.map((family) => (
+              <div key={family}>
+                <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
+                  {FAMILY_LABELS[family]}
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {BOT_ARCHETYPES.filter((a) => ARCHETYPE_FAMILY[a] === family).map((s) => {
+                    const selected = brief.styles.includes(s);
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        aria-pressed={selected}
+                        data-testid={`style-${s}`}
+                        onClick={() => toggleStyle(s)}
+                        className={`flex items-start gap-3 rounded-xl border p-3 text-left transition ${
+                          selected
+                            ? "border-teal-400 bg-teal-400/10"
+                            : "border-[#2B3947] hover:border-slate-400"
+                        }`}
+                      >
+                        <span className={selected ? "text-teal-200" : "text-slate-400"}>
+                          <ArchetypeIcon archetype={s} />
                         </span>
-                        <span className="block text-xs text-slate-400">{ARCHETYPE_HINTS[s]}</span>
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span>
+                          <span className="block text-sm font-semibold text-slate-100">
+                            {ARCHETYPE_LABELS[s]}
+                          </span>
+                          <span className="block text-xs text-slate-400">{ARCHETYPE_HINTS[s]}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      </fieldset>
+            ))}
+          </div>
+        </fieldset>
+      )}
 
       <div className="grid gap-5 md:grid-cols-3">
         <fieldset>
@@ -1076,7 +1157,7 @@ function BriefForm({
           htmlFor="brief-notes"
           className="mb-2 block text-xs font-semibold tracking-wide text-slate-400 uppercase"
         >
-          Anything else for Claude?
+          {brief.mode === "inventor" ? "What edge are you hunting?" : "Anything else for Claude?"}
         </label>
         <textarea
           id="brief-notes"
@@ -1085,7 +1166,11 @@ function BriefForm({
           maxLength={1000}
           value={brief.notes}
           onChange={(e) => setBrief((b) => ({ ...b, notes: e.target.value }))}
-          placeholder="e.g. something calm that holds trades for a day or two, or a quick boat that only trades ETH breakouts"
+          placeholder={
+            brief.mode === "inventor"
+              ? "e.g. fade the moves thin weekend books leave behind, or catch breakouts when Europe wakes up"
+              : "e.g. something calm that holds trades for a day or two, or a quick boat that only trades ETH breakouts"
+          }
           className={input}
         />
       </div>
@@ -1099,7 +1184,13 @@ function BriefForm({
           className={primaryBtn}
           disabled={submitting}
         >
-          {submitting ? "Claude is sketching hulls…" : "Draft propositions"}
+          {submitting
+            ? brief.mode === "inventor"
+              ? "Claude is at the drawing table…"
+              : "Claude is sketching hulls…"
+            : brief.mode === "inventor"
+              ? "Commission inventions"
+              : "Draft propositions"}
         </button>
       </div>
     </form>
@@ -1517,6 +1608,7 @@ function PropositionCard({
                   {rankLabel}
                 </span>
               )}
+              {b.invention && <InventedBadge sample={proposition.source === "sample"} />}
             </div>
             <p className="text-xs text-slate-400">
               {ARCHETYPE_LABELS[b.archetype]} · {pair(b.instrumentId)} ·{" "}
@@ -1546,6 +1638,12 @@ function PropositionCard({
           )}
         </div>
       </div>
+
+      {b.invention && (
+        <div className="mt-3" data-testid="invention-rules">
+          <InventionRules rules={b.invention.rules} />
+        </div>
+      )}
 
       {proposition.status === "failed" && (
         <p className="mt-3 text-sm text-rose-200">The sea trial failed: {proposition.error}</p>
@@ -1648,10 +1746,12 @@ function PropositionCard({
       {showWhy && (
         <div className="mt-3 space-y-1 rounded-xl bg-[#0F1419] p-3 text-xs text-slate-300">
           <p>{b.rationale}</p>
-          <p className="font-mono-tabular text-slate-400">
-            window {b.lookbackPeriod}h · fast {b.fastPeriod}h · trigger {b.entryThreshold} · stop{" "}
-            {b.stopAtrMultiple}× ATR · target {b.rewardMultiple}R
-          </p>
+          {!b.invention && (
+            <p className="font-mono-tabular text-slate-400">
+              window {b.lookbackPeriod}h · fast {b.fastPeriod}h · trigger {b.entryThreshold} · stop{" "}
+              {b.stopAtrMultiple}× ATR · target {b.rewardMultiple}R
+            </p>
+          )}
         </div>
       )}
 

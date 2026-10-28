@@ -180,6 +180,14 @@ _Avoid_: Allocation (in operator-facing text), budget
 A bounded description of a Boat's trading idea: one of a fixed set of archetypes plus clamped parameters, compiled deterministically into a Strategy Spec.
 _Avoid_: Prompt, config, recipe
 
+**Invention**:
+Entry rules Claude wrote itself in the Strategy Spec condition language, instead of tuning one of the reviewed archetypes. Keel checks every Invention against the language's limits, attaches the protective stop and take-profit itself, and renders the rules in plain English. A Blueprint holds at most one Invention.
+_Avoid_: Custom strategy, AI strategy (the AI never trades it; the compiled rules do)
+
+**Inventor Mode**:
+The Shipyard mode in which Claude writes Inventions rather than filling Blueprints.
+_Avoid_: Free mode, creative mode
+
 **Proposition**:
 A Blueprint offered as a candidate Boat, with its Sea Trial Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
 _Avoid_: Proposal, idea, candidate strategy

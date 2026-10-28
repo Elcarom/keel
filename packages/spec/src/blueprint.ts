@@ -6,6 +6,7 @@ import {
   type NumExpr,
   type StrategySpecV1
 } from "./index.js";
+import { conditionShift, parseInventionRules } from "./invention.js";
 
 // ============================================================================
 // Boat Blueprints: the flat, bounded shape an LLM fills in. Deterministic code (never the model)
@@ -60,6 +61,16 @@ function rulesFor(b: BotBlueprint): ArchetypeRules {
   const F = b.fastPeriod;
   const T = b.entryThreshold;
   switch (b.archetype) {
+    case "invented": {
+      if (!b.invention) throw new Error("An invented blueprint needs its invention");
+      const rules = parseInventionRules(b.invention);
+      return {
+        indicators: rules.indicators,
+        longEntry: rules.longEntry,
+        shortEntry: rules.shortEntry,
+        extraBars: Math.max(conditionShift(rules.longEntry), conditionShift(rules.shortEntry))
+      };
+    }
     case "breakout":
       return {
         indicators: [{ id: "channel", kind: "donchian", period: L }],
@@ -275,7 +286,11 @@ export function compileBlueprint(blueprint: BotBlueprint, specName: string): Str
   return StrategySpecV1Schema.parse({
     name: specName,
     version: 1,
-    description: `${ARCHETYPE_LABELS[blueprint.archetype]} on ${blueprint.instrumentId}: ${blueprint.tagline}`,
+    description:
+      `${ARCHETYPE_LABELS[blueprint.archetype]} on ${blueprint.instrumentId}: ${blueprint.tagline}`.slice(
+        0,
+        2000
+      ),
     timeframe: "1H",
     lookbacks: { "1H": Math.min(MAX_LOOKBACK_BARS, longest + rules.extraBars + 2) },
     indicators: rules.indicators,

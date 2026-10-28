@@ -769,3 +769,9 @@ export {
   type BotDesignResult,
   type BotDesignerOptions
 } from "./bot-designer.js";
+export {
+  INVENTOR_SYSTEM_PROMPT,
+  sampleInventions,
+  type InventionChecker,
+  type InventionCheckResult
+} from "./inventor.js";

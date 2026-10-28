@@ -29,6 +29,13 @@ function estimateClaudeCostUsd(inputTokens: number, outputTokens: number): numbe
 
 const MAX_OUTPUT_TOKENS = 16_000;
 
+/** Without a schema-constrained answer, Claude may wrap its JSON in prose or a code fence. */
+function extractJsonObject(text: string): string {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  return start >= 0 && end > start ? text.slice(start, end + 1) : text;
+}
+
 function defaultClient(apiKey: string): ClaudeMessagesClient {
   const client = new Anthropic({ apiKey });
   return { create: (params) => client.beta.messages.create(params) };
@@ -119,8 +126,10 @@ export class ClaudeLlmGateway implements LlmGateway {
       fallbacks: "default",
       system: request.systemPrompt,
       messages: [{ role: "user", content: request.userPrompt }],
+      // Deep requests let Claude think first, as much as the problem needs
+      ...(request.reasoning === "deep" ? { thinking: { type: "adaptive" as const } } : {}),
       output_config: {
-        effort: "medium",
+        effort: request.reasoning === "deep" ? "high" : "medium",
         ...(request.outputJsonSchema
           ? { format: { type: "json_schema", schema: { ...request.outputJsonSchema } } }
           : {})
@@ -144,7 +153,9 @@ export class ClaudeLlmGateway implements LlmGateway {
     const rawText = message.content
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
-    const parsed = schema.parse(JSON.parse(rawText));
+    const parsed = schema.parse(
+      JSON.parse(request.outputJsonSchema ? rawText : extractJsonObject(rawText))
+    );
 
     const cutoffTs = Date.parse(
       `${request.modelCutoffDate ?? config.trainingCutoffDate}T00:00:00.000Z`
