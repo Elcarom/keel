@@ -84,6 +84,8 @@ export interface KeelServerOptions {
   readonly webDistPath?: string | undefined;
   readonly logger?: boolean | undefined;
   readonly enableScheduler?: boolean | undefined;
+  /** Lets session cookies work over plain HTTP (LAN testing); HTTPS requests still get Secure. */
+  readonly allowInsecureHttp?: boolean | undefined;
   readonly schedulerIntervalMs?: number | undefined;
   readonly scheduler?: UnattendedScheduler | undefined;
 }
@@ -699,7 +701,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           });
           reply.header(
             "set-cookie",
-            formatSessionCookieHeader(loginRes.sessionToken, ingress.forwardedProto)
+            formatSessionCookieHeader(loginRes.sessionToken, ingress.forwardedProto, {
+              allowInsecureHttp: options.allowInsecureHttp === true
+            })
           );
           dataStore.auditRepo.append({
             ts: clock.nowMs(),
@@ -756,7 +760,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           });
           reply.header(
             "set-cookie",
-            formatSessionCookieHeader(loginRes.sessionToken, ingress.forwardedProto)
+            formatSessionCookieHeader(loginRes.sessionToken, ingress.forwardedProto, {
+              allowInsecureHttp: options.allowInsecureHttp === true
+            })
           );
           dataStore.auditRepo.append({
             ts: clock.nowMs(),

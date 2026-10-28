@@ -33,6 +33,43 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("keeps the session cookie Secure in production unless plain-HTTP LAN access is explicitly allowed", async () => {
+    const previousNodeEnv = process.env["NODE_ENV"];
+    process.env["NODE_ENV"] = "production";
+    const bootstrapOverHttp = async (allowInsecureHttp: boolean) => {
+      let bootstrapToken = "";
+      const app = await createKeelServer({
+        config: createDefaultConfig(),
+        clock: new ManualClock(1_730_000_000_000),
+        allowInsecureHttp,
+        onBootstrapToken: (t) => {
+          bootstrapToken = t;
+        }
+      });
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/auth/bootstrap",
+          payload: { bootstrapToken, username: "captain", password: "correct-horse-battery-staple" }
+        });
+        expect(res.statusCode).toBe(200);
+        return String(res.headers["set-cookie"] ?? "");
+      } finally {
+        await app.close();
+      }
+    };
+    try {
+      expect(await bootstrapOverHttp(false)).toContain("Secure");
+      expect(await bootstrapOverHttp(true)).not.toContain("Secure");
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env["NODE_ENV"];
+      } else {
+        process.env["NODE_ENV"] = previousNodeEnv;
+      }
+    }
+  });
+
   it("rejects request bodies over 1 MiB before validation runs (zod advisory mitigation)", async () => {
     const app = await createKeelServer({
       config: createDefaultConfig(),

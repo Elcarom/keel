@@ -924,7 +924,10 @@ export function resolveIngressContext(input: {
 export function formatSessionCookieHeader(
   sessionToken: string,
   forwardedProto: "http" | "https",
-  maxAgeSeconds = 12 * 60 * 60
+  {
+    allowInsecureHttp = false,
+    maxAgeSeconds = 12 * 60 * 60
+  }: { readonly allowInsecureHttp?: boolean; readonly maxAgeSeconds?: number } = {}
 ): string {
   const parts = [
     `keel_session=${sessionToken}`,
@@ -933,7 +936,10 @@ export function formatSessionCookieHeader(
     "SameSite=Strict",
     `Max-Age=${maxAgeSeconds}`
   ];
-  if (forwardedProto === "https" || process.env["NODE_ENV"] === "production") {
+  // Production cookies are Secure, which browsers will not store from a plain-HTTP page. Operators
+  // who test over plain HTTP on a LAN opt out with KEEL_ALLOW_INSECURE_HTTP; HTTPS stays Secure.
+  const productionDefault = process.env["NODE_ENV"] === "production" && !allowInsecureHttp;
+  if (forwardedProto === "https" || productionDefault) {
     parts.push("Secure");
   }
   return parts.join("; ");

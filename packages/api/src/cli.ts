@@ -26,8 +26,15 @@ async function main(): Promise<void> {
     dbPath,
     backupsDir,
     enableScheduler: process.env["KEEL_ENABLE_SCHEDULER"] === "true",
+    allowInsecureHttp: process.env["KEEL_ALLOW_INSECURE_HTTP"] === "true",
     logger: true
   });
+
+  if (process.env["KEEL_ALLOW_INSECURE_HTTP"] === "true") {
+    app.log.warn(
+      "KEEL_ALLOW_INSECURE_HTTP=true: session cookies are sent over plain HTTP. Use only on a trusted LAN for testing; expose Keel through HTTPS (Cloudflare Tunnel) otherwise."
+    );
+  }
 
   const shutdown = async (signal: string) => {
     app.log.info(

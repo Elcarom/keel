@@ -508,5 +508,11 @@
     "claim": "Request bodies over 1 MiB are rejected before validation.",
     "testFile": "packages/api/test/server.test.ts",
     "testName": "rejects request bodies over 1 MiB before validation runs (zod advisory mitigation)"
+  },
+  {
+    "id": "CLAIM-INSECURE-HTTP-OPT-IN",
+    "claim": "Production session cookies stay Secure unless plain-HTTP LAN access is explicitly allowed.",
+    "testFile": "packages/api/test/server.test.ts",
+    "testName": "keeps the session cookie Secure in production unless plain-HTTP LAN access is explicitly allowed"
   }
 ]
