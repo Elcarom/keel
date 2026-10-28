@@ -388,6 +388,49 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
     }
   });
 
+  it("anchors synthetic seed data in the in-sample period so a default replay never touches a sealed holdout, even when the clock is in 2026 (ADR-0011)", async () => {
+    const clock = new ManualClock(1_793_000_000_000); // 2026-10-27, inside the sealed 2026 partition
+    let bootstrapToken = "";
+    const app = await createKeelServer({
+      clock,
+      dbPath: join(tempDir, "keel-seed.sqlite"),
+      backupsDir: join(tempDir, "backups"),
+      masterKeyMaterial: "a-secure-master-key-with-at-least-32-chars!",
+      onBootstrapToken: (t) => {
+        bootstrapToken = t;
+      }
+    });
+
+    try {
+      const bootRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/bootstrap",
+        headers: { "cf-connecting-ip": "203.0.113.42", "x-forwarded-proto": "https" },
+        payload: { bootstrapToken, username: "captain", password: "correct-horse-battery-staple" }
+      });
+      const cookieHeader = String(bootRes.headers["set-cookie"] ?? "").split(";")[0] ?? "";
+
+      const seedRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/market/seed-synthetic",
+        headers: { cookie: cookieHeader },
+        payload: { instrumentId: "BTC-USDT-SWAP", barCount1H: 240 }
+      });
+      expect(seedRes.statusCode).toBe(200);
+      expect(seedRes.json().snapshot.toTs).toBeLessThanOrEqual(1_735_689_600_000); // 2025-01-01
+
+      const runReplayRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/replay/run",
+        headers: { cookie: cookieHeader },
+        payload: { strategyId: "donchian-trend-v1", instrumentId: "BTC-USDT-SWAP", timeframe: "1H" }
+      });
+      expect(runReplayRes.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("routes POST /api/v1/broker/orders through RiskGuardian, rejects risk breaches with 403, and records true strategyId & initialRiskUsdt (C3)", async () => {
     const clock = new ManualClock(1_730_000_000_000);
     const dbPath = join(tempDir, "keel-broker.sqlite");

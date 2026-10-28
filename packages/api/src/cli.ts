@@ -17,6 +17,10 @@ async function main(): Promise<void> {
       system: {
         ...config.system,
         port
+      },
+      ai: {
+        ...config.ai,
+        simulateResponses: process.env["KEEL_AI_SIMULATE_RESPONSES"] === "true"
       }
     },
     dbPath,

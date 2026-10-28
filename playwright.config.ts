@@ -23,7 +23,11 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 30_000,
     env: {
-      KEEL_BOOTSTRAP_TOKEN: "keel-e2e-bootstrap-token-2026"
+      KEEL_BOOTSTRAP_TOKEN: "keel-e2e-bootstrap-token-2026",
+      // Test-only key: the vault refuses to run without a strong one (ADR-0013)
+      KEEL_MASTER_KEY: "keel-e2e-only-vault-key-Qx7mP2vR9tL4wZ8n",
+      // Deterministic AI responses so the suite never calls Gemini
+      KEEL_AI_SIMULATE_RESPONSES: "true"
     }
   }
 });
