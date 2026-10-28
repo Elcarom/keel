@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  MANUAL_EXECUTION_STRATEGY_ID,
   createDefaultConfig,
   defaultInstrumentSpec,
   sha256Hex,
@@ -277,7 +278,7 @@ export class OkxBroker implements ExchangeBroker {
         path,
         body,
         credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
         isDemo: this.isDemoVenue()
       });
 
@@ -439,7 +440,7 @@ export class OkxBroker implements ExchangeBroker {
     let orderId = `ord${clOrdId}`;
     let algoOrderId = `algo${algoClOrdId}`;
     let fillPriceStr = input.entryPrice;
-    let actualSizeLots = input.sizeLots;
+    let actualContracts = ScaledDecimal.fromString(String(input.sizeLots));
     let feeUsdtOverride: ScaledDecimal | null = null;
     let isFillConfirmed = false;
 
@@ -449,7 +450,7 @@ export class OkxBroker implements ExchangeBroker {
         path,
         body: bodyStr,
         credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
         isDemo: this.isDemoVenue()
       });
 
@@ -503,7 +504,7 @@ export class OkxBroker implements ExchangeBroker {
         method: "GET",
         path: orderQueryPath,
         credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
         isDemo: this.isDemoVenue()
       });
 
@@ -545,9 +546,14 @@ export class OkxBroker implements ExchangeBroker {
             }
 
             if (fillItem.accFillSz && fillItem.accFillSz.trim() !== "") {
-              const parsedSz = Number(fillItem.accFillSz);
-              if (!Number.isNaN(parsedSz) && parsedSz > 0) {
-                actualSizeLots = parsedSz;
+              try {
+                const filledContracts = ScaledDecimal.fromString(fillItem.accFillSz.trim());
+                if (filledContracts.isPositive()) {
+                  actualContracts = filledContracts;
+                }
+              } catch {
+                // Malformed accFillSz; keep the requested size and leave the fill unconfirmed
+                isFillConfirmed = false;
               }
             }
             if (fillItem.fee && fillItem.fee.trim() !== "") {
@@ -584,7 +590,7 @@ export class OkxBroker implements ExchangeBroker {
           method: "GET",
           path: algoPath,
           credentials: creds,
-          timestampIso: new Date(nowMs).toISOString(),
+          timestampIso: new Date(this.clock.nowMs()).toISOString(),
           isDemo: this.isDemoVenue()
         });
 
@@ -646,7 +652,7 @@ export class OkxBroker implements ExchangeBroker {
     }
 
     const fillPxDec = ScaledDecimal.fromString(fillPriceStr);
-    const contractsDec = ScaledDecimal.fromString(String(actualSizeLots));
+    const contractsDec = actualContracts;
     const spec = defaultInstrumentSpec(input.instrumentId);
 
     const orderResult: ExchangeOrderResult = {
@@ -656,7 +662,7 @@ export class OkxBroker implements ExchangeBroker {
       instrumentId: input.instrumentId,
       side: input.side,
       fillPrice: fillPriceStr,
-      sizeLots: actualSizeLots,
+      sizeLots: actualContracts.toString(),
       protectiveStopPrice: input.protectiveStopPrice,
       status: isFillConfirmed ? "FILLED" : "SUBMITTED",
       submittedAtMs: nowMs
@@ -664,7 +670,7 @@ export class OkxBroker implements ExchangeBroker {
 
     // Update local state
     const posId = `pos_${clOrdId}`;
-    const effectiveStrategyId = input.strategyId ?? "manual-execution";
+    const effectiveStrategyId = input.strategyId ?? MANUAL_EXECUTION_STRATEGY_ID;
     const initialRisk =
       input.initialRiskUsdt ??
       (input.side === "long" ? fillPxDec.sub(stopPx) : stopPx.sub(fillPxDec))
@@ -694,7 +700,7 @@ export class OkxBroker implements ExchangeBroker {
       strategyId: effectiveStrategyId,
       instrumentId: input.instrumentId,
       side: input.side,
-      contracts: String(actualSizeLots),
+      contracts: actualContracts.toString(),
       entryPrice: fillPriceStr,
       protectiveStopPrice: input.protectiveStopPrice,
       takeProfitPrice: input.takeProfitPrice ?? null,
@@ -724,7 +730,7 @@ export class OkxBroker implements ExchangeBroker {
       instrumentId: input.instrumentId,
       side: input.side,
       orderRole: "ENTRY",
-      contracts: String(actualSizeLots),
+      contracts: actualContracts.toString(),
       fillPrice: fillPriceStr,
       protectiveStopPrice: input.protectiveStopPrice,
       feeUsdt: entryFee.toFixed(8),
@@ -784,7 +790,7 @@ export class OkxBroker implements ExchangeBroker {
       instrumentId: input.instrumentId,
       side: input.side,
       fillPrice: closed.exitPrice,
-      sizeLots: input.sizeLots,
+      sizeLots: pos.contracts,
       protectiveStopPrice: pos.protectiveStopPrice,
       status: "FILLED",
       submittedAtMs: closed.closedAtMs
@@ -807,7 +813,6 @@ export class OkxBroker implements ExchangeBroker {
       newSlTriggerPx: params.newStopPrice,
       newSlTriggerPxType: "mark"
     });
-    const nowMs = this.clock.nowMs();
 
     if (creds && creds.apiKey) {
       const headers = buildOkxHeaders({
@@ -815,7 +820,7 @@ export class OkxBroker implements ExchangeBroker {
         path,
         body: bodyStr,
         credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
         isDemo: this.isDemoVenue()
       });
 
@@ -862,7 +867,7 @@ export class OkxBroker implements ExchangeBroker {
         method: "GET",
         path: posPath,
         credentials: creds,
-        timestampIso: new Date(nowMs).toISOString(),
+        timestampIso: new Date(this.clock.nowMs()).toISOString(),
         isDemo: this.isDemoVenue()
       });
 
@@ -963,7 +968,7 @@ export class OkxBroker implements ExchangeBroker {
           method: "GET",
           path: algoPath,
           credentials: creds,
-          timestampIso: new Date(nowMs).toISOString(),
+          timestampIso: new Date(this.clock.nowMs()).toISOString(),
           isDemo: this.isDemoVenue()
         });
 
@@ -1008,7 +1013,7 @@ export class OkxBroker implements ExchangeBroker {
               method: "GET",
               path: fillsPath,
               credentials: creds,
-              timestampIso: new Date(nowMs).toISOString(),
+              timestampIso: new Date(this.clock.nowMs()).toISOString(),
               isDemo: this.isDemoVenue()
             });
             const fillsRes = await this.fetchFn(`https://www.okx.com${fillsPath}`, {
@@ -1212,11 +1217,7 @@ export class OkxBroker implements ExchangeBroker {
   }
 
   /** Cancels resting stop/TP algos for one instrument; only call once its position is flat. */
-  private async cancelProtectiveAlgos(
-    instId: string,
-    creds: OkxCredentials,
-    nowMs: number
-  ): Promise<void> {
+  private async cancelProtectiveAlgos(instId: string, creds: OkxCredentials): Promise<void> {
     const cancelPayload: Array<{ algoId: string; instId: string }> = [];
     for (const ordType of ["conditional", "oco"]) {
       const queryPath = `/api/v5/trade/orders-algo-pending?instId=${encodeURIComponent(instId)}&ordType=${ordType}`;
@@ -1227,7 +1228,7 @@ export class OkxBroker implements ExchangeBroker {
             method: "GET",
             path: queryPath,
             credentials: creds,
-            timestampIso: new Date(nowMs).toISOString(),
+            timestampIso: new Date(this.clock.nowMs()).toISOString(),
             isDemo: this.isDemoVenue()
           })
         });
@@ -1262,7 +1263,7 @@ export class OkxBroker implements ExchangeBroker {
           path: cancelPath,
           body: cancelBody,
           credentials: creds,
-          timestampIso: new Date(nowMs).toISOString(),
+          timestampIso: new Date(this.clock.nowMs()).toISOString(),
           isDemo: this.isDemoVenue()
         }),
         body: cancelBody
@@ -1322,7 +1323,7 @@ export class OkxBroker implements ExchangeBroker {
           method: "GET",
           path: posPath,
           credentials: creds,
-          timestampIso: new Date(nowMs).toISOString(),
+          timestampIso: new Date(this.clock.nowMs()).toISOString(),
           isDemo: this.isDemoVenue()
         });
         const posRes = await this.fetchFn(`https://www.okx.com${posPath}`, {
@@ -1402,7 +1403,7 @@ export class OkxBroker implements ExchangeBroker {
             path: "/api/v5/trade/order",
             body: flatBody,
             credentials: creds,
-            timestampIso: new Date(nowMs).toISOString(),
+            timestampIso: new Date(this.clock.nowMs()).toISOString(),
             isDemo: this.isDemoVenue()
           });
 
@@ -1455,7 +1456,7 @@ export class OkxBroker implements ExchangeBroker {
                 method: "GET",
                 path: fillQueryPath,
                 credentials: creds,
-                timestampIso: new Date(nowMs).toISOString(),
+                timestampIso: new Date(this.clock.nowMs()).toISOString(),
                 isDemo: this.isDemoVenue()
               });
               const fillRes = await this.fetchFn(`https://www.okx.com${fillQueryPath}`, {
@@ -1512,7 +1513,7 @@ export class OkxBroker implements ExchangeBroker {
                 !confirmedFills.has(other.positionId)
             );
             if (!instrumentStillProtecting) {
-              await this.cancelProtectiveAlgos(pos.instrumentId, creds, nowMs);
+              await this.cancelProtectiveAlgos(pos.instrumentId, creds);
             }
           }
         }
@@ -1520,21 +1521,29 @@ export class OkxBroker implements ExchangeBroker {
 
       // 3. Dispose of untracked foreign exchange positions not present in local state
       for (const exPos of sweepForeign ? exchangePositions : []) {
-        const matchingLocal = Array.from(this.localPositions.values()).find(
-          (lp) => lp.status === "OPEN" && lp.instrumentId === exPos.instId
+        // OKX signs `pos` only in net mode; in long/short mode it is unsigned and posSide carries the side
+        const reportedQty = ScaledDecimal.fromString(exPos.pos);
+        const hedgeSide =
+          exPos.posSide === "long" || exPos.posSide === "short" ? exPos.posSide : null;
+        const exPosQty =
+          hedgeSide === "short"
+            ? ScaledDecimal.zero().sub(reportedQty.abs())
+            : hedgeSide === "long"
+              ? reportedQty.abs()
+              : reportedQty;
+        // Every tracked position on this instrument (and posSide, in long/short mode) is ours
+        const trackedLocals = Array.from(this.localPositions.values()).filter(
+          (lp) =>
+            lp.status === "OPEN" &&
+            lp.instrumentId === exPos.instId &&
+            (hedgeSide === null || lp.side === hedgeSide)
         );
-        const exPosQty = ScaledDecimal.fromString(exPos.pos);
-        let unhedgedQty: ScaledDecimal;
-
-        if (!matchingLocal) {
-          unhedgedQty = exPosQty;
-        } else {
-          const localQty =
-            matchingLocal.side === "long"
-              ? ScaledDecimal.fromString(matchingLocal.contracts)
-              : ScaledDecimal.zero().sub(ScaledDecimal.fromString(matchingLocal.contracts));
-          unhedgedQty = exPosQty.sub(localQty);
-        }
+        const matchingLocal = trackedLocals[0];
+        const localQty = trackedLocals.reduce((sum, lp) => {
+          const contracts = ScaledDecimal.fromString(lp.contracts);
+          return lp.side === "long" ? sum.add(contracts) : sum.sub(contracts);
+        }, ScaledDecimal.zero());
+        const unhedgedQty = exPosQty.sub(localQty);
 
         if (!unhedgedQty.isZero()) {
           const foreignClOrdId =
@@ -1564,7 +1573,7 @@ export class OkxBroker implements ExchangeBroker {
             path: "/api/v5/trade/order",
             body: foreignBody,
             credentials: creds,
-            timestampIso: new Date(nowMs).toISOString(),
+            timestampIso: new Date(this.clock.nowMs()).toISOString(),
             isDemo: this.isDemoVenue()
           });
 
@@ -1611,7 +1620,7 @@ export class OkxBroker implements ExchangeBroker {
               });
             }
           } else if (!matchingLocal) {
-            await this.cancelProtectiveAlgos(exPos.instId, creds, nowMs);
+            await this.cancelProtectiveAlgos(exPos.instId, creds);
           }
         }
       }
@@ -1628,7 +1637,7 @@ export class OkxBroker implements ExchangeBroker {
               path: cancelPath,
               body: cancelBody,
               credentials: creds,
-              timestampIso: new Date(nowMs).toISOString(),
+              timestampIso: new Date(this.clock.nowMs()).toISOString(),
               isDemo: this.isDemoVenue()
             }),
             body: cancelBody

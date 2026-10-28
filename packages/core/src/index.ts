@@ -95,6 +95,7 @@ export {
   PaperPositionRecordSchema,
   PromotionStageSchema,
   ProposalMenuSchema,
+  MANUAL_EXECUTION_STRATEGY_ID,
   ProposalSchema,
   ReconciliationResultSchema,
   SEALED_HOLDOUT_END_TS,
