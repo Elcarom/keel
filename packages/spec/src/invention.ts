@@ -70,6 +70,11 @@ function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
 }
 
+/** "BTC-USDT-SWAP" reads as "BTC". */
+function coinOf(market: string): string {
+  return market.replace("-USDT-SWAP", "");
+}
+
 function ago(shift: number | undefined): string {
   if (!shift) return "";
   return shift === 1 ? " 1 bar ago" : ` ${shift} bars ago`;
@@ -82,11 +87,12 @@ function describeExpr(expr: NumExpr, defs: ReadonlyMap<string, IndicatorDef>): s
     case "bar_field":
       if (expr.field === "hour") return `the UTC hour${ago(expr.shift)}`;
       if (expr.field === "weekday") return `the weekday${ago(expr.shift)}`;
-      return `${expr.field}${ago(expr.shift)}`;
+      return `${expr.market ? `${coinOf(expr.market)} ` : ""}${expr.field}${ago(expr.shift)}`;
     case "indicator": {
       const def = defs.get(expr.id);
       if (!def) return expr.id;
-      const base = `${KIND_NAMES[def.kind]}(${def.period})`;
+      const coin = def.market ? `${coinOf(def.market)} ` : "";
+      const base = `${coin}${KIND_NAMES[def.kind]}(${def.period})`;
       // A kind's main output reads as the indicator itself; secondary outputs are named
       const main = INDICATOR_OUTPUTS[def.kind][0];
       const output =
@@ -167,13 +173,22 @@ export function conditionShift(cond: Condition): number {
   }
 }
 
-/** Plain-English rules for a blueprint's invention, honouring its direction. */
+/** Plain-English rules for a blueprint's invention, honouring its direction and basket. */
 export function describeInvention(
-  b: Pick<BotBlueprint, "direction" | "stopAtrMultiple" | "rewardMultiple">,
+  b: Pick<BotBlueprint, "direction" | "stopAtrMultiple" | "rewardMultiple"> & {
+    readonly basket?: readonly string[] | undefined;
+    readonly instrumentId?: string | undefined;
+  },
   invention: Invention
 ): string[] {
   const rules = parseInventionRules(invention);
   const defs = new Map(rules.indicators.map((d) => [d.id, d]));
+  const basket =
+    b.basket && b.basket.length > 0 && b.instrumentId
+      ? [
+          `Trades ${[b.instrumentId, ...b.basket].map(coinOf).join(", ")} with the same rules, one position per coin`
+        ]
+      : [];
   return [
     b.direction === "short_only"
       ? "Never goes long"
@@ -181,7 +196,8 @@ export function describeInvention(
     b.direction === "long_only"
       ? "Never goes short"
       : `Short when ${describeCondition(rules.shortEntry, defs)}`,
-    `Stop ${b.stopAtrMultiple}× ATR(14) away, target ${b.rewardMultiple}× the risk`
+    `Stop ${b.stopAtrMultiple}× ATR(14) away, target ${b.rewardMultiple}× the risk`,
+    ...basket
   ];
 }
 

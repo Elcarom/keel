@@ -29,7 +29,10 @@ export {
   BACKTEST_FROM_TS,
   BACKTEST_TO_TS,
   assessSeaTrial,
+  basketIndexBars,
+  combineRuns,
   neighbourBlueprints,
   type SeaTrialInput,
-  type SeaTrialSettings
+  type SeaTrialSettings,
+  type TrialRun
 } from "./sea-trial.js";

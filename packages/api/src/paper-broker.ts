@@ -98,6 +98,8 @@ export class PaperBroker implements Broker {
     readonly featureBars?:
       Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>> | undefined;
     readonly settledFundingRates?: readonly SettledFundingRate[] | undefined;
+    /** Other markets' confirmed 1H bars the strategy reads, as of this bar's close. */
+    readonly referenceBars?: Readonly<Record<string, readonly ConfirmedBar[]>> | undefined;
   }): PaperTickResult {
     const { bar, strategy } = params;
     const spec = params.spec ?? defaultInstrumentSpec(bar.instrumentId);
@@ -515,7 +517,8 @@ export class PaperBroker implements Broker {
         instrumentId: bar.instrumentId,
         asOfMs,
         barsByTimeframe: params.featureBars ?? { [bar.timeframe]: [bar] },
-        recentFundingRates: params.settledFundingRates ?? []
+        recentFundingRates: params.settledFundingRates ?? [],
+        ...(params.referenceBars ? { referenceBars: params.referenceBars } : {})
       });
 
       const chosen = this.chooser.choose([menu]);

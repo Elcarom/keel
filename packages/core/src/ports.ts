@@ -268,6 +268,11 @@ export interface FeatureSnapshot {
   readonly asOfMs: number;
   readonly barsByTimeframe: Readonly<Partial<Record<BarTimeframe, readonly ConfirmedBar[]>>>;
   readonly recentFundingRates: readonly SettledFundingRate[];
+  /**
+   * Confirmed 1H bars of other markets the strategy reads, keyed by instrument, as of the same
+   * moment: never a bar closing after asOfMs.
+   */
+  readonly referenceBars?: Readonly<Record<string, readonly ConfirmedBar[]>> | undefined;
 }
 
 export const ProposalSchema = z.object({

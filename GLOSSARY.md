@@ -168,6 +168,14 @@ _Avoid_: Portfolio, swarm, hive
 A running instance of one Strategy compiled from a Blueprint, with a name, a stake drawn from a Wallet, and its own Boat Book. A Boat is running (at sea), paused (in harbour, flat and not trading) or retired (flat for good, its equity returned to the Wallet).
 _Avoid_: Bot (in operator-facing text), Strategy, agent, bee
 
+**Basket**:
+The further coins a Boat trades with the same rules as its own market: at most five coins in all, one position per coin, all inside the one Boat Book and paid for from its one stake. A Basket Boat's Sea Trial judges every coin together, as one portfolio.
+_Avoid_: Portfolio (a Basket is one Boat), multi-bot
+
+**Reference Market**:
+Another market whose confirmed bars a Boat's rules read without trading it, such as BTC leading the coins a Boat trades. Its bars are read for the same hour only, and a Boat waits for a Reference Market that has not posted that hour yet.
+_Avoid_: Signal coin, leader, index
+
 **Wallet**:
 A pool of cash that stakes Boats. A Boat's stake leaves the Wallet when it launches and its equity returns when it retires. Paper Wallets hold simulated cash only.
 _Avoid_: Account, sub-account, balance
@@ -209,7 +217,7 @@ A Sea Trial's one-word conclusion: seaworthy, promising, choppy or sinks.
 _Avoid_: Grade, rating
 
 **Sibling Market**:
-The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original. An edge that only exists on one market is more likely luck.
+The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original and is neither in its Basket nor one of its Reference Markets. An edge that only exists on one market is more likely luck.
 _Avoid_: Control market, benchmark
 
 **Paper-only Instrument**:

@@ -765,6 +765,8 @@ function createInMemorySnapshots(params: {
   readonly requirements: Strategy["lookbacks"];
   readonly bars: readonly ConfirmedBar[];
   readonly settledFunding: readonly SettledFundingRate[];
+  /** Other markets the strategy reads; each is served as of the same moment. */
+  readonly referenceMarkets?: readonly string[] | undefined;
 }): ((asOfMs: number) => FeatureSnapshot) | null {
   const required = ALL_BAR_TIMEFRAMES.filter((tf) => (params.requirements[tf] ?? 0) > 0);
   const count = params.requirements[params.timeframe] ?? 0;
@@ -790,6 +792,26 @@ function createInMemorySnapshots(params: {
     ...params.settledFunding
   ];
 
+  // Each reference market over the same window, warm-up included
+  const lastBar = params.bars[params.bars.length - 1] ?? firstBar;
+  const references = (params.referenceMarkets ?? []).map((market) => ({
+    market,
+    series: [
+      ...params.marketDataRepo.getConfirmedBarsAsOf({
+        instrumentId: market,
+        timeframe: params.timeframe,
+        asOfMs: firstBar.openTs,
+        limit: count
+      }),
+      ...params.marketDataRepo.getConfirmedBarsInRange({
+        instrumentId: market,
+        timeframe: params.timeframe,
+        fromOpenTs: firstBar.openTs,
+        toCloseTs: lastBar.closeTs
+      })
+    ]
+  }));
+
   // Index of the first element whose timestamp is after asOfMs
   const upperBound = <T>(items: readonly T[], ts: (item: T) => number, asOfMs: number): number => {
     let lo = 0;
@@ -810,7 +832,17 @@ function createInMemorySnapshots(params: {
       instrumentId: params.instrumentId,
       asOfMs,
       barsByTimeframe: { [params.timeframe]: series.slice(Math.max(0, barEnd - count), barEnd) },
-      recentFundingRates: funding.slice(Math.max(0, fundingEnd - 30), fundingEnd)
+      recentFundingRates: funding.slice(Math.max(0, fundingEnd - 30), fundingEnd),
+      ...(references.length > 0
+        ? {
+            referenceBars: Object.fromEntries(
+              references.map(({ market, series: ref }) => {
+                const end = upperBound(ref, (b) => b.closeTs, asOfMs);
+                return [market, ref.slice(Math.max(0, end - count), end)];
+              })
+            )
+          }
+        : {})
     };
   };
 }
@@ -1211,8 +1243,12 @@ export class ReplayEngine {
       timeframe: params.timeframe,
       requirements: params.strategy.lookbacks,
       bars,
-      settledFunding: allSettledFunding
+      settledFunding: allSettledFunding,
+      referenceMarkets: params.strategy.referenceMarkets
     });
+    if (!inMemorySnapshot && (params.strategy.referenceMarkets ?? []).length > 0) {
+      throw new Error("Strategies that read other markets need a single 1H lookback");
+    }
 
     for (let idx = 0; idx < bars.length; idx += 1) {
       const bar = bars[idx];

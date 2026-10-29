@@ -158,6 +158,9 @@ export function validateSpecAstBudget(raw: unknown): AstBudgetCheckResult {
   };
 }
 
+/** A perpetual swap instrument id, e.g. BTC-USDT-SWAP. */
+export const MarketIdSchema = z.string().regex(/^[A-Z0-9]{2,12}-USDT-SWAP$/, "a USDT swap id");
+
 export type NumExpr =
   | { readonly type: "constant"; readonly value: number }
   | {
@@ -165,6 +168,8 @@ export type NumExpr =
       /** `hour` (0-23) and `weekday` (0 = Sunday) are UTC, from the bar's open time. */
       readonly field: "open" | "high" | "low" | "close" | "volume" | "hour" | "weekday";
       readonly shift?: number | undefined;
+      /** Another market's bar at the same hour; absent means the traded market. */
+      readonly market?: string | undefined;
     }
   | {
       readonly type: "indicator";
@@ -188,7 +193,8 @@ export const NumExprSchema: z.ZodType<NumExpr> = z.lazy(() =>
     z.object({
       type: z.literal("bar_field"),
       field: z.enum(["open", "high", "low", "close", "volume", "hour", "weekday"]),
-      shift: z.number().int().min(0).max(500).optional()
+      shift: z.number().int().min(0).max(500).optional(),
+      market: MarketIdSchema.optional()
     }),
     z.object({
       type: z.literal("indicator"),
@@ -258,7 +264,9 @@ export const IndicatorDefSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(INDICATOR_KINDS),
   period: z.number().int().min(2).max(500),
-  params: z.record(z.string(), z.union([z.number(), z.string()])).optional()
+  params: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
+  /** Computed on another market's bars, aligned hour by hour; absent means the traded market. */
+  market: MarketIdSchema.optional()
 });
 export type IndicatorDef = z.infer<typeof IndicatorDefSchema>;
 
@@ -359,8 +367,10 @@ function describeNumExpr(expr: NumExpr): string {
   switch (expr.type) {
     case "constant":
       return `${expr.value}`;
-    case "bar_field":
-      return expr.shift ? `${expr.field}[t-${expr.shift}]` : expr.field;
+    case "bar_field": {
+      const field = expr.market ? `${expr.market}.${expr.field}` : expr.field;
+      return expr.shift ? `${field}[t-${expr.shift}]` : field;
+    }
     case "indicator":
       return expr.output
         ? `${expr.id}.${expr.output}${expr.shift ? `[t-${expr.shift}]` : ""}`
@@ -537,16 +547,57 @@ interface EvaluatedIndicators {
   readonly [id: string]: Record<string, number>;
 }
 
-function computeIndicators(
-  defs: readonly IndicatorDef[],
-  bars: readonly ConfirmedBar[]
-): EvaluatedIndicators {
+/**
+ * What the rules see at one bar: the traded market's bars and, for each reference market, its
+ * bars aligned one-to-one with the traded bars' tail (the last element of every array is the
+ * same hour).
+ */
+interface Frame {
+  readonly bars: readonly ConfirmedBar[];
+  readonly refs: Readonly<Record<string, readonly ConfirmedBar[]>>;
+}
+
+/** The frame as it stood k bars ago. */
+function dropLast(frame: Frame, k: number): Frame {
+  if (k <= 0) return frame;
+  const refs: Record<string, readonly ConfirmedBar[]> = {};
+  for (const [market, bars] of Object.entries(frame.refs)) refs[market] = bars.slice(0, -k);
+  return { bars: frame.bars.slice(0, -k), refs };
+}
+
+function seriesOf(frame: Frame, market: string | undefined): readonly ConfirmedBar[] {
+  return market ? (frame.refs[market] ?? []) : frame.bars;
+}
+
+/**
+ * For each traded bar, the latest reference bar closing at or before it. Leading hours with no
+ * reference bar yet are dropped, so the result is a tail aligned with the traded bars.
+ */
+export function alignReferenceBars(
+  bars: readonly ConfirmedBar[],
+  reference: readonly ConfirmedBar[]
+): ConfirmedBar[] {
+  const aligned: ConfirmedBar[] = [];
+  let j = 0;
+  let last: ConfirmedBar | undefined;
+  for (const bar of bars) {
+    while (j < reference.length && (reference[j]?.closeTs ?? Infinity) <= bar.closeTs) {
+      last = reference[j];
+      j++;
+    }
+    if (last) aligned.push(last);
+  }
+  return aligned;
+}
+
+function computeIndicators(defs: readonly IndicatorDef[], frame: Frame): EvaluatedIndicators {
   const result: Record<string, Record<string, number>> = {};
-  const latest = bars[bars.length - 1];
-  const closeNum = latest ? Number(latest.close) : 0;
-  const minVol = Math.max(1e-8, closeNum * 1e-4);
 
   for (const def of defs) {
+    const bars = seriesOf(frame, def.market);
+    const latest = bars[bars.length - 1];
+    const closeNum = latest ? Number(latest.close) : 0;
+    const minVol = Math.max(1e-8, closeNum * 1e-4);
     const res: Record<string, number> = {};
     switch (def.kind) {
       case "donchian": {
@@ -626,7 +677,7 @@ function computeIndicators(
 
 function evaluateNumExpr(
   expr: NumExpr,
-  bars: readonly ConfirmedBar[],
+  frame: Frame,
   indicators: EvaluatedIndicators,
   indicatorDefs?: readonly IndicatorDef[]
 ): number {
@@ -634,6 +685,7 @@ function evaluateNumExpr(
     case "constant":
       return expr.value;
     case "bar_field": {
+      const bars = seriesOf(frame, expr.market);
       const shift = expr.shift ?? 0;
       const idx = bars.length - 1 - shift;
       const bar = bars[idx];
@@ -659,10 +711,9 @@ function evaluateNumExpr(
     case "indicator": {
       let targetIndicators = indicators;
       if (expr.shift && expr.shift > 0) {
-        if (bars.length <= expr.shift) return 0;
-        const shiftedBars = bars.slice(0, -expr.shift);
+        if (frame.bars.length <= expr.shift) return 0;
         targetIndicators = indicatorDefs
-          ? computeIndicators(indicatorDefs, shiftedBars)
+          ? computeIndicators(indicatorDefs, dropLast(frame, expr.shift))
           : indicators;
       }
       const ind = targetIndicators[expr.id];
@@ -671,8 +722,8 @@ function evaluateNumExpr(
       return ind[outputKey] ?? 0;
     }
     case "binary_op": {
-      const l = evaluateNumExpr(expr.left, bars, indicators, indicatorDefs);
-      const r = evaluateNumExpr(expr.right, bars, indicators, indicatorDefs);
+      const l = evaluateNumExpr(expr.left, frame, indicators, indicatorDefs);
+      const r = evaluateNumExpr(expr.right, frame, indicators, indicatorDefs);
       switch (expr.op) {
         case "+":
           return l + r;
@@ -690,14 +741,14 @@ function evaluateNumExpr(
 
 function evaluateCondition(
   cond: Condition,
-  bars: readonly ConfirmedBar[],
+  frame: Frame,
   indicators: EvaluatedIndicators,
   indicatorDefs?: readonly IndicatorDef[]
 ): boolean {
   switch (cond.type) {
     case "comparison": {
-      const l = evaluateNumExpr(cond.left, bars, indicators, indicatorDefs);
-      const r = evaluateNumExpr(cond.right, bars, indicators, indicatorDefs);
+      const l = evaluateNumExpr(cond.left, frame, indicators, indicatorDefs);
+      const r = evaluateNumExpr(cond.right, frame, indicators, indicatorDefs);
       switch (cond.op) {
         case ">":
           return l > r;
@@ -714,39 +765,37 @@ function evaluateCondition(
       switch (cond.op) {
         case "and":
           return cond.operands.every((op) =>
-            evaluateCondition(op, bars, indicators, indicatorDefs)
+            evaluateCondition(op, frame, indicators, indicatorDefs)
           );
         case "or":
-          return cond.operands.some((op) => evaluateCondition(op, bars, indicators, indicatorDefs));
+          return cond.operands.some((op) =>
+            evaluateCondition(op, frame, indicators, indicatorDefs)
+          );
         case "not":
           return cond.operands[0]
-            ? !evaluateCondition(cond.operands[0], bars, indicators, indicatorDefs)
+            ? !evaluateCondition(cond.operands[0], frame, indicators, indicatorDefs)
             : false;
       }
       return false;
     }
     case "crosses_above": {
-      if (bars.length < 2) return false;
-      const priorBars = bars.slice(0, -1);
-      const priorIndicators = indicatorDefs
-        ? computeIndicators(indicatorDefs, priorBars)
-        : indicators;
-      const currA = evaluateNumExpr(cond.seriesA, bars, indicators, indicatorDefs);
-      const currB = evaluateNumExpr(cond.seriesB, bars, indicators, indicatorDefs);
-      const prevA = evaluateNumExpr(cond.seriesA, priorBars, priorIndicators, indicatorDefs);
-      const prevB = evaluateNumExpr(cond.seriesB, priorBars, priorIndicators, indicatorDefs);
+      if (frame.bars.length < 2) return false;
+      const prior = dropLast(frame, 1);
+      const priorIndicators = indicatorDefs ? computeIndicators(indicatorDefs, prior) : indicators;
+      const currA = evaluateNumExpr(cond.seriesA, frame, indicators, indicatorDefs);
+      const currB = evaluateNumExpr(cond.seriesB, frame, indicators, indicatorDefs);
+      const prevA = evaluateNumExpr(cond.seriesA, prior, priorIndicators, indicatorDefs);
+      const prevB = evaluateNumExpr(cond.seriesB, prior, priorIndicators, indicatorDefs);
       return prevA <= prevB && currA > currB;
     }
     case "crosses_below": {
-      if (bars.length < 2) return false;
-      const priorBars = bars.slice(0, -1);
-      const priorIndicators = indicatorDefs
-        ? computeIndicators(indicatorDefs, priorBars)
-        : indicators;
-      const currA = evaluateNumExpr(cond.seriesA, bars, indicators, indicatorDefs);
-      const currB = evaluateNumExpr(cond.seriesB, bars, indicators, indicatorDefs);
-      const prevA = evaluateNumExpr(cond.seriesA, priorBars, priorIndicators, indicatorDefs);
-      const prevB = evaluateNumExpr(cond.seriesB, priorBars, priorIndicators, indicatorDefs);
+      if (frame.bars.length < 2) return false;
+      const prior = dropLast(frame, 1);
+      const priorIndicators = indicatorDefs ? computeIndicators(indicatorDefs, prior) : indicators;
+      const currA = evaluateNumExpr(cond.seriesA, frame, indicators, indicatorDefs);
+      const currB = evaluateNumExpr(cond.seriesB, frame, indicators, indicatorDefs);
+      const prevA = evaluateNumExpr(cond.seriesA, prior, priorIndicators, indicatorDefs);
+      const prevB = evaluateNumExpr(cond.seriesB, prior, priorIndicators, indicatorDefs);
       return prevA >= prevB && currA < currB;
     }
   }
@@ -755,6 +804,39 @@ function evaluateCondition(
 // ============================================================================
 // 5. SpecStrategy (Port Adapter implementing Strategy)
 // ============================================================================
+
+function exprMarkets(expr: NumExpr): string[] {
+  switch (expr.type) {
+    case "bar_field":
+      return expr.market ? [expr.market] : [];
+    case "binary_op":
+      return [...exprMarkets(expr.left), ...exprMarkets(expr.right)];
+    default:
+      return [];
+  }
+}
+
+function conditionMarkets(cond: Condition): string[] {
+  switch (cond.type) {
+    case "comparison":
+      return [...exprMarkets(cond.left), ...exprMarkets(cond.right)];
+    case "crosses_above":
+    case "crosses_below":
+      return [...exprMarkets(cond.seriesA), ...exprMarkets(cond.seriesB)];
+    case "logical_op":
+      return cond.operands.flatMap(conditionMarkets);
+  }
+}
+
+/** Every market a spec reads besides the one it trades, in a stable order. */
+export function specReferenceMarkets(spec: StrategySpecV1): string[] {
+  const markets = [
+    ...spec.indicators.flatMap((i) => (i.market ? [i.market] : [])),
+    ...conditionMarkets(spec.rules.longEntry),
+    ...conditionMarkets(spec.rules.shortEntry)
+  ];
+  return [...new Set(markets)].sort();
+}
 
 export class SpecStrategy implements Strategy {
   public readonly id: string;
@@ -768,6 +850,7 @@ export class SpecStrategy implements Strategy {
   public readonly isSynthetic: boolean;
   public readonly cooldownBars: number;
   public readonly timeStopBars?: number | undefined;
+  public readonly referenceMarkets: readonly string[];
   private readonly spec: StrategySpecV1;
 
   public constructor(spec: StrategySpecV1) {
@@ -783,6 +866,7 @@ export class SpecStrategy implements Strategy {
     this.isSynthetic = Boolean(this.spec.synthetic);
     this.cooldownBars = this.spec.cooldownBars ?? 0;
     this.timeStopBars = this.spec.timeStopBars ?? this.spec.risk.timeStopBars;
+    this.referenceMarkets = specReferenceMarkets(this.spec);
   }
 
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {
@@ -818,9 +902,28 @@ export class SpecStrategy implements Strategy {
     const closeNum = Number(latest.close);
     const minVol = Math.max(1e-8, closeNum * 1e-4);
 
+    // Reference markets, aligned hour by hour. A market whose latest hour has not arrived would
+    // be read stale, so the strategy stands down instead.
+    const refs: Record<string, readonly ConfirmedBar[]> = {};
+    for (const market of this.referenceMarkets) {
+      const aligned = alignReferenceBars(bars, snapshot.referenceBars?.[market] ?? []);
+      if (aligned[aligned.length - 1]?.closeTs !== latest.closeTs) {
+        return {
+          instrumentId: snapshot.instrumentId,
+          asOfMs: snapshot.asOfMs,
+          strategyId: this.strategyId,
+          strategyVersion: this.version,
+          proposals: [],
+          standDownReason: `reference_market_not_current_${market}`
+        };
+      }
+      refs[market] = aligned;
+    }
+    const frame: Frame = { bars, refs };
+
     // Compute indicators
     const indicatorDefs = this.spec.indicators;
-    const indicators = computeIndicators(this.spec.indicators, bars);
+    const indicators = computeIndicators(this.spec.indicators, frame);
 
     // Stop distance computation
     const computeStopDistance = (side: "long" | "short"): number => {
@@ -863,13 +966,13 @@ export class SpecStrategy implements Strategy {
 
     const longMatched = evaluateCondition(
       this.spec.rules.longEntry,
-      bars,
+      frame,
       indicators,
       indicatorDefs
     );
     const shortMatched = evaluateCondition(
       this.spec.rules.shortEntry,
-      bars,
+      frame,
       indicators,
       indicatorDefs
     );

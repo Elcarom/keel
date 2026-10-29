@@ -142,7 +142,7 @@ export function splitIntoPeriods(params: {
   readonly periods: number;
   readonly initialEquity: number;
   readonly equityCurve: readonly { readonly ts: number; readonly equity: number }[];
-  readonly bars: readonly ConfirmedBar[];
+  readonly bars: readonly Pick<ConfirmedBar, "closeTs" | "close">[];
   readonly tradeEntryTimes: readonly number[];
 }): PeriodSegment[] {
   const span = (params.toTs - params.fromTs) / params.periods;

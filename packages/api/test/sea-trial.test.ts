@@ -6,6 +6,8 @@ import {
   BACKTEST_FROM_TS,
   BACKTEST_TO_TS,
   assessSeaTrial,
+  basketIndexBars,
+  combineRuns,
   neighbourBlueprints,
   type SeaTrialInput
 } from "../src/index.js";
@@ -142,6 +144,64 @@ const STEADY = trades(
   (i) => (i % 4 === 3 ? -60 : 80),
   (i) => (i % 4 === 3 ? -0.8 : 1.07)
 );
+
+describe("Basket sea trials", () => {
+  it("adds a basket's coins up into one portfolio and measures its worst dip on the whole", () => {
+    // Coin A wins early and gives some back late; coin B loses early and wins late
+    const a = result({
+      trades: trades(
+        4,
+        (i) => (i < 2 ? 300 : -200),
+        () => 1
+      )
+    });
+    const b = result({
+      trades: trades(
+        4,
+        (i) => (i < 2 ? -100 : 250),
+        () => 0.5
+      ),
+      stressNetExpectancyR: -0.1,
+      randomEntryPercentile: 50
+    });
+    const combined = combineRuns([a, b], 10_000, 4);
+
+    expect(combined.netPnlUsdt).toBe("500.00000000"); // 200 + 300
+    expect(combined.totalTrades).toBe(8);
+    expect(combined.trades.map((t) => t.exitTs)).toEqual(
+      [...combined.trades.map((t) => t.exitTs)].sort((x, y) => x - y)
+    );
+    // Both coins trade at the same hours, so each point is the sum of their gains
+    expect(combined.equityCurve.map((p) => Number(p.equityUsdt))).toEqual([
+      10_200, 10_400, 10_450, 10_500
+    ]);
+    // Each coin alone dips (A from 10,600 to 10,200); together the curve never falls
+    expect(combined.maxDrawdownPct).toBe(0);
+    // Statistics each replay measured on its own are averaged, weighted by trades
+    expect(combined.stressNetExpectancyR).toBeCloseTo(0.05);
+    expect(combined.randomEntryPercentile).toBeCloseTo(73.5);
+    expect(combined.avgR).toBeCloseTo(0.75);
+  });
+
+  it("leaves a single coin's run exactly as the replay measured it", () => {
+    const run = result({ trades: STEADY });
+    expect(combineRuns([run], 10_000, 4)).toBe(run);
+  });
+
+  it("compares a basket's seasons with an equal-weight index of its coins", () => {
+    const doubles = BARS.map((bar, i) => ({
+      ...bar,
+      close: String(100 * (1 + (i + 1) / BARS.length))
+    }));
+    const index = basketIndexBars([BARS, doubles]);
+    expect(index).toHaveLength(BARS.length);
+    const first = Number(index[0]?.close);
+    const last = Number(index[index.length - 1]?.close);
+    // BTC goes 100.07 → 150 (+49.9%), the other 100.14 → 200 (+99.7%): the index lands between
+    expect(last / first).toBeGreaterThan(1.7);
+    expect(last / first).toBeLessThan(1.8);
+  });
+});
 
 describe("Sea trial", () => {
   it("rates a steady, robust edge seaworthy and passes every check", () => {

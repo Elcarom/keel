@@ -55,7 +55,7 @@ const DESIGN_RESPONSE_JSON_SCHEMA: Readonly<Record<string, unknown>> = {
 
 const SYSTEM_PROMPT = `You design automated trading boats for Keel, a self-hosted crypto perpetual-futures lab. Keel's theme is the sea: a keel keeps a ship steady, each trading bot is a boat in the operator's fleet, and every boat gets a short nautical name (1-3 words) that hints at how it trades, e.g. "Trade Wind" for a momentum rider or "Undertow" for a mean-reversion fader. Never use real people, brands or existing products as names.
 
-Each boat trades one USDT perpetual on confirmed 1-hour bars and is one of these archetypes. L is lookbackPeriod, F is fastPeriod (always shorter than L) and T is entryThreshold. Every archetype still needs a value for every parameter, even ones it ignores.
+Each boat trades USDT perpetuals on confirmed 1-hour bars: its own instrumentId plus, optionally, a "basket" of up to 4 more of the offered instruments, where it runs the same rules on each coin, one position per coin, all funded from one stake. A basket diversifies an idea that should hold across similar coins, and its sea trial judges every coin together; leave the basket empty for an idea specific to one market. Each boat is one of these archetypes. L is lookbackPeriod, F is fastPeriod (always shorter than L) and T is entryThreshold. Every archetype still needs a value for every parameter, even ones it ignores.
 Trend followers:
 - momentum: enters when the L-bar change in close, scaled by ATR, is at least T (long) or at most -T (short). T 0.8-2.
 - ma_crossover: enters when the F-bar average crosses above (long) or below (short) the L-bar average. T unused.
@@ -268,6 +268,14 @@ export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraft[] {
     const archetype = styles[i % styles.length] ?? "breakout";
     const round = Math.floor(i / styles.length);
     const instrumentId = brief.instruments[i % brief.instruments.length] ?? "BTC-USDT-SWAP";
+    // With three or more waters, every other sample sails a basket of the next two coins
+    const basket =
+      brief.instruments.length >= 3 && i % 2 === 1
+        ? [1, 2].flatMap((k) => {
+            const m = brief.instruments[(i + k) % brief.instruments.length];
+            return m && m !== instrumentId ? [m] : [];
+          })
+        : [];
     const sample = SAMPLES[archetype];
     // Later rounds of the same archetype sail a slower horizon so they are not duplicates
     const stretch = 1 + round * 0.75;
@@ -282,7 +290,8 @@ export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraft[] {
       entryThreshold: Math.round(sample.threshold * shape.thresholdScale * 100) / 100,
       stopAtrMultiple: shape.stopAtrMultiple,
       rewardMultiple: shape.rewardMultiple,
-      rationale: `${sample.rationale} (${ARCHETYPE_LABELS[archetype]}, ${brief.riskAppetite} sizing.)`
+      rationale: `${sample.rationale} (${ARCHETYPE_LABELS[archetype]}, ${brief.riskAppetite} sizing.)`,
+      basket
     });
   }
   return drafts;
@@ -428,7 +437,7 @@ export class BotDesigner {
   }
 
   private finish(
-    drafts: readonly BotBlueprintDraft[],
+    drafts: readonly z.input<typeof BotBlueprintDraftSchema>[],
     brief: DesignBrief,
     takenNames: readonly string[]
   ): BotBlueprint[] {
@@ -439,7 +448,9 @@ export class BotDesigner {
         instrumentId: brief.instruments.includes(draft.instrumentId)
           ? draft.instrumentId
           : (brief.instruments[0] ?? draft.instrumentId),
-        direction: brief.direction === "any" ? draft.direction : brief.direction
+        direction: brief.direction === "any" ? draft.direction : brief.direction,
+        // A basket only holds coins the brief allows
+        basket: (draft.basket ?? []).filter((m) => brief.instruments.includes(m))
       });
       const name = uniqueName(blueprint.name, taken);
       taken.add(name.toLowerCase());

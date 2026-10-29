@@ -42,27 +42,6 @@ export const INDICATOR_KINDS = [
 ] as const;
 export type IndicatorKind = (typeof INDICATOR_KINDS)[number];
 
-/**
- * Rules Claude wrote itself, in the Strategy Spec condition language. Stored as data and
- * validated by @keel/spec before anything compiles; `rules` is Keel's plain-English rendering.
- */
-export const InventionSchema = z.object({
-  indicators: z
-    .array(
-      z.object({
-        id: z.string().min(1).max(24),
-        kind: z.enum(INDICATOR_KINDS),
-        period: z.number().int().min(2).max(200)
-      })
-    )
-    .min(1)
-    .max(6),
-  longEntry: z.unknown(),
-  shortEntry: z.unknown(),
-  rules: z.array(z.string())
-});
-export type Invention = z.infer<typeof InventionSchema>;
-
 export const FLEET_INSTRUMENTS = [
   "BTC-USDT-SWAP",
   "ETH-USDT-SWAP",
@@ -77,6 +56,32 @@ export const FLEET_INSTRUMENTS = [
 ] as const;
 export const FleetInstrumentSchema = z.enum(FLEET_INSTRUMENTS);
 export type FleetInstrument = z.infer<typeof FleetInstrumentSchema>;
+
+/** The most coins one boat may trade: its own market plus up to four more in its basket. */
+export const MAX_BOAT_MARKETS = 5;
+
+/**
+ * Rules Claude wrote itself, in the Strategy Spec condition language. Stored as data and
+ * validated by @keel/spec before anything compiles; `rules` is Keel's plain-English rendering.
+ */
+export const InventionSchema = z.object({
+  indicators: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(24),
+        kind: z.enum(INDICATOR_KINDS),
+        period: z.number().int().min(2).max(200),
+        /** Read from another market's bars, aligned hour by hour (ADR-0028). */
+        market: FleetInstrumentSchema.optional()
+      })
+    )
+    .min(1)
+    .max(6),
+  longEntry: z.unknown(),
+  shortEntry: z.unknown(),
+  rules: z.array(z.string())
+});
+export type Invention = z.infer<typeof InventionSchema>;
 
 /**
  * The market each instrument is cross-checked on during a sea trial: an edge that only exists on
@@ -147,7 +152,12 @@ export const BotBlueprintDraftSchema = z.object({
   entryThreshold: z.number(),
   stopAtrMultiple: z.number(),
   rewardMultiple: z.number(),
-  rationale: z.string().max(2000)
+  rationale: z.string().max(2000),
+  /** More coins the same rules also trade, one position per coin (ADR-0028). */
+  basket: z
+    .array(FleetInstrumentSchema)
+    .max(MAX_BOAT_MARKETS - 1)
+    .default([])
 });
 export type BotBlueprintDraft = z.infer<typeof BotBlueprintDraftSchema>;
 
@@ -166,6 +176,14 @@ export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
 });
 export type BotBlueprint = z.infer<typeof BotBlueprintSchema>;
 
+/** Every coin a boat trades: its own market first, then its basket. */
+export function blueprintMarkets(b: {
+  readonly instrumentId: FleetInstrument;
+  readonly basket?: readonly FleetInstrument[] | undefined;
+}): FleetInstrument[] {
+  return [...new Set([b.instrumentId, ...(b.basket ?? [])])].slice(0, MAX_BOAT_MARKETS);
+}
+
 /** JSON Schema of one draft, for providers that constrain decoding (no numeric bounds allowed). */
 export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> = {
   type: "object",
@@ -181,7 +199,8 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     "entryThreshold",
     "stopAtrMultiple",
     "rewardMultiple",
-    "rationale"
+    "rationale",
+    "basket"
   ],
   properties: {
     name: { type: "string", description: "Nautical bot name, 1-3 words, e.g. 'Trade Wind'" },
@@ -205,7 +224,13 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     },
     stopAtrMultiple: { type: "number", description: "Protective stop distance in ATRs, 0.5-6" },
     rewardMultiple: { type: "number", description: "Take-profit as a multiple of risk, 0.8-6" },
-    rationale: { type: "string", description: "Why this could work, in two or three sentences" }
+    rationale: { type: "string", description: "Why this could work, in two or three sentences" },
+    basket: {
+      type: "array",
+      items: { type: "string", enum: [...FLEET_INSTRUMENTS] },
+      description:
+        "Up to 4 more coins the same rules also trade, one position per coin; [] for a single-coin boat"
+    }
   }
 };
 
@@ -236,6 +261,7 @@ export function normalizeBlueprint(draft: BotBlueprintDraft): BotBlueprint {
     stopAtrMultiple: clampNum(draft.stopAtrMultiple, 0.5, 6),
     rewardMultiple: clampNum(draft.rewardMultiple, 0.8, 6),
     rationale: draft.rationale.trim().slice(0, 600),
+    basket: blueprintMarkets(draft).slice(1),
     invention: null
   });
 }
@@ -449,6 +475,7 @@ export type BotStatus = z.infer<typeof BotStatusSchema>;
 export const BotModeSchema = z.literal("paper");
 
 export const BotTradeSchema = z.object({
+  instrumentId: z.string(),
   side: z.enum(["long", "short"]),
   entryPrice: z.string(),
   exitPrice: z.string().nullable(),
@@ -461,6 +488,7 @@ export const BotTradeSchema = z.object({
 export type BotTrade = z.infer<typeof BotTradeSchema>;
 
 export const BotOpenPositionSchema = z.object({
+  instrumentId: z.string(),
   side: z.enum(["long", "short"]),
   entryPrice: z.string(),
   contracts: z.string(),
@@ -491,7 +519,9 @@ export const BotSchema = z.object({
   maxDrawdownPct: z.number(),
   tradesCount: z.number().int().nonnegative(),
   winRate: z.number(),
+  /** The first open position; a basket boat may hold one per coin, all in openPositions. */
   openPosition: BotOpenPositionSchema.nullable(),
+  openPositions: z.array(BotOpenPositionSchema),
   lastBarAtMs: z.number().int().nullable(),
   equityCurve: z.array(z.number()),
   recentTrades: z.array(BotTradeSchema)

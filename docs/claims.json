@@ -670,5 +670,29 @@
     "claim": "ADR-0027: Keel writes the chat prompt from the brief, with the condition language and the names already in the fleet.",
     "testFile": "packages/api/test/fleet.test.ts",
     "testName": "writes a chat prompt carrying the brief, the language and the names already taken"
+  },
+  {
+    "id": "CLAIM-BASKET-PORTFOLIO",
+    "claim": "ADR-0028: A basket boat is sea-trialled as one portfolio: its coins add up hour by hour and its worst dip is measured on the whole.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "adds a basket's coins up into one portfolio and measures its worst dip on the whole"
+  },
+  {
+    "id": "CLAIM-REFERENCE-AS-OF",
+    "claim": "ADR-0028: Rules that read another market see its bar for the same hour, never a later one, and stand down when it has not posted that hour.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "reads another market hour by hour, never a later hour, and waits for one that lags"
+  },
+  {
+    "id": "CLAIM-BASKET-LIVE",
+    "claim": "ADR-0028: A basket boat reading BTC is trialled across its coins with a sibling outside them, then trades every coin in it.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "sea-trials a basket boat that reads BTC as one portfolio, then trades every coin in it"
+  },
+  {
+    "id": "CLAIM-BASKET-MARKETS",
+    "claim": "ADR-0028: Imported baskets and reference markets must be markets Keel trades.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "refuses imported baskets and signals on markets Keel does not trade"
   }
 ]

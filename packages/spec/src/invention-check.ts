@@ -3,7 +3,9 @@ import {
   BotBlueprintSchema,
   FLEET_INSTRUMENTS,
   INDICATOR_KINDS,
+  MAX_BOAT_MARKETS,
   MAX_IMPORTED_INVENTIONS,
+  blueprintMarkets,
   type BotBlueprint,
   type DesignBrief,
   type FleetInstrument,
@@ -26,7 +28,8 @@ export const InventionDraftSchema = z.object({
       z.object({
         id: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,23}$/, "ids are letters, digits and _"),
         kind: z.enum(INDICATOR_KINDS),
-        period: z.number()
+        period: z.number(),
+        market: z.string().optional()
       })
     )
     .min(1)
@@ -34,7 +37,8 @@ export const InventionDraftSchema = z.object({
   longEntry: z.unknown(),
   shortEntry: z.unknown(),
   stopAtrMultiple: z.number(),
-  rewardMultiple: z.number()
+  rewardMultiple: z.number(),
+  basket: z.array(z.string()).max(20).optional()
 });
 
 export type InventionCheck =
@@ -55,14 +59,25 @@ function clamp(value: number, min: number, max: number, integer = false): number
 }
 
 /** Every reference problem in an expression: unknown ids, outputs a kind lacks, long shifts. */
+const isFleetInstrument = (market: string): boolean =>
+  (FLEET_INSTRUMENTS as readonly string[]).includes(market);
+
+const MARKET_LIST = FLEET_INSTRUMENTS.join(", ");
+
 function exprProblems(expr: NumExpr, kinds: ReadonlyMap<string, string>, where: string): string[] {
   switch (expr.type) {
     case "constant":
       return Number.isFinite(expr.value) ? [] : [`${where}: constants must be finite numbers`];
-    case "bar_field":
-      return (expr.shift ?? 0) > MAX_INVENTION_SHIFT
-        ? [`${where}: shift ${expr.shift} is longer than ${MAX_INVENTION_SHIFT} bars`]
-        : [];
+    case "bar_field": {
+      const problems: string[] = [];
+      if ((expr.shift ?? 0) > MAX_INVENTION_SHIFT) {
+        problems.push(`${where}: shift ${expr.shift} is longer than ${MAX_INVENTION_SHIFT} bars`);
+      }
+      if (expr.market !== undefined && !isFleetInstrument(expr.market)) {
+        problems.push(`${where}: market "${expr.market}" must be one of ${MARKET_LIST}`);
+      }
+      return problems;
+    }
     case "indicator": {
       const kind = kinds.get(expr.id);
       if (!kind) return [`${where}: no indicator has id "${expr.id}"`];
@@ -127,6 +142,12 @@ export function checkInvention(
 
   const ids = d.indicators.map((i) => i.id);
   if (new Set(ids).size !== ids.length) return fail("indicator ids must be unique");
+  const foreign = d.indicators.find((i) => i.market !== undefined && !isFleetInstrument(i.market));
+  if (foreign) {
+    return fail(
+      `indicator "${foreign.id}": market "${foreign.market}" must be one of ${MARKET_LIST}`
+    );
+  }
   const kinds = new Map(d.indicators.map((i) => [i.id, i.kind]));
 
   const long = ConditionSchema.safeParse(d.longEntry);
@@ -143,8 +164,18 @@ export function checkInvention(
   const instrumentId: FleetInstrument = instruments.includes(d.instrumentId)
     ? (d.instrumentId as FleetInstrument)
     : (brief.instruments[0] ?? FLEET_INSTRUMENTS[0]);
+  // The basket keeps only coins the brief allows, after the boat's own market
+  const basket = blueprintMarkets({
+    instrumentId,
+    basket: (d.basket ?? []).filter((m): m is FleetInstrument => instruments.includes(m))
+  }).slice(1);
   const direction = brief.direction === "any" ? d.direction : brief.direction;
-  const indicators = d.indicators.map((i) => ({ ...i, period: clamp(i.period, 2, 200, true) }));
+  const indicators = d.indicators.map((i) => ({
+    id: i.id,
+    kind: i.kind,
+    period: clamp(i.period, 2, 200, true),
+    ...(i.market ? { market: i.market as FleetInstrument } : {})
+  }));
   const periods = indicators.map((i) => i.period);
   const lookbackPeriod = clamp(Math.max(...periods), 5, 200, true);
   const fastPeriod = clamp(Math.min(...periods, lookbackPeriod - 2), 3, 100, true);
@@ -169,9 +200,13 @@ export function checkInvention(
     stopAtrMultiple,
     rewardMultiple,
     rationale: d.rationale.trim().slice(0, 600),
+    basket,
     invention: {
       ...invention,
-      rules: describeInvention({ direction, stopAtrMultiple, rewardMultiple }, invention)
+      rules: describeInvention(
+        { direction, stopAtrMultiple, rewardMultiple, instrumentId, basket },
+        invention
+      )
     }
   });
 
@@ -200,8 +235,29 @@ export function checkImportedInvention(raw: unknown): InventionCheck {
     return {
       ok: false,
       name: check.blueprint.name,
-      error: `instrumentId must be one of ${FLEET_INSTRUMENTS.join(", ")}`
+      error: `instrumentId must be one of ${MARKET_LIST}`
     };
+  }
+  const basket =
+    typeof raw === "object" && raw !== null && "basket" in raw
+      ? (raw as { basket: unknown }).basket
+      : undefined;
+  if (Array.isArray(basket)) {
+    const unknown = basket.find((m) => typeof m !== "string" || !isFleetInstrument(m));
+    if (unknown !== undefined) {
+      return {
+        ok: false,
+        name: check.blueprint.name,
+        error: `basket: "${String(unknown)}" must be one of ${MARKET_LIST}`
+      };
+    }
+    if (new Set([check.blueprint.instrumentId, ...basket]).size > MAX_BOAT_MARKETS) {
+      return {
+        ok: false,
+        name: check.blueprint.name,
+        error: `a boat trades at most ${MAX_BOAT_MARKETS} coins: instrumentId plus up to ${MAX_BOAT_MARKETS - 1} in basket`
+      };
+    }
   }
   return check;
 }

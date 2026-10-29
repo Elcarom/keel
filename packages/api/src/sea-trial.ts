@@ -1,4 +1,5 @@
 import {
+  ScaledDecimal,
   normalizeBlueprint,
   type Assessment,
   type BotArchetype,
@@ -13,10 +14,14 @@ import {
 } from "@keel/core";
 import {
   bootstrapTradeReturns,
+  computeDeflatedSharpeRatio,
+  getTimeframeAnnualizationPeriods,
   normalCdf,
   oneSidedTTest,
   splitIntoPeriods,
-  type ReplayRunResult
+  type ReplayEquityPoint,
+  type ReplayRunResult,
+  type ReplayTradeRecord
 } from "@keel/replay";
 import { nudgeInvention } from "@keel/spec";
 
@@ -123,10 +128,139 @@ function signed(value: number, suffix = "%"): string {
   return `${value > 0 ? "+" : ""}${round(value)}${suffix}`;
 }
 
-/** A finished replay reduced to what the sea trial compares. */
+/**
+ * What the sea trial reads from a backtest: one replay, or a basket's replays combined into one
+ * portfolio by combineRuns.
+ */
+export type TrialRun = Pick<
+  ReplayRunResult,
+  | "netPnlUsdt"
+  | "sharpeRatio"
+  | "deflatedSharpeRatio"
+  | "totalTrades"
+  | "winRate"
+  | "avgR"
+  | "maxDrawdownPct"
+  | "fromTs"
+  | "toTs"
+  | "stressNetExpectancyR"
+  | "walkForwardOutOfSampleAvgR"
+  | "replayGatePassed"
+  | "randomEntryPercentile"
+  | "buyAndHoldReturnPct"
+  | "buyAndHoldSharpeRatio"
+> & {
+  readonly trades: readonly Pick<ReplayTradeRecord, "entryTs" | "exitTs" | "netPnlUsdt" | "netR">[];
+  readonly equityCurve: readonly Pick<ReplayEquityPoint, "ts" | "equityUsdt">[];
+};
+
+/**
+ * A basket boat's backtest: each coin replayed on the full stake, as the live boat sizes every
+ * position off its whole equity, then summed into one portfolio. Equity adds up hour by hour;
+ * Sharpe, luck adjustment and worst dip are measured on the combined curve. Per-coin statistics
+ * the replays measured on their own (cost stress, walk-forward, random entries, holding) are
+ * averaged, weighted by trades where trades drive them. See ADR-0028.
+ */
+export function combineRuns(runs: readonly TrialRun[], initial: number, trials: number): TrialRun {
+  const [first] = runs;
+  if (!first) throw new Error("A sea trial needs at least one run");
+  if (runs.length === 1) return first;
+
+  const totalTrades = runs.reduce((n, r) => n + r.totalTrades, 0);
+  const mean = (f: (r: TrialRun) => number) => runs.reduce((a, r) => a + f(r), 0) / runs.length;
+  const byTrades = (f: (r: TrialRun) => number) =>
+    totalTrades > 0 ? runs.reduce((a, r) => a + f(r) * r.totalTrades, 0) / totalTrades : mean(f);
+
+  // Portfolio equity: each run's last known equity at every timestamp any run marked
+  const times = [...new Set(runs.flatMap((r) => r.equityCurve.map((p) => p.ts)))].sort(
+    (a, b) => a - b
+  );
+  const cursor = runs.map(() => 0);
+  const lastEquity = runs.map(() => initial);
+  const equityCurve: { ts: number; equityUsdt: string }[] = [];
+  const periodicReturns: number[] = [];
+  let peak = initial;
+  let maxDrawdownPct = 0;
+  let prev = initial;
+  for (const ts of times) {
+    runs.forEach((r, i) => {
+      let c = cursor[i] ?? 0;
+      while (c < r.equityCurve.length && (r.equityCurve[c]?.ts ?? Infinity) <= ts) {
+        lastEquity[i] = Number(r.equityCurve[c]?.equityUsdt ?? initial);
+        c++;
+      }
+      cursor[i] = c;
+    });
+    const equity = lastEquity.reduce((a, e) => a + (e - initial), initial);
+    equityCurve.push({ ts, equityUsdt: equity.toFixed(8) });
+    periodicReturns.push(prev > 0 ? (equity - prev) / prev : 0);
+    prev = equity;
+    peak = Math.max(peak, equity);
+    if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, ((peak - equity) / peak) * 100);
+  }
+  const dsr = computeDeflatedSharpeRatio({
+    periodicReturns,
+    annualizationFactor: Math.sqrt(getTimeframeAnnualizationPeriods("1H")),
+    numTrials: Math.max(1, trials)
+  });
+
+  const trades = runs.flatMap((r) => r.trades).sort((a, b) => a.exitTs - b.exitTs);
+  const netPnl = runs.reduce(
+    (sum, r) => sum.add(ScaledDecimal.fromString(r.netPnlUsdt)),
+    ScaledDecimal.zero()
+  );
+  return {
+    netPnlUsdt: netPnl.toFixed(8),
+    sharpeRatio: dsr.sharpeRatio,
+    deflatedSharpeRatio: dsr.deflatedSharpeRatio,
+    totalTrades,
+    winRate: byTrades((r) => r.winRate),
+    avgR: trades.length > 0 ? trades.reduce((a, t) => a + t.netR, 0) / trades.length : 0,
+    maxDrawdownPct,
+    fromTs: Math.min(...runs.map((r) => r.fromTs)),
+    toTs: Math.max(...runs.map((r) => r.toTs)),
+    stressNetExpectancyR: byTrades((r) => r.stressNetExpectancyR),
+    walkForwardOutOfSampleAvgR: byTrades((r) => r.walkForwardOutOfSampleAvgR),
+    replayGatePassed: runs.every((r) => r.replayGatePassed),
+    randomEntryPercentile: mean((r) => r.randomEntryPercentile ?? 0),
+    buyAndHoldReturnPct: mean((r) => r.buyAndHoldReturnPct ?? 0),
+    buyAndHoldSharpeRatio: mean((r) => r.buyAndHoldSharpeRatio ?? 0),
+    trades,
+    equityCurve
+  };
+}
+
+/**
+ * An equal-weight index of several markets' closes on the first market's hours, so a basket's
+ * seasons compare with the basket's own market.
+ */
+export function basketIndexBars(
+  barsByMarket: readonly (readonly ConfirmedBar[])[]
+): { closeTs: number; close: string }[] {
+  const [lead] = barsByMarket;
+  if (!lead || barsByMarket.length === 1) return lead ? [...lead] : [];
+  const cursors = barsByMarket.map(() => 0);
+  const firsts = barsByMarket.map((bars) => Number(bars[0]?.close ?? 0));
+  const lasts = [...firsts];
+  return lead.map((bar) => {
+    let sum = 0;
+    barsByMarket.forEach((bars, i) => {
+      let c = cursors[i] ?? 0;
+      while (c < bars.length && (bars[c]?.closeTs ?? Infinity) <= bar.closeTs) {
+        lasts[i] = Number(bars[c]?.close ?? 0);
+        c++;
+      }
+      cursors[i] = c;
+      sum += (firsts[i] ?? 0) > 0 ? (lasts[i] ?? 0) / (firsts[i] ?? 1) : 1;
+    });
+    return { closeTs: bar.closeTs, close: ((sum / barsByMarket.length) * 100).toFixed(8) };
+  });
+}
+
+/** A finished backtest reduced to what the sea trial compares. */
 export function variantOf(
   label: string,
-  result: ReplayRunResult,
+  result: Pick<TrialRun, "netPnlUsdt" | "sharpeRatio" | "totalTrades">,
   initial: number
 ): SeaTrialVariant {
   return {
@@ -138,7 +272,7 @@ export function variantOf(
 }
 
 /** Each trade's net P&L as a fraction of the equity it was taken with (one position at a time). */
-function tradeReturns(result: ReplayRunResult, initial: number): number[] {
+function tradeReturns(result: TrialRun, initial: number): number[] {
   let equity = initial;
   const returns: number[] = [];
   for (const t of result.trades) {
@@ -173,8 +307,9 @@ const CHECKS: Readonly<Record<SeaTrialCheckKey, CheckSpec>> = {
 export const MIN_TRADES = 30;
 
 export interface SeaTrialInput {
-  readonly main: ReplayRunResult;
-  readonly bars: readonly ConfirmedBar[];
+  readonly main: TrialRun;
+  /** The market (or, for a basket, the equal-weight index) the seasons compare with. */
+  readonly bars: readonly Pick<ConfirmedBar, "closeTs" | "close">[];
   readonly neighbours: readonly SeaTrialVariant[];
   readonly sibling: (SeaTrialVariant & { readonly instrumentId: string }) | null;
   readonly initialEquityUsdt: string;

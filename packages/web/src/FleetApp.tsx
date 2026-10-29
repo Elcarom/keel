@@ -5,12 +5,14 @@ import {
   ARCHETYPE_LABELS,
   BOT_ARCHETYPES,
   FLEET_INSTRUMENTS,
+  blueprintMarkets,
   keelApiContract,
   type ArchetypeFamily,
   type Assessment,
   type BlueprintArchetype,
   type Bot,
   type BotArchetype,
+  type BotBlueprint,
   type DesignMode,
   type DesignBatch,
   type DesignBrief,
@@ -85,6 +87,12 @@ function pair(instrumentId: string): string {
 
 function coin(instrumentId: string): string {
   return instrumentId.replace("-USDT-SWAP", "");
+}
+
+/** The coins a boat trades: "BTC perp" for one, "SOL + AVAX + LINK" for a basket. */
+function marketsLabel(b: Pick<BotBlueprint, "instrumentId" | "basket">): string {
+  const markets = blueprintMarkets(b);
+  return markets.length === 1 ? pair(b.instrumentId) : markets.map(coin).join(" + ");
 }
 
 const DIRECTION_LABELS = { both: "Long & short", long_only: "Long only", short_only: "Short only" };
@@ -512,7 +520,8 @@ function BotCard({
 }) {
   const [open, setOpen] = useState(false);
   const pnl = Number(bot.pnlUsdt);
-  const pos = bot.openPosition;
+  const positions = bot.openPositions;
+  const many = blueprintMarkets(bot.blueprint).length > 1;
   return (
     <article
       data-testid="bot-card"
@@ -528,7 +537,8 @@ function BotCard({
               {bot.name}
             </h3>
             <p className="text-xs text-slate-400">
-              {ARCHETYPE_LABELS[bot.blueprint.archetype]} · {pair(bot.blueprint.instrumentId)} ·{" "}
+              {ARCHETYPE_LABELS[bot.blueprint.archetype]} ·{" "}
+              <span data-testid="bot-markets">{marketsLabel(bot.blueprint)}</span> ·{" "}
               {DIRECTION_LABELS[bot.blueprint.direction]}
             </p>
           </div>
@@ -580,25 +590,30 @@ function BotCard({
       </div>
 
       <div className="rounded-xl bg-[#0F1419] px-3 py-2 text-xs">
-        {pos ? (
-          <span className="text-slate-200">
-            <span
-              className={
-                pos.side === "long"
-                  ? "font-semibold text-emerald-300"
-                  : "font-semibold text-rose-300"
-              }
-            >
-              {pos.side === "long" ? "Long" : "Short"}
-            </span>{" "}
-            {pos.contracts} @ {price(pos.entryPrice)} · stop {price(pos.protectiveStopPrice)}
-            {pos.takeProfitPrice
-              ? ` · target ${usd.format(Number(pos.takeProfitPrice))}`
-              : ""} ·{" "}
-            <span className={tone(Number(pos.unrealizedPnlUsdt))}>
-              {signedMoney(pos.unrealizedPnlUsdt)}
-            </span>
-          </span>
+        {positions.length > 0 ? (
+          <ul className="space-y-1" data-testid="bot-open-positions">
+            {positions.map((pos) => (
+              <li key={pos.instrumentId} className="text-slate-200">
+                {many && (
+                  <span className="font-semibold text-slate-100">{coin(pos.instrumentId)} </span>
+                )}
+                <span
+                  className={
+                    pos.side === "long"
+                      ? "font-semibold text-emerald-300"
+                      : "font-semibold text-rose-300"
+                  }
+                >
+                  {pos.side === "long" ? "Long" : "Short"}
+                </span>{" "}
+                {pos.contracts} @ {price(pos.entryPrice)} · stop {price(pos.protectiveStopPrice)}
+                {pos.takeProfitPrice ? ` · target ${price(pos.takeProfitPrice)}` : ""} ·{" "}
+                <span className={tone(Number(pos.unrealizedPnlUsdt))}>
+                  {signedMoney(pos.unrealizedPnlUsdt)}
+                </span>
+              </li>
+            ))}
+          </ul>
         ) : (
           <span className="text-slate-400">
             {bot.status === "running" ? "No position — watching the horizon" : "No position"} · last
@@ -678,6 +693,7 @@ function BotLogbook({ bot }: { bot: Bot }) {
           <table className="w-full text-left">
             <thead className="text-slate-400">
               <tr>
+                <th className="py-1 font-medium">Coin</th>
                 <th className="py-1 font-medium">Side</th>
                 <th className="py-1 font-medium">Entry</th>
                 <th className="py-1 font-medium">Exit</th>
@@ -686,7 +702,11 @@ function BotLogbook({ bot }: { bot: Bot }) {
             </thead>
             <tbody className="font-mono-tabular">
               {bot.recentTrades.map((t) => (
-                <tr key={`${t.openedAtMs}-${t.side}`} className="border-t border-[#1E2833]">
+                <tr
+                  key={`${t.instrumentId}-${t.openedAtMs}-${t.side}`}
+                  className="border-t border-[#1E2833]"
+                >
+                  <td className="py-1">{coin(t.instrumentId)}</td>
                   <td className="py-1">{t.side}</td>
                   <td className="py-1">{price(t.entryPrice)}</td>
                   <td className="py-1">{t.exitPrice ? price(t.exitPrice) : "open"}</td>
@@ -1856,7 +1876,8 @@ function PropositionCard({
               {b.invention && <InventedBadge source={proposition.source} />}
             </div>
             <p className="text-xs text-slate-400">
-              {ARCHETYPE_LABELS[b.archetype]} · {pair(b.instrumentId)} ·{" "}
+              {ARCHETYPE_LABELS[b.archetype]} ·{" "}
+              <span data-testid="proposition-markets">{marketsLabel(b)}</span> ·{" "}
               {DIRECTION_LABELS[b.direction]}
             </p>
             <p className="mt-1 text-sm text-slate-300 italic">“{b.tagline}”</p>

@@ -185,6 +185,9 @@ describe("Fleet API", () => {
     expect(prompt).toContain("weekend liquidity");
     expect(prompt).toContain("Old Salt");
     expect(prompt).toContain('"type":"crosses_above"|"crosses_below"');
+    // Baskets and other markets are on offer, not just one coin
+    expect(prompt).toContain('"basket" ([] or up to 4 more coins)');
+    expect(prompt).toContain("Markets the rules may read as signals: any of Keel's ten");
   }, 60_000);
 
   it("imports a Claude chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
@@ -262,6 +265,90 @@ describe("Fleet API", () => {
     expect(allBad.body["batch"]).toBeNull();
     expect(allBad.body["rejected"]).toHaveLength(1);
   }, 60_000);
+
+  it("sea-trials a basket boat that reads BTC as one portfolio, then trades every coin in it", async () => {
+    const { call, clock, dataStore, overview } = await setup();
+    const push = (id: string, op: string, value: number) => ({
+      type: "comparison",
+      op,
+      left: { type: "indicator", id, output: "momentum" },
+      right: { type: "constant", value }
+    });
+    const lighthouse = {
+      name: "Lighthouse",
+      tagline: "Steers each coin the way BTC already swung.",
+      rationale:
+        "Alts follow decisive BTC moves with a lag. It fails when a coin lags for its own reasons.",
+      instrumentId: "SOL-USDT-SWAP",
+      basket: ["AVAX-USDT-SWAP"],
+      direction: "both",
+      indicators: [
+        { id: "btc_push", kind: "momentum", period: 6, market: "BTC-USDT-SWAP" },
+        { id: "push", kind: "momentum", period: 6 }
+      ],
+      longEntry: {
+        type: "logical_op",
+        op: "and",
+        operands: [push("btc_push", ">=", 0.5), push("push", "<", 0.5)]
+      },
+      shortEntry: {
+        type: "logical_op",
+        op: "and",
+        operands: [push("btc_push", "<=", -0.5), push("push", ">", -0.5)]
+      },
+      stopAtrMultiple: 2,
+      rewardMultiple: 2
+    };
+    const res = await call("POST", "/api/v1/fleet/designs/import", {
+      text: JSON.stringify({ propositions: [lighthouse] })
+    });
+    expect(res.status).toBe(200);
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 2400 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+    }
+    const [p] = batch?.propositions ?? [];
+    expect(p?.status).toBe("ranked");
+    expect(p?.blueprint.basket).toEqual(["AVAX-USDT-SWAP"]);
+    expect(p?.blueprint.invention?.rules).toEqual([
+      "Long when BTC momentum(6) ≥ 0.5 and momentum(6) < 0.5",
+      "Short when BTC momentum(6) ≤ -0.5 and momentum(6) > -0.5",
+      "Stop 2× ATR(14) away, target 2× the risk",
+      "Trades SOL, AVAX with the same rules, one position per coin"
+    ]);
+    // The sibling cross-check sails a coin outside the basket
+    expect(p?.assessment?.seaTrial?.sibling?.instrumentId).toBe("ETH-USDT-SWAP");
+    expect(p?.assessment?.totalTrades).toBeGreaterThan(0);
+
+    const wallet = (await overview()).wallets[0] as Wallet;
+    const launched = await call("POST", `/api/v1/fleet/propositions/${p?.propositionId}/launch`, {
+      name: "Lighthouse",
+      walletId: wallet.walletId,
+      allocationUsdt: "1000",
+      mode: "paper"
+    });
+    expect(launched.status).toBe(200);
+
+    // Fresh bars on both coins and on BTC: the boat steps each coin it trades
+    clock.advanceMs(10 * 3_600_000);
+    for (const instrumentId of ["SOL-USDT-SWAP", "AVAX-USDT-SWAP", "BTC-USDT-SWAP"]) {
+      seedSyntheticMarketSeries({
+        marketDataRepo: dataStore.marketDataRepo,
+        instrumentId,
+        endCloseTs: clock.nowMs(),
+        barCount1H: 600
+      });
+    }
+    const step = await call("POST", "/api/v1/system/scheduler/step");
+    expect(step.status).toBe(200);
+    const bot = (await overview()).bots[0];
+    expect(bot?.lastBarAtMs).toBe(Math.floor(clock.nowMs() / 3_600_000) * 3_600_000);
+    const coins = (bot?.openPositions ?? []).map((pos) => pos.instrumentId);
+    expect(coins.every((id) => id === "SOL-USDT-SWAP" || id === "AVAX-USDT-SWAP")).toBe(true);
+  }, 240_000);
 
   it("sea-trials inventions with nudged windows and thresholds, and launches one as a boat", async () => {
     const { call, clock, dataStore, overview } = await setup();

@@ -18,6 +18,8 @@ export interface Strategy {
   readonly parameterHash: string;
   readonly lookbacks: LookbackRequirement;
   readonly lookbackRequirements: LookbackRequirement;
+  /** Other markets whose confirmed 1H bars the rules read, besides the traded one. */
+  readonly referenceMarkets?: readonly string[] | undefined;
   evaluate(snapshot: FeatureSnapshot): ProposalMenu;
 }
 

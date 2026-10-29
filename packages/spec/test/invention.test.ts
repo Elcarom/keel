@@ -236,6 +236,120 @@ describe("Inventions", () => {
     expect(pepe.ok ? "" : pepe.error).toMatch(/^instrumentId must be one of BTC-USDT-SWAP/);
   });
 
+  it("reads another market hour by hour, never a later hour, and waits for one that lags", () => {
+    const btcClose = { type: "bar_field", field: "close", market: "BTC-USDT-SWAP" };
+    const b = ok({
+      ...SNAPBACK,
+      indicators: [{ id: "btc_avg", kind: "sma", period: 3, market: "BTC-USDT-SWAP" }],
+      longEntry: {
+        type: "comparison",
+        op: ">",
+        left: btcClose,
+        right: { type: "indicator", id: "btc_avg", output: "mean" }
+      },
+      shortEntry: {
+        type: "comparison",
+        op: "<",
+        left: { type: "constant", value: 1 },
+        right: { type: "constant", value: 0 }
+      }
+    });
+    expect(b.invention?.rules[0]).toBe("Long when BTC close > BTC SMA(3)");
+    const strategy = new SpecStrategy(compileBlueprint(b, "inv_lead"));
+    expect(strategy.referenceMarkets).toEqual(["BTC-USDT-SWAP"]);
+
+    const dt = TIMEFRAME_DURATION_MS["1H"];
+    const day = Date.UTC(2024, 5, 3);
+    const series = (instrumentId: string, close: (h: number) => number): ConfirmedBar[] =>
+      Array.from({ length: 20 }, (_, h) => ({
+        instrumentId,
+        timeframe: "1H",
+        openTs: day + h * dt,
+        closeTs: day + (h + 1) * dt,
+        open: "100",
+        high: "120",
+        low: "90",
+        close: String(close(h)),
+        volumeContracts: "1",
+        volumeQuote: "100",
+        confirm: "1"
+      }));
+    // SOL never moves; BTC jumps at the last hour
+    const sol = series("SOL-USDT-SWAP", () => 100);
+    const btc = series("BTC-USDT-SWAP", (h) => (h === 19 ? 110 : 100));
+    const at = (h: number, btcUpTo: number) =>
+      strategy.evaluate({
+        instrumentId: "SOL-USDT-SWAP",
+        asOfMs: sol[h]?.closeTs ?? 0,
+        barsByTimeframe: { "1H": sol.slice(0, h + 1) },
+        recentFundingRates: [],
+        referenceBars: { "BTC-USDT-SWAP": btc.slice(0, btcUpTo + 1) }
+      });
+
+    // Hour 18 never sees BTC's jump, even when the snapshot wrongly holds the next hour
+    expect(at(18, 19).proposals).toEqual([]);
+    expect(at(18, 19).standDownReason).toBe("no_spec_signals");
+    // Hour 19 trades SOL on BTC's move
+    expect(at(19, 19).proposals.map((p) => [p.instrumentId, p.side])).toEqual([
+      ["SOL-USDT-SWAP", "long"]
+    ]);
+    // BTC has not posted hour 19 yet: stand down rather than read hour 18 as if it were current
+    expect(at(19, 18).proposals).toEqual([]);
+    expect(at(19, 18).standDownReason).toBe("reference_market_not_current_BTC-USDT-SWAP");
+  });
+
+  it("sails a basket of the brief's coins and names it in the rules", () => {
+    const b = ok(
+      { ...SNAPBACK, basket: ["AVAX-USDT-SWAP", "DOGE-USDT-SWAP", "SOL-USDT-SWAP"] },
+      { instruments: ["SOL-USDT-SWAP", "AVAX-USDT-SWAP", "LINK-USDT-SWAP"], direction: "any" }
+    );
+    // DOGE is not in the brief, and SOL is already the boat's own market
+    expect(b.basket).toEqual(["AVAX-USDT-SWAP"]);
+    expect(b.invention?.rules.at(-1)).toBe(
+      "Trades SOL, AVAX with the same rules, one position per coin"
+    );
+  });
+
+  it("refuses imported baskets and signals on markets Keel does not trade", () => {
+    const error = (raw: unknown) => {
+      const check = checkImportedInvention(raw);
+      return check.ok ? null : check.error;
+    };
+    expect(error({ ...SNAPBACK, basket: ["AVAX-USDT-SWAP"] })).toBeNull();
+    expect(error({ ...SNAPBACK, basket: ["PEPE-USDT-SWAP"] })).toMatch(
+      /^basket: "PEPE-USDT-SWAP" must be one of/
+    );
+    expect(
+      error({
+        ...SNAPBACK,
+        basket: [
+          "BTC-USDT-SWAP",
+          "ETH-USDT-SWAP",
+          "XRP-USDT-SWAP",
+          "ADA-USDT-SWAP",
+          "LTC-USDT-SWAP"
+        ]
+      })
+    ).toMatch(/at most 5 coins/);
+    expect(
+      error({
+        ...SNAPBACK,
+        indicators: [...SNAPBACK.indicators, { id: "pepe", kind: "ema", period: 9, market: "PEPE" }]
+      })
+    ).toMatch(/^indicator "pepe": market "PEPE" must be one of/);
+    expect(
+      error({
+        ...SNAPBACK,
+        shortEntry: {
+          type: "comparison",
+          op: ">",
+          left: { type: "bar_field", field: "close", market: "PEPE-USDT-SWAP" },
+          right: { type: "constant", value: 1 }
+        }
+      })
+    ).toMatch(/^shortEntry: market "PEPE-USDT-SWAP" must be one of/);
+  });
+
   it("nudges windows and thresholds, but never the clock", () => {
     const b = ok({
       ...SNAPBACK,

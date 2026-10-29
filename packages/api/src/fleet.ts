@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import {
+  FLEET_INSTRUMENTS,
   SIBLING_INSTRUMENTS,
   ScaledDecimal,
+  blueprintMarkets,
   overlapsSealed2026Holdout,
   type Assessment,
   type BatchBrief,
@@ -57,12 +59,42 @@ import {
   BACKTEST_TO_TS,
   DEFAULT_SEA_TRIAL_SETTINGS,
   assessSeaTrial,
+  basketIndexBars,
+  combineRuns,
   neighbourBlueprints,
   variantOf,
-  type SeaTrialSettings
+  type SeaTrialSettings,
+  type TrialRun
 } from "./sea-trial.js";
 
 const HOUR_MS = 3_600_000;
+
+/** How long a boat waits for a market it reads to post the same hour before trading without it. */
+const REFERENCE_GRACE_MS = 3 * HOUR_MS;
+
+const coin = (id: string): string => id.replace("-USDT-SWAP", "");
+
+/**
+ * The market a boat is cross-checked on: its lead coin's sibling, unless the boat already trades
+ * or reads it; then the first coin it neither trades nor reads.
+ */
+function siblingFor(
+  markets: readonly FleetInstrument[],
+  references: readonly FleetInstrument[]
+): FleetInstrument {
+  const lead = markets[0] ?? FLEET_INSTRUMENTS[0];
+  const used = (m: FleetInstrument) => markets.includes(m) || references.includes(m);
+  const preferred = SIBLING_INSTRUMENTS[lead];
+  if (!used(preferred)) return preferred;
+  return FLEET_INSTRUMENTS.find((m) => !used(m)) ?? preferred;
+}
+
+/** Other markets a blueprint's rules read, besides the coins it trades. */
+function referenceMarketsOf(b: BotBlueprint): FleetInstrument[] {
+  const markets: readonly string[] = new SpecStrategy(compileBlueprint(b, "references"))
+    .referenceMarkets;
+  return FLEET_INSTRUMENTS.filter((m) => markets.includes(m));
+}
 
 const BACKTEST_EQUITY_USDT = "10000.00";
 const DEFAULT_WALLET_USDT = "10000.00000000";
@@ -432,35 +464,44 @@ export class FleetService {
   ): Promise<Assessment> {
     const b = proposition.blueprint;
     const initial = Number(BACKTEST_EQUITY_USDT);
+    const markets = blueprintMarkets(b);
+    const references = referenceMarketsOf(b);
+    const needed = [...new Set([...markets, ...references])];
 
-    say(`charting ${BACKTEST_DAYS} days of ${b.instrumentId.replace("-USDT-SWAP", "")} history`);
-    const dataSource = await this.ensureBacktestData(b.instrumentId);
-    await this.breathe();
+    let dataSource: "okx" | "synthetic" = "okx";
+    for (const market of needed) {
+      say(`charting ${BACKTEST_DAYS} days of ${coin(market)} history`);
+      if ((await this.ensureBacktestData(market)) === "synthetic") dataSource = "synthetic";
+      await this.breathe();
+    }
 
-    say("full backtest, cost stress and walk-forward");
-    const main = this.replay(b, proposition.propositionId, trials, true);
+    say(
+      markets.length > 1
+        ? `full backtest on ${markets.map(coin).join(", ")}, cost stress and walk-forward`
+        : "full backtest, cost stress and walk-forward"
+    );
+    const main = await this.replayBasket(b, proposition.propositionId, trials, true);
 
     const neighbours: SeaTrialVariant[] = [];
     for (const [i, n] of neighbourBlueprints(b).entries()) {
       say(`nudging settings (${i + 1} of 4): ${n.label}`);
-      await this.breathe();
       neighbours.push(
         variantOf(
           n.label,
-          this.replay(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
+          await this.replayBasket(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
           initial
         )
       );
     }
 
-    const siblingId = SIBLING_INSTRUMENTS[b.instrumentId];
-    say(`sailing the same course on ${siblingId.replace("-USDT-SWAP", "")}`);
+    const siblingId = siblingFor(markets, references);
+    say(`sailing the same course on ${coin(siblingId)}`);
     let sibling: (SeaTrialVariant & { instrumentId: string }) | null = null;
     try {
       await this.ensureBacktestData(siblingId);
       await this.breathe();
       const run = this.replay(
-        { ...b, instrumentId: siblingId },
+        { ...b, instrumentId: siblingId, basket: [] },
         `${proposition.propositionId}_sib`,
         trials,
         false
@@ -472,17 +513,25 @@ export class FleetService {
 
     say("reshuffling trades and scoring");
     await this.breathe();
-    const bars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
-      instrumentId: b.instrumentId,
-      timeframe: "1H",
-      fromOpenTs: BACKTEST_FROM_TS,
-      toCloseTs: BACKTEST_TO_TS
-    });
-    const settled = this.dataStore.marketDataRepo.getSettledFundingInRange({
-      instrumentId: b.instrumentId,
-      fromTs: BACKTEST_FROM_TS,
-      toTs: BACKTEST_TO_TS
-    });
+    const repo = this.dataStore.marketDataRepo;
+    const bars = basketIndexBars(
+      markets.map((instrumentId) =>
+        repo.getConfirmedBarsInRange({
+          instrumentId,
+          timeframe: "1H",
+          fromOpenTs: BACKTEST_FROM_TS,
+          toCloseTs: BACKTEST_TO_TS
+        })
+      )
+    );
+    const settled = markets.every(
+      (instrumentId) =>
+        repo.getSettledFundingInRange({
+          instrumentId,
+          fromTs: BACKTEST_FROM_TS,
+          toTs: BACKTEST_TO_TS
+        }).length > 0
+    );
     return assessSeaTrial({
       main,
       bars,
@@ -490,12 +539,27 @@ export class FleetService {
       sibling,
       initialEquityUsdt: BACKTEST_EQUITY_USDT,
       dataSource,
-      funding: settled.length > 0 ? "settled" : "assumed",
+      funding: settled ? "settled" : "assumed",
       trials,
       days: BACKTEST_DAYS,
       seed: seedFromString(proposition.propositionId),
       settings: this.seaTrialSettings
     });
+  }
+
+  /** One backtest per coin a boat trades, combined into the boat's portfolio (ADR-0028). */
+  private async replayBasket(
+    blueprint: BotBlueprint,
+    strategyId: string,
+    trials: number,
+    full: boolean
+  ): Promise<TrialRun> {
+    const runs: TrialRun[] = [];
+    for (const instrumentId of blueprintMarkets(blueprint)) {
+      await this.breathe();
+      runs.push(this.replay({ ...blueprint, instrumentId, basket: [] }, strategyId, trials, full));
+    }
+    return combineRuns(runs, Number(BACKTEST_EQUITY_USDT), trials);
   }
 
   /**
@@ -612,17 +676,19 @@ export class FleetService {
     // The bot trades from the next confirmed bar on; history before launch is never traded
     const engine = this.engineFor(bot);
     const anchorCloseTs = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
-    engine.accountRepo.setSchedulerAnchor({
-      instrumentId: bot.blueprint.instrumentId,
-      strategyId: botId,
-      anchorCloseTs,
-      createdAtMs: nowMs
-    });
-    engine.accountRepo.recordProcessedBar({
-      instrumentId: bot.blueprint.instrumentId,
-      strategyId: botId,
-      closeTs: anchorCloseTs
-    });
+    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+      engine.accountRepo.setSchedulerAnchor({
+        instrumentId,
+        strategyId: botId,
+        anchorCloseTs,
+        createdAtMs: nowMs
+      });
+      engine.accountRepo.recordProcessedBar({
+        instrumentId,
+        strategyId: botId,
+        closeTs: anchorCloseTs
+      });
+    }
     void this.warmLookback(bot, engine.strategy, anchorCloseTs);
     return this.botView(bot);
   }
@@ -635,16 +701,28 @@ export class FleetService {
   ): Promise<void> {
     if (!this.ingestor) return;
     const bars = strategy.lookbacks["1H"] ?? 50;
-    try {
-      await this.ingestor.ingestRange({
-        instrumentId: bot.blueprint.instrumentId,
-        timeframe: "1H",
-        fromOpenTs: anchorCloseTs - (bars + 5) * HOUR_MS,
-        toOpenTs: anchorCloseTs - HOUR_MS
-      });
-    } catch {
-      // The scheduler's own ingest keeps trying
+    for (const instrumentId of this.marketsReadBy(bot)) {
+      try {
+        await this.ingestor.ingestRange({
+          instrumentId,
+          timeframe: "1H",
+          fromOpenTs: anchorCloseTs - (bars + 5) * HOUR_MS,
+          toOpenTs: anchorCloseTs - HOUR_MS
+        });
+      } catch {
+        // The scheduler's own ingest keeps trying
+      }
     }
+  }
+
+  /** Every market a boat needs bars for: the coins it trades, then the ones its rules read. */
+  private marketsReadBy(bot: BotRecord): string[] {
+    return [
+      ...new Set<string>([
+        ...blueprintMarkets(bot.blueprint),
+        ...(this.engineFor(bot).strategy.referenceMarkets ?? [])
+      ])
+    ];
   }
 
   private requireBot(botId: string): BotRecord {
@@ -653,21 +731,22 @@ export class FleetService {
     return bot;
   }
 
-  private markPrices(instrumentId: string): Record<string, ScaledDecimal> {
-    const latest = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
-      instrumentId,
-      timeframe: "1H",
-      asOfMs: this.clock.nowMs(),
-      limit: 1
-    })[0];
-    return latest ? { [instrumentId]: ScaledDecimal.fromString(latest.close) } : {};
+  private markPrices(bot: BotRecord): Record<string, ScaledDecimal> {
+    const prices: Record<string, ScaledDecimal> = {};
+    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+      const latest = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
+        instrumentId,
+        timeframe: "1H",
+        asOfMs: this.clock.nowMs(),
+        limit: 1
+      })[0];
+      if (latest) prices[instrumentId] = ScaledDecimal.fromString(latest.close);
+    }
+    return prices;
   }
 
   private flattenBot(bot: BotRecord, reason: string): void {
-    this.engineFor(bot).broker.flattenAllPositions(
-      reason,
-      this.markPrices(bot.blueprint.instrumentId)
-    );
+    this.engineFor(bot).broker.flattenAllPositions(reason, this.markPrices(bot));
   }
 
   public pause(botId: string, reason = "Docked by the operator"): Bot {
@@ -683,16 +762,14 @@ export class FleetService {
     const engine = this.engineFor(bot);
     const nowMs = this.clock.nowMs();
     // Skip the bars that closed while docked, and forget any entry queued before the pause
-    engine.accountRepo.recordProcessedBar({
-      instrumentId: bot.blueprint.instrumentId,
-      strategyId: botId,
-      closeTs: Math.floor(nowMs / HOUR_MS) * HOUR_MS
-    });
-    engine.accountRepo.savePendingProposal({
-      strategyId: botId,
-      instrumentId: bot.blueprint.instrumentId,
-      proposal: null
-    });
+    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+      engine.accountRepo.recordProcessedBar({
+        instrumentId,
+        strategyId: botId,
+        closeTs: Math.floor(nowMs / HOUR_MS) * HOUR_MS
+      });
+      engine.accountRepo.savePendingProposal({ strategyId: botId, instrumentId, proposal: null });
+    }
     return this.botView(this.repo.saveBot({ ...bot, status: "running", statusReason: null }));
   }
 
@@ -734,10 +811,7 @@ export class FleetService {
     let closed = 0;
     for (const bot of this.repo.listBots()) {
       if (bot.status === "retired") continue;
-      closed += this.engineFor(bot).broker.flattenAllPositions(
-        reason,
-        this.markPrices(bot.blueprint.instrumentId)
-      ).length;
+      closed += this.engineFor(bot).broker.flattenAllPositions(reason, this.markPrices(bot)).length;
     }
     return closed;
   }
@@ -796,7 +870,7 @@ export class FleetService {
   /** The instruments running boats trade, so the scheduler keeps their bars current. */
   public tradedInstruments(): readonly string[] {
     const running = this.repo.listBots().filter((b) => b.status === "running");
-    return [...new Set(running.map((b) => b.blueprint.instrumentId))];
+    return [...new Set(running.flatMap((b) => this.marketsReadBy(b)))];
   }
 
   /** Steps every running bot through its unprocessed confirmed bars. */
@@ -816,15 +890,25 @@ export class FleetService {
   }
 
   private stepBot(bot: BotRecord, nowMs: number): number {
+    let ticks = 0;
+    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+      ticks += this.stepBotOn(bot, instrumentId, nowMs);
+    }
+    return ticks;
+  }
+
+  /** Steps one of a boat's coins through its unprocessed confirmed bars. */
+  private stepBotOn(bot: BotRecord, instrumentId: string, nowMs: number): number {
     const engine = this.engineFor(bot);
-    const instrumentId = bot.blueprint.instrumentId;
+    const repo = this.dataStore.marketDataRepo;
     const key = { instrumentId, strategyId: bot.botId };
     const anchor = engine.accountRepo.getSchedulerAnchor(key) ?? 0;
     const last = engine.accountRepo.getLastProcessedBarCloseTs(key) ?? 0;
     const minCloseTs = Math.max(anchor, last);
     const lookbackBars = (engine.strategy.lookbacks["1H"] ?? 50) + 5;
+    const references = engine.strategy.referenceMarkets ?? [];
 
-    const bars = this.dataStore.marketDataRepo
+    const bars = repo
       .getConfirmedBarsInRange({
         instrumentId,
         timeframe: "1H",
@@ -840,18 +924,37 @@ export class FleetService {
         engine.accountRepo.recordProcessedBar({ ...key, closeTs: bar.closeTs });
         continue;
       }
+      const fromOpenTs = bar.openTs - lookbackBars * HOUR_MS;
+      const referenceBars = Object.fromEntries(
+        references.map((market) => [
+          market,
+          repo.getConfirmedBarsInRange({
+            instrumentId: market,
+            timeframe: "1H",
+            fromOpenTs,
+            toCloseTs: bar.closeTs
+          })
+        ])
+      );
+      // A market the rules read has not posted this hour yet: wait for it, within reason
+      const waiting = references.some(
+        (m) => referenceBars[m]?.[referenceBars[m].length - 1]?.closeTs !== bar.closeTs
+      );
+      if (waiting && nowMs - bar.closeTs < REFERENCE_GRACE_MS) break;
+
       const result = engine.broker.executeConfirmedBarTick({
         bar,
         strategy: engine.strategy,
         featureBars: {
-          "1H": this.dataStore.marketDataRepo.getConfirmedBarsInRange({
+          "1H": repo.getConfirmedBarsInRange({
             instrumentId,
             timeframe: "1H",
-            fromOpenTs: bar.openTs - lookbackBars * HOUR_MS,
+            fromOpenTs,
             toCloseTs: bar.closeTs
           })
         },
-        settledFundingRates: this.dataStore.marketDataRepo.getSettledFundingInRange({
+        ...(references.length > 0 ? { referenceBars } : {}),
+        settledFundingRates: repo.getSettledFundingInRange({
           instrumentId,
           fromTs: bar.openTs - 9 * HOUR_MS,
           toTs: bar.closeTs
@@ -893,7 +996,16 @@ export class FleetService {
     const closed = positions
       .filter((p) => p.status === "CLOSED")
       .sort((a, b) => (a.closedAtMs ?? 0) - (b.closedAtMs ?? 0));
-    const open = engine.accountRepo.listOpenPositions()[0] ?? null;
+    const openPositions = engine.accountRepo.listOpenPositions().map((p) => ({
+      instrumentId: p.instrumentId,
+      side: p.side,
+      entryPrice: p.entryPrice,
+      contracts: p.contracts,
+      protectiveStopPrice: p.protectiveStopPrice,
+      takeProfitPrice: p.takeProfitPrice,
+      unrealizedPnlUsdt: ScaledDecimal.fromString(p.unrealizedPnlUsdt).toFixed(2),
+      openedAtMs: p.openedAtMs
+    }));
     const allocation = ScaledDecimal.fromString(bot.allocationUsdt);
     const equity = this.equityOf(bot);
     const pnl = equity.sub(allocation);
@@ -920,6 +1032,7 @@ export class FleetService {
       .sort((a, b) => b.openedAtMs - a.openedAtMs)
       .slice(0, 8)
       .map((p) => ({
+        instrumentId: p.instrumentId,
         side: p.side,
         entryPrice: p.entryPrice,
         exitPrice: p.exitPrice,
@@ -955,17 +1068,8 @@ export class FleetService {
       maxDrawdownPct: round(maxDd),
       tradesCount: closed.length,
       winRate: closed.length > 0 ? round(wins / closed.length, 4) : 0,
-      openPosition: open
-        ? {
-            side: open.side,
-            entryPrice: open.entryPrice,
-            contracts: open.contracts,
-            protectiveStopPrice: open.protectiveStopPrice,
-            takeProfitPrice: open.takeProfitPrice,
-            unrealizedPnlUsdt: ScaledDecimal.fromString(open.unrealizedPnlUsdt).toFixed(2),
-            openedAtMs: open.openedAtMs
-          }
-        : null,
+      openPosition: openPositions[0] ?? null,
+      openPositions,
       lastBarAtMs: engine.accountRepo.getLastProcessedBarCloseTs({
         instrumentId: bot.blueprint.instrumentId,
         strategyId: bot.botId
@@ -1003,7 +1107,7 @@ export class FleetService {
         pnlUsdt: pnl.toFixed(2),
         returnPct: allocatedNum > 0 ? round((Number(pnl.toFixed(8)) / allocatedNum) * 100) : 0,
         activeBots: active.filter((b) => b.status === "running").length,
-        openPositions: active.filter((b) => b.openPosition !== null).length
+        openPositions: active.reduce((n, b) => n + b.openPositions.length, 0)
       },
       schedulerRunning: this.isSchedulerRunning(),
       killSwitchActive: killed,
