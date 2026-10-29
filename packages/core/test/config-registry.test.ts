@@ -136,6 +136,7 @@ describe("@keel/core — Master Config Schema Registry (M0-2)", () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 100 }), (seed) => {
         const reordered = {
+          fleet: { ...cfg.fleet },
           ai: { ...cfg.ai, subBudgets: { ...cfg.ai.subBudgets } },
           notifications: { ...cfg.notifications },
           promotionLadder: { ...cfg.promotionLadder },

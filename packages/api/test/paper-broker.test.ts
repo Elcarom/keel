@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ManualClock, createDefaultConfig, type ConfirmedBar } from "@keel/core";
 import { createSqliteDataStore } from "@keel/data";
-import { DonchianTrendStrategy } from "@keel/strategy";
+import { DonchianTrendStrategy, type PositionInstruction, type Strategy } from "@keel/strategy";
 import { ReplayEngine } from "@keel/replay";
 import { PaperBroker } from "../src/paper-broker.js";
 
@@ -432,6 +432,99 @@ describe("PaperBroker (ADR-0006)", () => {
 
     const tb = store.ledgerRepo.getTrialBalance();
     expect(tb.isBalanced).toBe(true);
+
+    store.close();
+  });
+
+  it("manages an open position: ignores a looser stop, applies a tighter one and exits at the bar's close (ADR-0029)", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = createSqliteDataStore({ dbPath: ":memory:", clock });
+    const config = createDefaultConfig();
+    const broker = new PaperBroker({
+      clock,
+      ledgerRepo: store.ledgerRepo,
+      paperAccountRepo: store.paperAccountRepo,
+      getRiskConfig: () => config.risk
+    });
+
+    // A steady climb, 200 per hour, each bar ±300 around its close
+    const bars = [50000, 50200, 50400, 50600].map((close, i) =>
+      makeBar({
+        openTs: 1_700_000_000_000 + i * 3600_000,
+        closeTs: 1_700_000_000_000 + (i + 1) * 3600_000,
+        open: String(close - 200),
+        high: String(close + 300),
+        low: String(close - 300),
+        close: String(close)
+      })
+    );
+    // Barsheld 1 proposes a looser stop, 2 a tighter one, 3 asks to exit
+    const instructions: Record<number, PositionInstruction> = {
+      1: { kind: "hold", newStopPrice: "49000" },
+      2: { kind: "hold", newStopPrice: "50000" },
+      3: { kind: "exit", reason: "signal_exit" }
+    };
+    const strategy: Strategy = {
+      id: "managed",
+      strategyId: "managed",
+      version: "1.0.0",
+      name: "managed",
+      description: "Enters once, then follows a script",
+      parameterHash: "managed",
+      lookbacks: { "1H": 1 },
+      lookbackRequirements: { "1H": 1 },
+      evaluate: (snapshot) => ({
+        instrumentId: snapshot.instrumentId,
+        asOfMs: snapshot.asOfMs,
+        strategyId: "managed",
+        strategyVersion: "1.0.0",
+        proposals:
+          store.paperAccountRepo.listAllPositions().length > 0
+            ? []
+            : [
+                {
+                  proposalId: "managed-1",
+                  strategyId: "managed",
+                  strategyVersion: "1.0.0",
+                  instrumentId: "BTC-USDT-SWAP",
+                  side: "long",
+                  entryPrice: "50000",
+                  protectiveStopPrice: "49500",
+                  takeProfitPrice: null,
+                  convictionScore: 0.7,
+                  rationale: "test",
+                  tags: []
+                }
+              ]
+      }),
+      manage: (position) => instructions[position.barsHeld] ?? { kind: "hold" }
+    };
+    const tick = (i: number) => {
+      const bar = bars[i];
+      if (!bar) throw new Error("Expected bar");
+      clock.setMs(bar.closeTs);
+      return broker.executeConfirmedBarTick({
+        bar,
+        strategy,
+        featureBars: { "1H": bars.slice(0, i + 1) }
+      });
+    };
+    const stop = () => broker.getOpenPositions()[0]?.protectiveStopPrice;
+
+    tick(0); // signal
+    tick(1); // entry at the open, then a looser stop that must be ignored
+    const entryStop = stop();
+    expect(Number(entryStop)).toBeLessThan(50000);
+    tick(2); // a tighter stop, applied
+    expect(stop()).toBe("50000.00000000");
+    const closed = tick(3).positionsClosed;
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.exitReason).toBe("signal_exit");
+    // Market exit at the close, less adverse slippage
+    expect(Number(closed[0]?.exitPrice)).toBeLessThan(50600);
+    expect(Number(closed[0]?.exitPrice)).toBeGreaterThan(50500);
+    expect(broker.getOpenPositions()).toHaveLength(0);
+    expect(store.ledgerRepo.getTrialBalance().isBalanced).toBe(true);
 
     store.close();
   });

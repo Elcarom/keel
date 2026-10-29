@@ -21,7 +21,11 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
 
     // Shipyard: a guided brief; simulated AI drafts sample propositions
     await page.getByTestId("tab-shipyard").click();
+    // Without a key the Shipyard opens on Inventor via your chat; switch to Blueprints
+    await expect(page.getByTestId("designer-source")).toContainText("your own Claude chat");
+    await page.getByTestId("mode-blueprint").click();
     await expect(page.getByTestId("designer-source")).toContainText("sample mode");
+    await page.getByTestId("brief-styles-toggle").click();
     await page.getByTestId("style-breakout").click();
     await page.getByTestId("style-mean_reversion").click();
     await page.getByTestId("brief-notes").fill("something steady for the e2e run");
@@ -62,6 +66,22 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(botCard).toBeVisible();
     await expect(botCard).toContainText("At sea");
     await expect(botCard).toContainText("Paper");
+    await expect(botCard.getByTestId("boat-health")).toContainText("New");
+
+    // Its own page: the sea trial it passed, and the way back
+    await botCard.getByTestId("open-boat-btn").click();
+    const boatPage = page.getByTestId("boat-page");
+    await expect(boatPage).toContainText("E2E Voyager");
+    await expect(boatPage).toContainText("The sea trial it passed");
+    await page.getByText("← Back to the fleet").click();
+
+    // The table view lists the same boat; the Logbook shows the unattended duties
+    await page.getByTestId("view-table").click();
+    await expect(page.getByTestId("fleet-table")).toContainText("E2E Voyager");
+    await page.getByTestId("view-cards").click();
+    await page.getByTestId("tab-logbook").click();
+    await expect(page.getByTestId("duties-panel")).toContainText("Drift watch");
+    await page.getByTestId("tab-fleet").click();
 
     // Return to harbour, set sail again, then retire
     await botCard.getByTestId("bot-pause-btn").click();

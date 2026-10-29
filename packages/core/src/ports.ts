@@ -631,7 +631,7 @@ export const PaperOrderRecordSchema = z.object({
   strategyId: z.string().min(1),
   instrumentId: z.string().min(1),
   side: z.enum(["long", "short"]),
-  orderRole: z.enum(["ENTRY", "PROTECTIVE_STOP", "TAKE_PROFIT", "FLATTEN"]),
+  orderRole: z.enum(["ENTRY", "PROTECTIVE_STOP", "TAKE_PROFIT", "FLATTEN", "EXIT"]),
   contracts: z.string(),
   fillPrice: z.string(),
   protectiveStopPrice: z.string(),

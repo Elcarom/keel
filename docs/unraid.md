@@ -32,6 +32,16 @@ chown -R 99:100 /mnt/user/appdata/keel
 2. In the Unraid WebGUI, go to **Docker → Add Container** and select **Keel** from the **Template** dropdown.
 3. Verify the `/data`, `/backups`, and port `8080` mappings, then click **Apply**.
 
+### Moving from the old image name
+
+The repository was renamed from `psychic-octo-funicular` to `keel`, so the image is now `ghcr.io/elcarom/keel:latest`. For now the old name is still published, so an existing install keeps updating. To switch:
+
+1. In **Docker**, click the Keel icon and choose **Edit**.
+2. Change **Repository** to `ghcr.io/elcarom/keel:latest`.
+3. Click **Apply**.
+
+Your data and backups stay where they are, because only the image name changes.
+
 ---
 
 ## 3. Cloudflare Tunnel (`cloudflared`) Setup

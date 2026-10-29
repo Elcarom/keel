@@ -37,7 +37,7 @@ Read [`GLOSSARY.md`](./GLOSSARY.md) before writing code, specs, or issues, and c
 
 ### Issue tracker
 
-Issues and specs are tracked in GitHub Issues for `Elcarom/psychic-octo-funicular` via the `gh` CLI. See [`docs/agents/issue-tracker.md`](./docs/agents/issue-tracker.md).
+Issues and specs are tracked in GitHub Issues for `Elcarom/keel` via the `gh` CLI. See [`docs/agents/issue-tracker.md`](./docs/agents/issue-tracker.md).
 
 ### Triage labels
 

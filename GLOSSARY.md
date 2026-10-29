@@ -119,7 +119,7 @@ The highest peak equity reached by a Strategy or the Portfolio over its active l
 _Avoid_: Peak balance, max equity
 
 **Kill Switch**:
-An immediate, deterministic emergency command (triggered manually from Mission Control or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions in both Trading Books at market, and locks the system against new entries until an operator resets it with step-up authentication.
+An immediate, deterministic emergency command (triggered manually from the Engine Room or automatically by a portfolio breach) that cancels all non-protective open orders, flattens all open positions in both Trading Books at market, and locks the system against new entries until an operator resets it with step-up authentication.
 _Avoid_: Panic button, emergency stop, halt
 
 **Kill Switch Flatten**:
@@ -171,6 +171,26 @@ _Avoid_: Bot (in operator-facing text), Strategy, agent, bee
 **Basket**:
 The further coins a Boat trades with the same rules as its own market: at most five coins in all, one position per coin, all inside the one Boat Book and paid for from its one stake. A Basket Boat's Sea Trial judges every coin together, as one portfolio.
 _Avoid_: Portfolio (a Basket is one Boat), multi-bot
+
+**Exit Rule**:
+A condition that closes an open position at a confirmed bar's close when it turns true, as opposed to the Protective Stop or the take-profit. A Boat may also have a time stop (close after so many hours) and a trailing stop (a Protective Stop ratcheted behind each close that only ever tightens).
+_Avoid_: Exit signal (it is part of the rules, not a separate signal)
+
+**Fleet Duty**:
+One of the Fleet's unattended, rule-based jobs that run after every scheduler step: the drift watch, the Autopilot, the night shift, stake rebalancing and the daily digest. All are paper-only and never ask a model what to do with money.
+_Avoid_: Bot, agent, automation
+
+**Autopilot**:
+The Fleet Duty that launches seaworthy, original Propositions onto paper by itself, funded only from the Autopilot wallet, whose balance is its whole cap.
+_Avoid_: Auto-trader
+
+**Drift Watch**:
+The Fleet Duty that docks a Boat doing clearly worse than its Sea Trial expected.
+_Avoid_: Kill switch (that halts everything; the drift watch docks one Boat)
+
+**Lookalike**:
+A Proposition whose backtest moved almost in step with an existing Boat or another open Proposition, week by week. Launching both doubles the same bet.
+_Avoid_: Duplicate, clone
 
 **Reference Market**:
 Another market whose confirmed bars a Boat's rules read without trading it, such as BTC leading the coins a Boat trades. Its bars are read for the same hour only, and a Boat waits for a Reference Market that has not posted that hour yet.

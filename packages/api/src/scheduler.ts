@@ -31,6 +31,8 @@ export interface UnattendedSchedulerOptions {
         step(): { readonly ticks: number; readonly errors: readonly string[] };
         /** Instruments that running boats trade: ingested even when no strategy trades them. */
         tradedInstruments(): readonly string[];
+        /** Unattended Fleet duties (ADR-0030), run after each step; returns problems. */
+        runDuties?(): Promise<readonly string[]>;
       }
     | undefined;
 }
@@ -419,6 +421,11 @@ export class UnattendedScheduler {
           errors.push(...fleetStep.errors.map((e) => `Fleet bot tick failed: ${e}`));
         } catch (err) {
           errors.push(`Fleet step failed: ${String(err)}`);
+        }
+        try {
+          errors.push(...((await this.fleet.runDuties?.()) ?? []));
+        } catch (err) {
+          errors.push(`Fleet duties failed: ${String(err)}`);
         }
       }
 

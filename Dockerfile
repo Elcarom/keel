@@ -31,6 +31,9 @@ COPY packages/web ./packages/web
 RUN pnpm build
 
 FROM node:22-alpine AS runner
+LABEL org.opencontainers.image.title="Keel" \
+      org.opencontainers.image.description="Self-hosted lab for systematic crypto-perpetuals strategies: Shipyard, sea trials and a paper-trading Fleet." \
+      org.opencontainers.image.source="https://github.com/Elcarom/keel"
 WORKDIR /app
 
 RUN apk add --no-cache su-exec tini wget sqlite && \

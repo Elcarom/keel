@@ -9,6 +9,7 @@ import {
   basketIndexBars,
   combineRuns,
   neighbourBlueprints,
+  weeklyCorrelation,
   type SeaTrialInput
 } from "../src/index.js";
 
@@ -200,6 +201,33 @@ describe("Basket sea trials", () => {
     // BTC goes 100.07 → 150 (+49.9%), the other 100.14 → 200 (+99.7%): the index lands between
     expect(last / first).toBeGreaterThan(1.7);
     expect(last / first).toBeLessThan(1.8);
+  });
+});
+
+describe("Lookalikes", () => {
+  it("measures how closely two weekly equity curves move together", () => {
+    const wave = Array.from({ length: 40 }, (_, i) => Math.sin(i / 3) * 5 + i * 0.2);
+    expect(weeklyCorrelation(wave, wave)).toBe(1);
+    expect(
+      weeklyCorrelation(
+        wave,
+        wave.map((v) => v * 3 + 10)
+      )
+    ).toBe(1);
+    expect(
+      weeklyCorrelation(
+        wave,
+        wave.map((v) => -v)
+      )
+    ).toBe(-1);
+    // Too short, or a curve that never moves, says nothing
+    expect(weeklyCorrelation(wave.slice(0, 8), wave.slice(0, 8))).toBeNull();
+    expect(
+      weeklyCorrelation(
+        wave,
+        wave.map(() => 0)
+      )
+    ).toBeNull();
   });
 });
 

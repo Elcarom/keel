@@ -6,6 +6,7 @@ import {
   type NumExpr,
   type StrategySpecV1
 } from "./index.js";
+import { TIMEFRAME_HOURS } from "./timeframes.js";
 import { conditionShift, parseInventionRules } from "./invention.js";
 
 // ============================================================================
@@ -51,6 +52,8 @@ interface ArchetypeRules {
   readonly indicators: readonly IndicatorDef[];
   readonly longEntry: Condition;
   readonly shortEntry: Condition;
+  readonly longExit?: Condition | undefined;
+  readonly shortExit?: Condition | undefined;
   /** Bars needed beyond the indicator windows: shifted reads and crossings look further back. */
   readonly extraBars: number;
 }
@@ -65,10 +68,12 @@ function rulesFor(b: BotBlueprint): ArchetypeRules {
       if (!b.invention) throw new Error("An invented blueprint needs its invention");
       const rules = parseInventionRules(b.invention);
       return {
-        indicators: rules.indicators,
-        longEntry: rules.longEntry,
-        shortEntry: rules.shortEntry,
-        extraBars: Math.max(conditionShift(rules.longEntry), conditionShift(rules.shortEntry))
+        ...rules,
+        extraBars: Math.max(
+          ...[rules.longEntry, rules.shortEntry, rules.longExit, rules.shortExit].map((c) =>
+            c ? conditionShift(c, new Map(rules.indicators.map((d) => [d.id, d]))) : 0
+          )
+        )
       };
     }
     case "breakout":
@@ -273,7 +278,12 @@ const MAX_LOOKBACK_BARS = 500;
 
 /** Bars an indicator needs before its value settles: recursive averages need several periods. */
 function warmupBars(def: IndicatorDef): number {
-  return def.kind === "ema" || def.kind === "rsi" ? def.period * 3 : def.period;
+  const hours = def.timeframe ? TIMEFRAME_HOURS[def.timeframe] : 1;
+  if (def.kind === "ema" || def.kind === "rsi" || def.kind === "adx") return def.period * 3 * hours;
+  // These read the bar before their window too; a higher timeframe also needs its first bucket
+  const bars =
+    def.kind === "percentile" || def.kind === "correlation" ? def.period + 1 : def.period;
+  return hours > 1 ? (bars + 1) * hours : bars;
 }
 
 /**
@@ -296,7 +306,9 @@ export function compileBlueprint(blueprint: BotBlueprint, specName: string): Str
     indicators: rules.indicators,
     rules: {
       longEntry: blueprint.direction === "short_only" ? NEVER : rules.longEntry,
-      shortEntry: blueprint.direction === "long_only" ? NEVER : rules.shortEntry
+      shortEntry: blueprint.direction === "long_only" ? NEVER : rules.shortEntry,
+      ...(rules.longExit ? { longExit: rules.longExit } : {}),
+      ...(rules.shortExit ? { shortExit: rules.shortExit } : {})
     },
     risk: {
       stopModel: {
@@ -304,7 +316,11 @@ export function compileBlueprint(blueprint: BotBlueprint, specName: string): Str
         multiplier: blueprint.stopAtrMultiple,
         atrPeriod: ATR_PERIOD
       },
-      takeProfit: { rewardMultiple: blueprint.rewardMultiple }
+      takeProfit: { rewardMultiple: blueprint.rewardMultiple },
+      ...(blueprint.maxBarsHeld ? { timeStopBars: blueprint.maxBarsHeld } : {}),
+      ...(blueprint.trailingAtrMultiple
+        ? { trailingStop: { atrMultiple: blueprint.trailingAtrMultiple, atrPeriod: ATR_PERIOD } }
+        : {})
     },
     cooldownBars: 0
   });

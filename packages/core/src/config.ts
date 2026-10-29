@@ -124,12 +124,34 @@ export const NotificationsConfigSchema = z.object({
   warningCooldownMinutes: z.number().int().min(1).max(240).default(15)
 });
 
+/**
+ * The Fleet's unattended duties (ADR-0030): a daily digest, the drift watch, the Autopilot,
+ * the night shift and stake rebalancing. Every one is paper-only and deterministic.
+ */
+export const FleetConfigSchema = z.object({
+  digestEnabled: z.boolean().default(true),
+  digestHourUtc: z.number().int().min(0).max(23).default(7),
+  driftWatchEnabled: z.boolean().default(true),
+  autopilotEnabled: z.boolean().default(false),
+  autopilotWalletName: z.string().min(1).max(40).default("Autopilot"),
+  autopilotMinScore: z.number().int().min(45).max(100).default(65),
+  autopilotStakePct: z.number().min(1).max(100).default(10),
+  nightShiftEnabled: z.boolean().default(false),
+  nightShiftCadence: z.enum(["daily", "weekly"]).default("weekly"),
+  nightShiftHourUtc: z.number().int().min(0).max(23).default(2),
+  nightShiftCount: z.number().int().min(2).max(6).default(4),
+  nightShiftMode: z.enum(["blueprint", "inventor"]).default("inventor"),
+  rebalanceEnabled: z.boolean().default(false)
+});
+export type FleetConfig = z.infer<typeof FleetConfigSchema>;
+
 export const KeelConfigSchema = z.object({
   system: SystemConfigSchema.default({}),
   risk: RiskConfigSchema.default({}),
   promotionLadder: PromotionLadderConfigSchema.default({}),
   ai: AiGatewayConfigSchema.default({}),
-  notifications: NotificationsConfigSchema.default({})
+  notifications: NotificationsConfigSchema.default({}),
+  fleet: FleetConfigSchema.default({})
 });
 
 export type KeelConfig = z.infer<typeof KeelConfigSchema>;
@@ -712,6 +734,114 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     max: 240,
     defaultValue: 15,
     riskClass: "safe"
+  },
+  {
+    path: "fleet.digestEnabled",
+    label: "Daily Fleet Digest",
+    helpText: "Send a Discord summary of every boat once a day.",
+    defaultValue: true,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.digestHourUtc",
+    label: "Digest Hour (UTC)",
+    helpText: "The hour the daily Fleet digest is sent.",
+    unit: "h",
+    min: 0,
+    max: 23,
+    defaultValue: 7,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.driftWatchEnabled",
+    label: "Drift Watch",
+    helpText:
+      "Dock a paper boat whose live results fall clearly outside what its sea trial expected.",
+    defaultValue: true,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.autopilotEnabled",
+    label: "Autopilot",
+    helpText:
+      "Launch seaworthy propositions onto paper by themselves, funded only from the Autopilot wallet.",
+    defaultValue: false,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.autopilotWalletName",
+    label: "Autopilot Wallet",
+    helpText:
+      "The paper wallet the Autopilot draws from; its balance is the Autopilot's whole cap.",
+    defaultValue: "Autopilot",
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.autopilotMinScore",
+    label: "Autopilot Minimum Score",
+    helpText: "The sea-trial score a seaworthy proposition needs before the Autopilot launches it.",
+    min: 45,
+    max: 100,
+    defaultValue: 65,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.autopilotStakePct",
+    label: "Autopilot Stake per Boat",
+    helpText: "Each boat's stake, as a share of the Autopilot wallet's total value.",
+    unit: "%",
+    min: 1,
+    max: 100,
+    defaultValue: 10,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.nightShiftEnabled",
+    label: "Night Shift",
+    helpText: "Draw up a Shipyard brief on a schedule, so new ideas arrive on their own.",
+    defaultValue: false,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftCadence",
+    label: "Night Shift Cadence",
+    helpText: "How often the night shift drafts a brief.",
+    defaultValue: "weekly",
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftHourUtc",
+    label: "Night Shift Hour (UTC)",
+    helpText: "The hour the night shift starts.",
+    unit: "h",
+    min: 0,
+    max: 23,
+    defaultValue: 2,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftCount",
+    label: "Night Shift Ideas",
+    helpText: "How many propositions each night shift asks for.",
+    min: 2,
+    max: 6,
+    defaultValue: 4,
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftMode",
+    label: "Night Shift Mode",
+    helpText: "Blueprints fill reviewed shapes; Inventor has Claude write new rules.",
+    defaultValue: "inventor",
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.rebalanceEnabled",
+    label: "Weekly Stake Rebalancing",
+    helpText:
+      "Every Monday, move paper stake between a wallet's running boats so each risks the same share.",
+    defaultValue: false,
+    riskClass: "confirm"
   },
   {
     path: "ai.simulateResponses",

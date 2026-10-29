@@ -38,7 +38,11 @@ export const INDICATOR_KINDS = [
   "momentum",
   "ema",
   "rsi",
-  "volume_sma"
+  "volume_sma",
+  "adx",
+  "bollinger",
+  "percentile",
+  "correlation"
 ] as const;
 export type IndicatorKind = (typeof INDICATOR_KINDS)[number];
 
@@ -72,13 +76,18 @@ export const InventionSchema = z.object({
         kind: z.enum(INDICATOR_KINDS),
         period: z.number().int().min(2).max(200),
         /** Read from another market's bars, aligned hour by hour (ADR-0028). */
-        market: FleetInstrumentSchema.optional()
+        market: FleetInstrumentSchema.optional(),
+        /** Computed on 4-hour or daily bars built from complete hourly bars (ADR-0031). */
+        timeframe: z.enum(["4H", "1D"]).optional()
       })
     )
     .min(1)
     .max(6),
   longEntry: z.unknown(),
   shortEntry: z.unknown(),
+  /** Optional exit rules: close an open long (short) when they turn true (ADR-0029). */
+  longExit: z.unknown().optional(),
+  shortExit: z.unknown().optional(),
   rules: z.array(z.string())
 });
 export type Invention = z.infer<typeof InventionSchema>;
@@ -157,9 +166,15 @@ export const BotBlueprintDraftSchema = z.object({
   basket: z
     .array(FleetInstrumentSchema)
     .max(MAX_BOAT_MARKETS - 1)
-    .default([])
+    .default([]),
+  /** Ratchet the stop this many ATRs behind each close; null keeps the stop fixed (ADR-0029). */
+  trailingAtrMultiple: z.number().nullable().default(null),
+  /** Close a position after this many hourly bars; null holds until stop or target. */
+  maxBarsHeld: z.number().nullable().default(null)
 });
 export type BotBlueprintDraft = z.infer<typeof BotBlueprintDraftSchema>;
+/** A draft as a model may write it: newer fields may be missing and take their defaults. */
+export type BotBlueprintDraftInput = z.input<typeof BotBlueprintDraftSchema>;
 
 export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
   archetype: BlueprintArchetypeSchema,
@@ -172,7 +187,9 @@ export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
   entryThreshold: z.number().min(0.2).max(4),
   stopAtrMultiple: z.number().min(0.5).max(6),
   rewardMultiple: z.number().min(0.8).max(6),
-  rationale: z.string().max(600)
+  rationale: z.string().max(600),
+  trailingAtrMultiple: z.number().min(0.5).max(6).nullable().default(null),
+  maxBarsHeld: z.number().int().min(2).max(240).nullable().default(null)
 });
 export type BotBlueprint = z.infer<typeof BotBlueprintSchema>;
 
@@ -200,7 +217,9 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     "stopAtrMultiple",
     "rewardMultiple",
     "rationale",
-    "basket"
+    "basket",
+    "trailingAtrMultiple",
+    "maxBarsHeld"
   ],
   properties: {
     name: { type: "string", description: "Nautical bot name, 1-3 words, e.g. 'Trade Wind'" },
@@ -230,6 +249,15 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
       items: { type: "string", enum: [...FLEET_INSTRUMENTS] },
       description:
         "Up to 4 more coins the same rules also trade, one position per coin; [] for a single-coin boat"
+    },
+    trailingAtrMultiple: {
+      type: ["number", "null"],
+      description:
+        "0.5-6: ratchet the stop this many ATRs behind each close so winners can run; null keeps the stop fixed"
+    },
+    maxBarsHeld: {
+      type: ["integer", "null"],
+      description: "2-240: close any position after this many hourly bars; null for no time limit"
     }
   }
 };
@@ -245,7 +273,7 @@ function clampNum(value: number, min: number, max: number): number {
 }
 
 /** Clamps every parameter into its reviewed range and trims text; never fails on numbers. */
-export function normalizeBlueprint(draft: BotBlueprintDraft): BotBlueprint {
+export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint {
   const lookbackPeriod = clampInt(draft.lookbackPeriod, 5, 200);
   // A fast average must stay faster than the slow one, or the crossover never fires
   const fastPeriod = clampInt(draft.fastPeriod, 3, Math.max(3, Math.min(100, lookbackPeriod - 2)));
@@ -262,6 +290,14 @@ export function normalizeBlueprint(draft: BotBlueprintDraft): BotBlueprint {
     rewardMultiple: clampNum(draft.rewardMultiple, 0.8, 6),
     rationale: draft.rationale.trim().slice(0, 600),
     basket: blueprintMarkets(draft).slice(1),
+    trailingAtrMultiple:
+      draft.trailingAtrMultiple === null || draft.trailingAtrMultiple === undefined
+        ? null
+        : clampNum(draft.trailingAtrMultiple, 0.5, 6),
+    maxBarsHeld:
+      draft.maxBarsHeld === null || draft.maxBarsHeld === undefined
+        ? null
+        : clampInt(draft.maxBarsHeld, 2, 240),
     invention: null
   });
 }
@@ -386,9 +422,25 @@ export const SeaTrialSchema = z.object({
   /** Propositions assessed so far: the trial count behind the luck adjustment. */
   trials: z.number().int().positive(),
   /** "settled" when real funding history was charged; "assumed" when a flat rate stood in. */
-  funding: z.enum(["settled", "assumed"])
+  funding: z.enum(["settled", "assumed"]),
+  /** Equity change (%) at each week of the backtest window: a fixed grid, so trials compare. */
+  weeklyEquityPct: z.array(z.number()).default([]),
+  /** How long the average trade lasted, in hours. */
+  avgHoldHours: z.number().nonnegative().default(0)
 });
 export type SeaTrial = z.infer<typeof SeaTrialSchema>;
+
+/** A boat or proposition whose backtest moved almost in step with this one (ADR-0030). */
+export const LookalikeSchema = z.object({
+  name: z.string(),
+  kind: z.enum(["boat", "proposition"]),
+  /** Correlation of weekly equity changes, -1..1. */
+  correlation: z.number()
+});
+export type Lookalike = z.infer<typeof LookalikeSchema>;
+
+/** Above this weekly correlation, two ideas are treated as the same bet. */
+export const LOOKALIKE_CORRELATION = 0.8;
 
 export const AssessmentSchema = z.object({
   score: z.number().min(0).max(100),
@@ -411,7 +463,8 @@ export const AssessmentSchema = z.object({
   /** Length of the backtest window; assessments from before sea trials covered a year. */
   days: z.number().int().positive().default(365),
   /** Null for propositions assessed before sea trials existed. */
-  seaTrial: SeaTrialSchema.nullable().default(null)
+  seaTrial: SeaTrialSchema.nullable().default(null),
+  lookalike: LookalikeSchema.nullable().default(null)
 });
 export type Assessment = z.infer<typeof AssessmentSchema>;
 
@@ -487,6 +540,9 @@ export const BotTradeSchema = z.object({
 });
 export type BotTrade = z.infer<typeof BotTradeSchema>;
 
+export const EquityPointSchema = z.object({ ts: z.number().int(), equityUsdt: z.string() });
+export type EquityPoint = z.infer<typeof EquityPointSchema>;
+
 export const BotOpenPositionSchema = z.object({
   instrumentId: z.string(),
   side: z.enum(["long", "short"]),
@@ -524,9 +580,37 @@ export const BotSchema = z.object({
   openPositions: z.array(BotOpenPositionSchema),
   lastBarAtMs: z.number().int().nullable(),
   equityCurve: z.array(z.number()),
-  recentTrades: z.array(BotTradeSchema)
+  recentTrades: z.array(BotTradeSchema),
+  /** Daily equity since launch, the last point being now (display only). */
+  equityHistory: z.array(EquityPointSchema),
+  /** "drifting" when the drift watch would dock it; "new" until it has 10 trades. */
+  health: z.enum(["new", "on_course", "drifting"]),
+  /** For each coin it trades: closed trades and their net P&L. */
+  coins: z.array(
+    z.object({ instrumentId: z.string(), trades: z.number().int(), pnlUsdt: z.string() })
+  )
 });
 export type Bot = z.infer<typeof BotSchema>;
+
+export const FLEET_DUTIES = [
+  "digest",
+  "driftWatch",
+  "autopilot",
+  "nightShift",
+  "rebalance"
+] as const;
+export type FleetDuty = (typeof FLEET_DUTIES)[number];
+
+/** One unattended Fleet duty, as the Fleet page shows it. */
+export const FleetDutyStatusSchema = z.object({
+  duty: z.enum(FLEET_DUTIES),
+  label: z.string(),
+  enabled: z.boolean(),
+  lastRunMs: z.number().int().nullable(),
+  /** What it last did, or why it is waiting. */
+  note: z.string().nullable()
+});
+export type FleetDutyStatus = z.infer<typeof FleetDutyStatusSchema>;
 
 export const FleetOverviewSchema = z.object({
   bots: z.array(BotSchema),
@@ -538,6 +622,8 @@ export const FleetOverviewSchema = z.object({
     activeBots: z.number().int(),
     openPositions: z.number().int()
   }),
+  /** The active boats' equity added up, day by day (display only). */
+  equityHistory: z.array(EquityPointSchema).default([]),
   schedulerRunning: z.boolean(),
   killSwitchActive: z.boolean(),
   killSwitchReason: z.string().nullable(),
@@ -545,7 +631,9 @@ export const FleetOverviewSchema = z.object({
     source: DesignSourceSchema,
     model: z.string()
   }),
-  liveTradingAvailable: z.literal(false)
+  liveTradingAvailable: z.literal(false),
+  /** What each unattended duty is doing (ADR-0030). */
+  duties: z.array(FleetDutyStatusSchema).default([])
 });
 export type FleetOverview = z.infer<typeof FleetOverviewSchema>;
 
@@ -614,6 +702,10 @@ export interface FleetRepository {
   listPropositions(batchId: string): readonly PropositionRecord[];
   /** Every proposition ever drafted: the trial count behind the luck adjustment. */
   countPropositions(): number;
+
+  /** When an unattended Fleet duty last ran (ADR-0030), or null if never. */
+  getDutyLastRun(duty: string): number | null;
+  setDutyLastRun(duty: string, ms: number): void;
 
   /** Where an instrument's backtest window (from `windowFromTs`) came from, once filled. */
   getBacktestDataSource(instrumentId: string, windowFromTs: number): "okx" | "synthetic" | null;

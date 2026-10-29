@@ -5,6 +5,7 @@ import {
   type Bot,
   type DesignBatch,
   type FleetOverview,
+  type KeelConfig,
   type Wallet
 } from "@keel/core";
 import { OkxPublicIngestor, createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
@@ -15,9 +16,9 @@ const HEADERS = { "cf-connecting-ip": "203.0.113.9", "x-forwarded-proto": "https
 // 2026-10-25, after the sealed 2026 holdout partition
 const NOW_MS = 1_793_000_000_000;
 
-async function setup() {
+async function setup(configure: (config: KeelConfig) => KeelConfig = (c) => c) {
   const clock = new ManualClock(NOW_MS);
-  const config = createDefaultConfig();
+  const config = configure(createDefaultConfig());
   const dataStore = createSqliteDataStore({ dbPath: ":memory:", clock, initialConfig: config });
   // OKX is unreachable in tests: backtests fall back to (and are labelled as) synthetic data
   const marketIngestor = new OkxPublicIngestor({
@@ -184,6 +185,8 @@ describe("Fleet API", () => {
     expect(prompt).toContain("set every direction to long_only");
     expect(prompt).toContain("weekend liquidity");
     expect(prompt).toContain("Old Salt");
+    // What the fleet already sails, so Claude can fill the gaps
+    expect(prompt).toMatch(/My fleet today: 1 boat. Styles: [a-z]+ 1. Coins: BTC 1/);
     expect(prompt).toContain('"type":"crosses_above"|"crosses_below"');
     // Baskets and other markets are on offer, not just one coin
     expect(prompt).toContain('"basket" ([] or up to 4 more coins)');
@@ -265,6 +268,77 @@ describe("Fleet API", () => {
     expect(allBad.body["batch"]).toBeNull();
     expect(allBad.body["rejected"]).toHaveLength(1);
   }, 60_000);
+
+  it("evens out the stakes of a wallet's flat boats on Monday, moving no money out of the wallet", async () => {
+    // The test clock is Monday 2026-10-26, 07:33 UTC
+    const { call, designAndWait, launch, overview } = await setup((c) => ({
+      ...c,
+      fleet: { ...c.fleet, rebalanceEnabled: true, digestEnabled: false }
+    }));
+    const batch = await designAndWait(2);
+    expect((await launch(batch, "1000", "Small Sloop")).status).toBe(200);
+    const second = batch.propositions[1];
+    const wallet = (await overview()).wallets[0] as Wallet;
+    await call("POST", `/api/v1/fleet/propositions/${second?.propositionId}/launch`, {
+      name: "Big Schooner",
+      walletId: wallet.walletId,
+      allocationUsdt: "3000",
+      mode: "paper"
+    });
+    const before = (await overview()).wallets[0];
+
+    expect((await call("POST", "/api/v1/system/scheduler/step")).status).toBe(200);
+    const after = await overview();
+    expect(after.bots.map((b) => [b.name, b.allocationUsdt, b.equityUsdt]).sort()).toEqual([
+      ["Big Schooner", "2000.00", "2000.00"],
+      ["Small Sloop", "2000.00", "2000.00"]
+    ]);
+    expect(after.wallets[0]?.availableUsdt).toBe(before?.availableUsdt);
+    expect(after.duties.find((d) => d.duty === "rebalance")?.note).toBe(
+      "Small Sloop +1000.00 USDT; Big Schooner -1000.00 USDT"
+    );
+  }, 120_000);
+
+  it("flags a proposition that sails like one already on the slipway", async () => {
+    const { call } = await setup();
+    const rule = (op: string, value: number) => ({
+      type: "comparison",
+      op,
+      left: { type: "indicator", id: "push", output: "momentum" },
+      right: { type: "constant", value }
+    });
+    const idea = {
+      name: "First Mate",
+      tagline: "Follows a strong hour.",
+      rationale: "Momentum persists briefly. It fails in chop.",
+      instrumentId: "BTC-USDT-SWAP",
+      direction: "both",
+      indicators: [{ id: "push", kind: "momentum", period: 6 }],
+      longEntry: rule(">=", 1),
+      shortEntry: rule("<=", -1),
+      stopAtrMultiple: 2,
+      rewardMultiple: 2
+    };
+    // The same rules twice under two names: one bet
+    const res = await call("POST", "/api/v1/fleet/designs/import", {
+      text: JSON.stringify([idea, { ...idea, name: "Second Mate" }])
+    });
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 1200 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+    }
+    const byName = new Map(batch?.propositions.map((p) => [p.blueprint.name, p]));
+    expect(byName.get("Second Mate")?.assessment?.lookalike).toEqual({
+      name: "First Mate",
+      kind: "proposition",
+      correlation: 1
+    });
+    expect(byName.get("First Mate")?.assessment?.seaTrial?.weeklyEquityPct.length).toBe(105);
+    expect(byName.get("First Mate")?.assessment?.seaTrial?.avgHoldHours).toBeGreaterThan(0);
+  }, 120_000);
 
   it("sea-trials a basket boat that reads BTC as one portfolio, then trades every coin in it", async () => {
     const { call, clock, dataStore, overview } = await setup();

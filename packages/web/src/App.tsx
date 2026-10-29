@@ -60,6 +60,17 @@ export interface EngineRoomProps {
   readonly onExitEngineRoom?: (() => void) | undefined;
 }
 
+/** The Engine Room's sections, in page order, for the section bar. */
+const ENGINE_ROOM_SECTIONS = [
+  ["er-settings", "Settings"],
+  ["er-secrets", "Secrets"],
+  ["er-research", "Research"],
+  ["er-safety", "Paper & Kill Switch"],
+  ["er-ai", "AI advisors"],
+  ["er-exchange", "Exchange"],
+  ["er-audit", "Audit"]
+] as const;
+
 export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
   const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
@@ -471,6 +482,10 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
 
   const isDark = theme === "dark";
   const executionMode = status?.executionMode ?? "Paper";
+  const [showExchange, setShowExchange] = useState(false);
+  useEffect(() => {
+    if (executionMode !== "Paper") setShowExchange(true);
+  }, [executionMode]);
   const isHealthy = streamConnected && status?.status === "ok";
   const cardClass = isDark
     ? "rounded-xl border border-[#222C36] bg-[#161D24] p-5"
@@ -722,7 +737,26 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
         {/* Authenticated Governance Cockpit */}
         {authSession?.authenticated && draftConfig && activeSnapshot && (
           <div data-testid="governance-cockpit" className="space-y-6">
-            <section className={cardClass}>
+            <nav
+              aria-label="Engine Room sections"
+              data-testid="engine-room-nav"
+              className="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto rounded-xl border border-slate-700/50 bg-[#0F1419]/95 p-1 backdrop-blur"
+            >
+              {ENGINE_ROOM_SECTIONS.map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap text-slate-300 hover:bg-slate-700/40 hover:text-slate-100"
+                  onClick={() => {
+                    if (id === "er-exchange") setShowExchange(true);
+                    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+            <section id="er-settings" className={cardClass}>
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700/50 pb-4">
                 <div>
                   <h2 className="text-base font-bold">
@@ -939,7 +973,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
               </section>
 
               {/* AES-256-GCM Secret Vault */}
-              <section className={cardClass}>
+              <section id="er-secrets" className={cardClass}>
                 <h3 className="text-sm font-bold">AES-256-GCM Secret Vault</h3>
                 <form onSubmit={(e) => void handleSaveSecret(e)} className="mt-3 flex gap-2">
                   <select
@@ -994,7 +1028,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
             </div>
 
             {/* M2 Market Data & Replay Research Lab */}
-            <section data-testid="replay-lab-panel" className={cardClass}>
+            <section id="er-research" data-testid="replay-lab-panel" className={cardClass}>
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700/50 pb-4">
                 <div>
                   <h3 className="text-sm font-bold">
@@ -1283,7 +1317,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
             </section>
 
             {/* M3 Paper Execution Cockpit & Double-Entry Ledger */}
-            <section data-testid="paper-cockpit-panel" className={cardClass}>
+            <section id="er-safety" data-testid="paper-cockpit-panel" className={cardClass}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
                 <div>
                   <h3 className="text-sm font-bold">
@@ -1748,7 +1782,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
             </section>
 
             {/* M4 AI Decision Support, Context Analyst & Shadow Advisor Cockpit */}
-            <section data-testid="ai-decision-support-panel" className={cardClass}>
+            <section id="er-ai" data-testid="ai-decision-support-panel" className={cardClass}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
                 <div>
                   <h3 className="text-sm font-bold">
@@ -2320,7 +2354,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
             </section>
 
             {/* M5 Exchange Broker & Attached Protective Stops Cockpit (ADR-0006) */}
-            <section data-testid="exchange-broker-panel" className={cardClass}>
+            <section id="er-exchange" data-testid="exchange-broker-panel" className={cardClass}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
                 <div>
                   <h3 className="text-sm font-bold">
@@ -2367,331 +2401,351 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
                 </div>
               </div>
 
-              {/* DMS & Reconciliation Actions */}
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/60 pb-4">
-                <div className="text-xs opacity-80">
-                  Dead-Man&apos;s Switch automatically cancels all resting unexecuted limit orders
-                  after 60s if the container crashes, while protective stops remain exchange-active.
-                </div>
-                <div className="flex items-center gap-2">
+              {!showExchange ? (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs opacity-80">
+                  <span>
+                    Keel is in Paper mode, so these exchange tools are folded away. They act on a
+                    real OKX account and sit behind gate G2.
+                  </span>
                   <button
                     type="button"
-                    data-testid="send-dms-btn"
-                    disabled={sendingDms}
-                    onClick={async () => {
-                      setSendingDms(true);
-                      setGovMessage(null);
-                      setGovError(null);
-                      try {
-                        const res = await apiClient.broker.dmsHeartbeat({ body: {} });
-                        if (res.status === 200) {
-                          setGovMessage(
-                            `DMS Heartbeat refreshed: 60s window active (healthy=${res.body.dms.healthy})`
-                          );
-                          await refreshGovernanceData();
-                        } else {
-                          setGovError(extractApiError(res.body, "DMS heartbeat failed"));
-                        }
-                      } catch (err) {
-                        setGovError(String(err));
-                      } finally {
-                        setSendingDms(false);
-                      }
-                    }}
-                    className="rounded bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-50"
+                    data-testid="exchange-tools-toggle"
+                    className="rounded-lg border border-slate-600 px-3 py-1.5 font-semibold hover:border-slate-400"
+                    onClick={() => setShowExchange(true)}
                   >
-                    {sendingDms ? "Sending DMS..." : "Send DMS Heartbeat"}
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="reconcile-positions-btn"
-                    disabled={reconciling}
-                    onClick={async () => {
-                      setReconciling(true);
-                      setGovMessage(null);
-                      setGovError(null);
-                      try {
-                        const res = await apiClient.broker.reconcile({ body: {} });
-                        if (res.status === 200) {
-                          setReconciliation(res.body.reconciliation);
-                          setGovMessage(
-                            `Reconciliation complete: matched=${res.body.reconciliation.matched} (${res.body.reconciliation.localPositionsCount} positions)`
-                          );
-                          await refreshGovernanceData();
-                        } else {
-                          setGovError(extractApiError(res.body, "Reconciliation failed"));
-                        }
-                      } catch (err) {
-                        setGovError(String(err));
-                      } finally {
-                        setReconciling(false);
-                      }
-                    }}
-                    className="rounded border border-slate-600 px-3 py-1.5 text-xs font-semibold hover:border-teal-500 disabled:opacity-50"
-                  >
-                    {reconciling ? "Reconciling..." : "Reconcile Positions"}
-                  </button>
-
-                  <button
-                    type="button"
-                    data-testid="emergency-flatten-btn"
-                    onClick={async () => {
-                      setGovMessage(null);
-                      setGovError(null);
-                      try {
-                        const res = await apiClient.broker.flatten({
-                          body: { reason: "Operator manual emergency flatten" }
-                        });
-                        if (res.status === 200) {
-                          setGovMessage(
-                            `Emergency flatten executed: ${res.body.flattenedCount} positions closed.`
-                          );
-                          await refreshGovernanceData();
-                        } else {
-                          setGovError(extractApiError(res.body, "Emergency flatten failed"));
-                        }
-                      } catch (err) {
-                        setGovError(String(err));
-                      }
-                    }}
-                    className="rounded border border-rose-600/70 bg-rose-600/10 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-600 hover:text-white"
-                  >
-                    Emergency Flatten All
+                    Show exchange tools
                   </button>
                 </div>
-              </div>
-
-              {/* Order Submission Form with Mandatory Attached Protective Stop */}
-              <div className="mt-4">
-                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
-                  Order Dispatch with Mandatory Attached Protective Stop (ADR-0006)
-                </h4>
-                <div className="mt-2 grid gap-3 md:grid-cols-5 text-xs">
-                  <div>
-                    <label className="mb-1 block opacity-70">Instrument</label>
-                    <input
-                      data-testid="order-instrument-input"
-                      type="text"
-                      value={selectedInstrumentId}
-                      onChange={(e) => setSelectedInstrumentId(e.target.value)}
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block opacity-70">Side</label>
-                    <select
-                      data-testid="order-side-select"
-                      value={orderSide}
-                      onChange={(e) => setOrderSide(e.target.value as "long" | "short")}
-                      className={inputClass}
-                    >
-                      <option value="long">LONG (Buy)</option>
-                      <option value="short">SHORT (Sell)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1 block opacity-70">Size (Lots)</label>
-                    <input
-                      data-testid="order-size-input"
-                      type="number"
-                      value={orderSizeLots}
-                      onChange={(e) => setOrderSizeLots(Number(e.target.value))}
-                      className={inputClass}
-                      min={1}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block opacity-70">Entry Price (USDT)</label>
-                    <input
-                      data-testid="order-entry-price-input"
-                      type="text"
-                      value={orderEntryPrice}
-                      onChange={(e) => setOrderEntryPrice(e.target.value)}
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block font-semibold text-rose-400">
-                      Protective Stop Price (REQUIRED)
-                    </label>
-                    <input
-                      data-testid="order-stop-price-input"
-                      type="text"
-                      value={orderStopPrice}
-                      onChange={(e) => setOrderStopPrice(e.target.value)}
-                      className={`${inputClass} border-rose-500/50`}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block opacity-70">Step-Up Password (G2/G3)</label>
-                    <input
-                      data-testid="order-step-up-password-input"
-                      type="password"
-                      value={stepUpPassword}
-                      onChange={(e) => setStepUpPassword(e.target.value)}
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block opacity-70">TOTP Code (G3 real money)</label>
-                    <input
-                      data-testid="order-step-up-totp-input"
-                      type="text"
-                      inputMode="numeric"
-                      value={stepUpTotpCode}
-                      onChange={(e) => setStepUpTotpCode(e.target.value)}
-                      className={inputClass}
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-3 flex justify-end">
-                  <button
-                    type="button"
-                    data-testid="submit-exchange-order-btn"
-                    disabled={submittingOrder}
-                    onClick={async () => {
-                      setSubmittingOrder(true);
-                      setGovMessage(null);
-                      setGovError(null);
-                      try {
-                        const res = await apiClient.broker.submitOrder({
-                          body: {
-                            instrumentId: selectedInstrumentId,
-                            side: orderSide,
-                            sizeLots: orderSizeLots,
-                            entryPrice: orderEntryPrice,
-                            protectiveStopPrice: orderStopPrice,
-                            takeProfitPrice: orderTakeProfitPrice,
-                            reduceOnly: false,
-                            stepUpPassword: stepUpPassword || undefined,
-                            stepUpTotpCode: stepUpTotpCode || undefined
+              ) : (
+                <>
+                  {/* DMS & Reconciliation Actions */}
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/60 pb-4">
+                    <div className="text-xs opacity-80">
+                      Dead-Man&apos;s Switch automatically cancels all resting unexecuted limit
+                      orders after 60s if the container crashes, while protective stops remain
+                      exchange-active.
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        data-testid="send-dms-btn"
+                        disabled={sendingDms}
+                        onClick={async () => {
+                          setSendingDms(true);
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.broker.dmsHeartbeat({ body: {} });
+                            if (res.status === 200) {
+                              setGovMessage(
+                                `DMS Heartbeat refreshed: 60s window active (healthy=${res.body.dms.healthy})`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(extractApiError(res.body, "DMS heartbeat failed"));
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          } finally {
+                            setSendingDms(false);
                           }
-                        });
-                        if (res.status === 200) {
-                          setSubmittedExchangeOrders((prev) => [res.body.order, ...prev]);
-                          setGovMessage(
-                            `Exchange order ${res.body.order.orderId} filled with atomic attached stop ${res.body.order.algoOrderId} @ ${res.body.order.protectiveStopPrice}`
-                          );
-                          await refreshGovernanceData();
-                        } else {
-                          setGovError(extractApiError(res.body, "Order submission failed"));
-                        }
-                      } catch (err) {
-                        setGovError(String(err));
-                      } finally {
-                        setSubmittingOrder(false);
-                      }
-                    }}
-                    className="rounded bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    {submittingOrder
-                      ? "Submitting Protected Order..."
-                      : "Submit Protected Exchange Order"}
-                  </button>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
-                  <p className="text-xs opacity-70">
-                    Entries are refused while Venue Book equity is above the OKX balance. Rebase
-                    sets the flat Venue Book to the venue balance (step-up required).
-                  </p>
-                  <button
-                    type="button"
-                    data-testid="rebase-venue-capital-btn"
-                    onClick={async () => {
-                      setGovMessage(null);
-                      setGovError(null);
-                      try {
-                        const res = await apiClient.broker.rebaseVenueCapital({
-                          body: {
-                            reason: "Operator rebase to the OKX balance from the dashboard",
-                            stepUpPassword: stepUpPassword || undefined,
-                            stepUpTotpCode: stepUpTotpCode || undefined
-                          }
-                        });
-                        if (res.status === 200) {
-                          setGovMessage(
-                            `Venue Book rebased from ${res.body.previousEquityUsdt} to ${res.body.venueEquityUsdt} USDT`
-                          );
-                          await refreshGovernanceData();
-                        } else {
-                          setGovError(extractApiError(res.body, "Venue Book rebase failed"));
-                        }
-                      } catch (err) {
-                        setGovError(String(err));
-                      }
-                    }}
-                    className="shrink-0 rounded border border-amber-500/60 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/10"
-                  >
-                    Rebase Venue Book to OKX Balance
-                  </button>
-                </div>
-              </div>
+                        }}
+                        className="rounded bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-50"
+                      >
+                        {sendingDms ? "Sending DMS..." : "Send DMS Heartbeat"}
+                      </button>
 
-              {/* Submitted Orders with Attached Algo Stops Table */}
-              <div className="mt-4">
-                <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80 mb-2">
-                  Exchange Orders &amp; Attached Protective Stops
-                </h4>
-                <div className="overflow-x-auto">
-                  <table
-                    data-testid="exchange-orders-table"
-                    className="w-full text-left text-xs font-mono"
-                  >
-                    <thead>
-                      <tr className="border-b border-slate-700/60 opacity-70">
-                        <th className="py-1.5">Order ID</th>
-                        <th className="py-1.5">Client Ord ID</th>
-                        <th className="py-1.5">Algo Stop ID</th>
-                        <th className="py-1.5">Instrument</th>
-                        <th className="py-1.5">Side</th>
-                        <th className="py-1.5">Lots</th>
-                        <th className="py-1.5">Fill Price</th>
-                        <th className="py-1.5">Protective Stop</th>
-                        <th className="py-1.5">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {submittedExchangeOrders.map((ord) => (
-                        <tr key={ord.orderId} className="border-b border-slate-800/60">
-                          <td className="py-1.5">{ord.orderId.slice(0, 14)}</td>
-                          <td className="py-1.5">{ord.clOrdId.slice(0, 14)}</td>
-                          <td className="py-1.5 text-amber-400 font-semibold">
-                            {ord.algoOrderId.slice(0, 14)}
-                          </td>
-                          <td className="py-1.5">{ord.instrumentId}</td>
-                          <td
-                            className={`py-1.5 font-bold uppercase ${
-                              ord.side === "long" ? "text-emerald-400" : "text-rose-400"
-                            }`}
-                          >
-                            {ord.side}
-                          </td>
-                          <td className="py-1.5">{ord.sizeLots}</td>
-                          <td className="py-1.5">{ord.fillPrice}</td>
-                          <td className="py-1.5 text-rose-400 font-bold">
-                            {ord.protectiveStopPrice}
-                          </td>
-                          <td className="py-1.5">
-                            <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400 font-semibold">
-                              {ord.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                      {submittedExchangeOrders.length === 0 && (
-                        <tr>
-                          <td colSpan={9} className="py-2.5 text-center opacity-60">
-                            No exchange orders placed yet. Submit protected order above.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                      <button
+                        type="button"
+                        data-testid="reconcile-positions-btn"
+                        disabled={reconciling}
+                        onClick={async () => {
+                          setReconciling(true);
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.broker.reconcile({ body: {} });
+                            if (res.status === 200) {
+                              setReconciliation(res.body.reconciliation);
+                              setGovMessage(
+                                `Reconciliation complete: matched=${res.body.reconciliation.matched} (${res.body.reconciliation.localPositionsCount} positions)`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(extractApiError(res.body, "Reconciliation failed"));
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          } finally {
+                            setReconciling(false);
+                          }
+                        }}
+                        className="rounded border border-slate-600 px-3 py-1.5 text-xs font-semibold hover:border-teal-500 disabled:opacity-50"
+                      >
+                        {reconciling ? "Reconciling..." : "Reconcile Positions"}
+                      </button>
+
+                      <button
+                        type="button"
+                        data-testid="emergency-flatten-btn"
+                        onClick={async () => {
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.broker.flatten({
+                              body: { reason: "Operator manual emergency flatten" }
+                            });
+                            if (res.status === 200) {
+                              setGovMessage(
+                                `Emergency flatten executed: ${res.body.flattenedCount} positions closed.`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(extractApiError(res.body, "Emergency flatten failed"));
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          }
+                        }}
+                        className="rounded border border-rose-600/70 bg-rose-600/10 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:bg-rose-600 hover:text-white"
+                      >
+                        Emergency Flatten All
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Order Submission Form with Mandatory Attached Protective Stop */}
+                  <div className="mt-4">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80">
+                      Order Dispatch with Mandatory Attached Protective Stop (ADR-0006)
+                    </h4>
+                    <div className="mt-2 grid gap-3 md:grid-cols-5 text-xs">
+                      <div>
+                        <label className="mb-1 block opacity-70">Instrument</label>
+                        <input
+                          data-testid="order-instrument-input"
+                          type="text"
+                          value={selectedInstrumentId}
+                          onChange={(e) => setSelectedInstrumentId(e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block opacity-70">Side</label>
+                        <select
+                          data-testid="order-side-select"
+                          value={orderSide}
+                          onChange={(e) => setOrderSide(e.target.value as "long" | "short")}
+                          className={inputClass}
+                        >
+                          <option value="long">LONG (Buy)</option>
+                          <option value="short">SHORT (Sell)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block opacity-70">Size (Lots)</label>
+                        <input
+                          data-testid="order-size-input"
+                          type="number"
+                          value={orderSizeLots}
+                          onChange={(e) => setOrderSizeLots(Number(e.target.value))}
+                          className={inputClass}
+                          min={1}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block opacity-70">Entry Price (USDT)</label>
+                        <input
+                          data-testid="order-entry-price-input"
+                          type="text"
+                          value={orderEntryPrice}
+                          onChange={(e) => setOrderEntryPrice(e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-semibold text-rose-400">
+                          Protective Stop Price (REQUIRED)
+                        </label>
+                        <input
+                          data-testid="order-stop-price-input"
+                          type="text"
+                          value={orderStopPrice}
+                          onChange={(e) => setOrderStopPrice(e.target.value)}
+                          className={`${inputClass} border-rose-500/50`}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block opacity-70">Step-Up Password (G2/G3)</label>
+                        <input
+                          data-testid="order-step-up-password-input"
+                          type="password"
+                          value={stepUpPassword}
+                          onChange={(e) => setStepUpPassword(e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block opacity-70">TOTP Code (G3 real money)</label>
+                        <input
+                          data-testid="order-step-up-totp-input"
+                          type="text"
+                          inputMode="numeric"
+                          value={stepUpTotpCode}
+                          onChange={(e) => setStepUpTotpCode(e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="button"
+                        data-testid="submit-exchange-order-btn"
+                        disabled={submittingOrder}
+                        onClick={async () => {
+                          setSubmittingOrder(true);
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.broker.submitOrder({
+                              body: {
+                                instrumentId: selectedInstrumentId,
+                                side: orderSide,
+                                sizeLots: orderSizeLots,
+                                entryPrice: orderEntryPrice,
+                                protectiveStopPrice: orderStopPrice,
+                                takeProfitPrice: orderTakeProfitPrice,
+                                reduceOnly: false,
+                                stepUpPassword: stepUpPassword || undefined,
+                                stepUpTotpCode: stepUpTotpCode || undefined
+                              }
+                            });
+                            if (res.status === 200) {
+                              setSubmittedExchangeOrders((prev) => [res.body.order, ...prev]);
+                              setGovMessage(
+                                `Exchange order ${res.body.order.orderId} filled with atomic attached stop ${res.body.order.algoOrderId} @ ${res.body.order.protectiveStopPrice}`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(extractApiError(res.body, "Order submission failed"));
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          } finally {
+                            setSubmittingOrder(false);
+                          }
+                        }}
+                        className="rounded bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                      >
+                        {submittingOrder
+                          ? "Submitting Protected Order..."
+                          : "Submit Protected Exchange Order"}
+                      </button>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/10 pt-3">
+                      <p className="text-xs opacity-70">
+                        Entries are refused while Venue Book equity is above the OKX balance. Rebase
+                        sets the flat Venue Book to the venue balance (step-up required).
+                      </p>
+                      <button
+                        type="button"
+                        data-testid="rebase-venue-capital-btn"
+                        onClick={async () => {
+                          setGovMessage(null);
+                          setGovError(null);
+                          try {
+                            const res = await apiClient.broker.rebaseVenueCapital({
+                              body: {
+                                reason: "Operator rebase to the OKX balance from the dashboard",
+                                stepUpPassword: stepUpPassword || undefined,
+                                stepUpTotpCode: stepUpTotpCode || undefined
+                              }
+                            });
+                            if (res.status === 200) {
+                              setGovMessage(
+                                `Venue Book rebased from ${res.body.previousEquityUsdt} to ${res.body.venueEquityUsdt} USDT`
+                              );
+                              await refreshGovernanceData();
+                            } else {
+                              setGovError(extractApiError(res.body, "Venue Book rebase failed"));
+                            }
+                          } catch (err) {
+                            setGovError(String(err));
+                          }
+                        }}
+                        className="shrink-0 rounded border border-amber-500/60 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/10"
+                      >
+                        Rebase Venue Book to OKX Balance
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Submitted Orders with Attached Algo Stops Table */}
+                  <div className="mt-4">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider opacity-80 mb-2">
+                      Exchange Orders &amp; Attached Protective Stops
+                    </h4>
+                    <div className="overflow-x-auto">
+                      <table
+                        data-testid="exchange-orders-table"
+                        className="w-full text-left text-xs font-mono"
+                      >
+                        <thead>
+                          <tr className="border-b border-slate-700/60 opacity-70">
+                            <th className="py-1.5">Order ID</th>
+                            <th className="py-1.5">Client Ord ID</th>
+                            <th className="py-1.5">Algo Stop ID</th>
+                            <th className="py-1.5">Instrument</th>
+                            <th className="py-1.5">Side</th>
+                            <th className="py-1.5">Lots</th>
+                            <th className="py-1.5">Fill Price</th>
+                            <th className="py-1.5">Protective Stop</th>
+                            <th className="py-1.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {submittedExchangeOrders.map((ord) => (
+                            <tr key={ord.orderId} className="border-b border-slate-800/60">
+                              <td className="py-1.5">{ord.orderId.slice(0, 14)}</td>
+                              <td className="py-1.5">{ord.clOrdId.slice(0, 14)}</td>
+                              <td className="py-1.5 text-amber-400 font-semibold">
+                                {ord.algoOrderId.slice(0, 14)}
+                              </td>
+                              <td className="py-1.5">{ord.instrumentId}</td>
+                              <td
+                                className={`py-1.5 font-bold uppercase ${
+                                  ord.side === "long" ? "text-emerald-400" : "text-rose-400"
+                                }`}
+                              >
+                                {ord.side}
+                              </td>
+                              <td className="py-1.5">{ord.sizeLots}</td>
+                              <td className="py-1.5">{ord.fillPrice}</td>
+                              <td className="py-1.5 text-rose-400 font-bold">
+                                {ord.protectiveStopPrice}
+                              </td>
+                              <td className="py-1.5">
+                                <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400 font-semibold">
+                                  {ord.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                          {submittedExchangeOrders.length === 0 && (
+                            <tr>
+                              <td colSpan={9} className="py-2.5 text-center opacity-60">
+                                No exchange orders placed yet. Submit protected order above.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
             </section>
 
             {/* Complete CONFIG_FIELD_REGISTRY Specification Table */}
@@ -2742,7 +2796,7 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
             </section>
 
             {/* Immutable Audit Trail */}
-            <section className={cardClass}>
+            <section id="er-audit" className={cardClass}>
               <h3 className="text-sm font-bold">Immutable Audit Trail (SQLite WAL)</h3>
               <div className="mt-3 overflow-x-auto">
                 <table data-testid="audit-log-table" className="w-full text-left text-xs">

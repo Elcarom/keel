@@ -23,7 +23,7 @@ import {
   type SettledFundingRate,
   type StrategyRiskState
 } from "@keel/core";
-import { BaselineChooser, type Strategy } from "@keel/strategy";
+import { BaselineChooser, isTighterStop, type Strategy } from "@keel/strategy";
 
 export interface PaperBrokerOptions {
   readonly clock: Clock;
@@ -498,12 +498,46 @@ export class PaperBroker implements Broker {
             ? contracts.mul(spec.contractValue).mul(barClose.sub(entryPrice))
             : contracts.mul(spec.contractValue).mul(entryPrice.sub(barClose));
 
-        this.paperAccountRepo.savePosition({
+        const marked: PaperPositionRecord = {
           ...pos,
           unrealizedPnlUsdt: unrealizedPnl.toFixed(8),
           fundingPaidUsdt: totalFundingPaid.toFixed(8),
           lastFundingSettledTs: updatedLastFundingTs
-        });
+        };
+        this.paperAccountRepo.savePosition(marked);
+
+        // Exit rules, time stops and trailing stops on this confirmed bar (ADR-0029)
+        if (strategy?.manage) {
+          const barMs = Math.max(1, bar.closeTs - bar.openTs);
+          const instruction = strategy.manage(
+            {
+              side: marked.side,
+              entryPrice: marked.entryPrice,
+              protectiveStopPrice: marked.protectiveStopPrice,
+              barsHeld: Math.max(1, Math.round((bar.closeTs - marked.openedAtMs) / barMs))
+            },
+            {
+              instrumentId: bar.instrumentId,
+              asOfMs,
+              barsByTimeframe: params.featureBars ?? { [bar.timeframe]: [bar] },
+              recentFundingRates: params.settledFundingRates ?? [],
+              ...(params.referenceBars ? { referenceBars: params.referenceBars } : {})
+            }
+          );
+          if (instruction.kind === "exit") {
+            positionsClosed.push(
+              this.closeAtMarket(marked, barClose, instruction.reason, "EXIT", asOfMs)
+            );
+          } else if (
+            instruction.newStopPrice !== undefined &&
+            isTighterStop(marked.side, marked.protectiveStopPrice, instruction.newStopPrice)
+          ) {
+            this.paperAccountRepo.savePosition({
+              ...marked,
+              protectiveStopPrice: ScaledDecimal.fromString(instruction.newStopPrice).toFixed(8)
+            });
+          }
+        }
       }
     }
 
@@ -677,85 +711,97 @@ export class PaperBroker implements Broker {
     const closedPositions: PaperPositionRecord[] = [];
 
     for (const pos of openPositions) {
-      const entryPrice = ScaledDecimal.fromString(pos.entryPrice);
-      const contracts = ScaledDecimal.fromString(pos.contracts);
-      const spec = defaultInstrumentSpec(pos.instrumentId);
-      // Flat with market exit adverse slippage (ADR-0014)
       const mark = markPrices[pos.instrumentId];
-      const exitMarket = computeMarketExitPrice({
-        side: pos.side,
-        marketPrice: mark ?? entryPrice,
-        slippageBps: this.slippageBps
-      });
-      const exitPrice = exitMarket.exitPrice;
-      const notional = contracts.mul(spec.contractValue).mul(exitPrice);
-      const exitFee = notional.mul(
-        ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
+      closedPositions.push(
+        this.closeAtMarket(pos, mark ?? null, `flatten: ${reason}`, "FLATTEN", asOfMs)
       );
-      const grossPnl =
-        pos.side === "long"
-          ? contracts.mul(spec.contractValue).mul(exitPrice.sub(entryPrice))
-          : contracts.mul(spec.contractValue).mul(entryPrice.sub(exitPrice));
-
-      const txGroup = `flatten-${pos.positionId}-${asOfMs}`;
-      if (mark !== undefined && !grossPnl.isZero()) {
-        const profit = grossPnl.isPositive();
-        this.ledgerRepo.recordJournal({
-          txGroupId: txGroup,
-          ts: asOfMs,
-          strategyId: pos.strategyId,
-          instrumentId: pos.instrumentId,
-          debitAccount: profit ? "cash:usdt" : "realized_pnl:usdt",
-          creditAccount: profit ? "realized_pnl:usdt" : "cash:usdt",
-          amountUsdt: grossPnl.abs().toFixed(8),
-          description: `Flatten gross ${profit ? "profit" : "loss"} on ${pos.positionId} (${reason})`
-        });
-      }
-      if (exitFee.isPositive()) {
-        this.ledgerRepo.recordJournal({
-          txGroupId: txGroup,
-          ts: asOfMs,
-          strategyId: pos.strategyId,
-          instrumentId: pos.instrumentId,
-          debitAccount: "fees_expense:usdt",
-          creditAccount: "cash:usdt",
-          amountUsdt: exitFee.toFixed(8),
-          description: `Flatten exit fee on ${pos.positionId} (${reason})`
-        });
-      }
-
-      const totalFees = ScaledDecimal.fromString(pos.feesPaidUsdt).add(exitFee);
-      const updated: PaperPositionRecord = {
-        ...pos,
-        status: "CLOSED",
-        closedAtMs: asOfMs,
-        exitPrice: exitPrice.toFixed(8),
-        exitReason: `flatten: ${reason}`,
-        realizedPnlUsdt: mark !== undefined ? grossPnl.toFixed(8) : pos.realizedPnlUsdt,
-        unrealizedPnlUsdt: "0.00000000",
-        feesPaidUsdt: totalFees.toFixed(8)
-      };
-
-      this.paperAccountRepo.savePosition(updated);
-      closedPositions.push(updated);
-
-      this.paperAccountRepo.saveOrder({
-        orderId: `ord-${pos.positionId}-flatten`,
-        positionId: pos.positionId,
-        proposalId: `prop-${pos.positionId}-flatten`,
-        strategyId: pos.strategyId,
-        instrumentId: pos.instrumentId,
-        side: pos.side === "long" ? "short" : "long",
-        orderRole: "FLATTEN",
-        contracts: pos.contracts,
-        fillPrice: exitPrice.toFixed(8),
-        protectiveStopPrice: pos.protectiveStopPrice,
-        feeUsdt: exitFee.toFixed(8),
-        status: "FILLED",
-        createdAtMs: asOfMs
-      });
     }
 
     return closedPositions;
+  }
+
+  /**
+   * Closes one position at a market price with adverse exit slippage (ADR-0014). Without a price
+   * it exits at the entry price and books fees only.
+   */
+  private closeAtMarket(
+    pos: PaperPositionRecord,
+    mark: ScaledDecimal | null,
+    reason: string,
+    role: "FLATTEN" | "EXIT",
+    asOfMs: number
+  ): PaperPositionRecord {
+    const entryPrice = ScaledDecimal.fromString(pos.entryPrice);
+    const contracts = ScaledDecimal.fromString(pos.contracts);
+    const spec = defaultInstrumentSpec(pos.instrumentId);
+    const exitMarket = computeMarketExitPrice({
+      side: pos.side,
+      marketPrice: mark ?? entryPrice,
+      slippageBps: this.slippageBps
+    });
+    const exitPrice = exitMarket.exitPrice;
+    const notional = contracts.mul(spec.contractValue).mul(exitPrice);
+    const exitFee = notional.mul(
+      ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
+    );
+    const grossPnl =
+      pos.side === "long"
+        ? contracts.mul(spec.contractValue).mul(exitPrice.sub(entryPrice))
+        : contracts.mul(spec.contractValue).mul(entryPrice.sub(exitPrice));
+
+    const txGroup = `${role.toLowerCase()}-${pos.positionId}-${asOfMs}`;
+    if (mark !== null && !grossPnl.isZero()) {
+      const profit = grossPnl.isPositive();
+      this.ledgerRepo.recordJournal({
+        txGroupId: txGroup,
+        ts: asOfMs,
+        strategyId: pos.strategyId,
+        instrumentId: pos.instrumentId,
+        debitAccount: profit ? "cash:usdt" : "realized_pnl:usdt",
+        creditAccount: profit ? "realized_pnl:usdt" : "cash:usdt",
+        amountUsdt: grossPnl.abs().toFixed(8),
+        description: `Market exit gross ${profit ? "profit" : "loss"} on ${pos.positionId} (${reason})`
+      });
+    }
+    if (exitFee.isPositive()) {
+      this.ledgerRepo.recordJournal({
+        txGroupId: txGroup,
+        ts: asOfMs,
+        strategyId: pos.strategyId,
+        instrumentId: pos.instrumentId,
+        debitAccount: "fees_expense:usdt",
+        creditAccount: "cash:usdt",
+        amountUsdt: exitFee.toFixed(8),
+        description: `Market exit fee on ${pos.positionId} (${reason})`
+      });
+    }
+
+    const updated: PaperPositionRecord = {
+      ...pos,
+      status: "CLOSED",
+      closedAtMs: asOfMs,
+      exitPrice: exitPrice.toFixed(8),
+      exitReason: reason,
+      realizedPnlUsdt: mark !== null ? grossPnl.toFixed(8) : pos.realizedPnlUsdt,
+      unrealizedPnlUsdt: "0.00000000",
+      feesPaidUsdt: ScaledDecimal.fromString(pos.feesPaidUsdt).add(exitFee).toFixed(8)
+    };
+    this.paperAccountRepo.savePosition(updated);
+    this.paperAccountRepo.saveOrder({
+      orderId: `ord-${pos.positionId}-${role.toLowerCase()}`,
+      positionId: pos.positionId,
+      proposalId: `prop-${pos.positionId}-${role.toLowerCase()}`,
+      strategyId: pos.strategyId,
+      instrumentId: pos.instrumentId,
+      side: pos.side === "long" ? "short" : "long",
+      orderRole: role,
+      contracts: pos.contracts,
+      fillPrice: exitPrice.toFixed(8),
+      protectiveStopPrice: pos.protectiveStopPrice,
+      feeUsdt: exitFee.toFixed(8),
+      status: "FILLED",
+      createdAtMs: asOfMs
+    });
+    return updated;
   }
 }

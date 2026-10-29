@@ -2,7 +2,7 @@ name: keel
 
 services:
   keel:
-    image: ghcr.io/elcarom/psychic-octo-funicular:latest
+    image: ghcr.io/elcarom/keel:latest
     build:
       context: .
       dockerfile: Dockerfile

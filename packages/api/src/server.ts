@@ -209,7 +209,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     }),
     isSchedulerRunning: (): boolean => scheduler.isRunning(),
     ingestor: okxIngestor,
-    seaTrial: options.seaTrial
+    seaTrial: options.seaTrial,
+    notify: (message) => notifier.send(message)
   });
 
   const contextAnalyst = new ContextAnalyst(llmGateway);

@@ -66,7 +66,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Keel Docker image
-        run: docker build -t ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }} .
+        run: docker build -t ghcr.io/elcarom/keel:ci-${{ github.sha }} .
 
       - name: Verify clean volume startup, healthcheck, and restart persistence
         run: |
@@ -77,7 +77,7 @@ jobs:
             -e PUID=99 -e PGID=100 -e UMASK=022 \
             -v /tmp/keel-data:/data \
             -v /tmp/keel-backups:/backups \
-            ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+            ghcr.io/elcarom/keel:ci-${{ github.sha }}
 
           for i in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:8080/healthz && curl -fsS http://127.0.0.1:8080/readyz; then
@@ -96,7 +96,7 @@ jobs:
       - name: Run Trivy vulnerability scanner on image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+          image-ref: ghcr.io/elcarom/keel:ci-${{ github.sha }}
           format: "table"
           exit-code: "0"
           vuln-type: "os,library"
@@ -105,6 +105,6 @@ jobs:
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0.17.8
         with:
-          image: ghcr.io/elcarom/psychic-octo-funicular:ci-${{ github.sha }}
+          image: ghcr.io/elcarom/keel:ci-${{ github.sha }}
           format: cyclonedx-json
           output-file: keel-sbom.cdx.json

@@ -694,5 +694,65 @@
     "claim": "ADR-0028: Imported baskets and reference markets must be markets Keel trades.",
     "testFile": "packages/spec/test/invention.test.ts",
     "testName": "refuses imported baskets and signals on markets Keel does not trade"
+  },
+  {
+    "id": "CLAIM-EXIT-STOPS-ONLY-TIGHTEN",
+    "claim": "ADR-0029: The paper broker ignores a looser stop, applies a tighter one and exits at the bar's close.",
+    "testFile": "packages/api/test/paper-broker.test.ts",
+    "testName": "manages an open position: ignores a looser stop, applies a tighter one and exits at the bar's close (ADR-0029)"
+  },
+  {
+    "id": "CLAIM-EXIT-REPLAY-TIME-STOP",
+    "claim": "ADR-0029: The replay ends every trade at its time limit, at that bar's close.",
+    "testFile": "packages/replay/test/exits.test.ts",
+    "testName": "ends every trade at its time limit, at that bar's close"
+  },
+  {
+    "id": "CLAIM-EXIT-REPLAY-TRAIL",
+    "claim": "ADR-0029: Trailing stops only move towards safety, so winners lock in gains.",
+    "testFile": "packages/replay/test/exits.test.ts",
+    "testName": "trails the stop only towards safety, so winners lock in gains"
+  },
+  {
+    "id": "CLAIM-DUTY-DRIFT",
+    "claim": "ADR-0030: The drift watch docks a boat whose worst dip goes well beyond its sea trial's.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "docks a boat whose worst dip goes well beyond its sea trial's"
+  },
+  {
+    "id": "CLAIM-DUTY-AUTOPILOT",
+    "claim": "ADR-0030: The Autopilot launches the best seaworthy, original proposition with its share of the wallet.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "launches the best seaworthy, original proposition with its share of the wallet"
+  },
+  {
+    "id": "CLAIM-DUTY-AUTOPILOT-NO-COPIES",
+    "claim": "ADR-0030: The Autopilot never launches a copy of a boat already sailing.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "never launches a copy of a boat already sailing"
+  },
+  {
+    "id": "CLAIM-DUTY-REBALANCE",
+    "claim": "ADR-0030: Rebalancing evens out a wallet's flat boats on Monday without moving money out of the wallet.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "evens out the stakes of a wallet's flat boats on Monday, moving no money out of the wallet"
+  },
+  {
+    "id": "CLAIM-LOOKALIKE",
+    "claim": "ADR-0030: A proposition that sails like one already on the slipway is flagged.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "flags a proposition that sails like one already on the slipway"
+  },
+  {
+    "id": "CLAIM-HTF-NO-FORMING",
+    "claim": "ADR-0031: 4-hour bars are built only from complete hours, never a forming one.",
+    "testFile": "packages/spec/test/exits-and-indicators.test.ts",
+    "testName": "builds 4-hour bars only from complete hours, never a forming one"
+  },
+  {
+    "id": "CLAIM-FUNDING-AS-OF",
+    "claim": "ADR-0031: Funding is read as of each bar; a rate settled later is not visible.",
+    "testFile": "packages/spec/test/exits-and-indicators.test.ts",
+    "testName": "reads the traded coin's settled funding as of each bar, in basis points"
   }
 ]

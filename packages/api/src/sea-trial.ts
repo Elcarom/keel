@@ -32,6 +32,37 @@ import { nudgeInvention } from "@keel/spec";
 // ============================================================================
 
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+const WEEK_MS = 7 * DAY_MS;
+
+/**
+ * Correlation of two weekly equity curves' week-on-week changes, or null when either is too
+ * flat or too short to say (ADR-0030).
+ */
+export function weeklyCorrelation(a: readonly number[], b: readonly number[]): number | null {
+  const n = Math.min(a.length, b.length);
+  if (n < 12) return null;
+  const da: number[] = [];
+  const db: number[] = [];
+  for (let i = 1; i < n; i++) {
+    da.push((a[i] ?? 0) - (a[i - 1] ?? 0));
+    db.push((b[i] ?? 0) - (b[i - 1] ?? 0));
+  }
+  const ma = da.reduce((s, v) => s + v, 0) / da.length;
+  const mb = db.reduce((s, v) => s + v, 0) / db.length;
+  let cov = 0;
+  let va = 0;
+  let vb = 0;
+  for (let i = 0; i < da.length; i++) {
+    const x = (da[i] ?? 0) - ma;
+    const y = (db[i] ?? 0) - mb;
+    cov += x * y;
+    va += x * x;
+    vb += y * y;
+  }
+  if (va < 1e-9 || vb < 1e-9) return null;
+  return round(cov / Math.sqrt(va * vb), 3);
+}
 
 /**
  * The backtest window: the two years before 2024-12-01. In-sample data, clear of the sealed
@@ -454,6 +485,27 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
           ? "sinks"
           : "choppy";
 
+  // A fixed weekly grid over the window, so any two trials can be compared week by week
+  const weeklyEquityPct: number[] = [];
+  let cursor = 0;
+  let equityNow = initial;
+  for (let ts = main.fromTs; ts <= main.toTs; ts += WEEK_MS) {
+    while (cursor < curve.length && (curve[cursor]?.ts ?? Infinity) <= ts) {
+      equityNow = curve[cursor]?.equity ?? equityNow;
+      cursor++;
+    }
+    weeklyEquityPct.push(round((equityNow / initial - 1) * 100, 3));
+  }
+  const avgHoldHours =
+    main.trades.length > 0
+      ? round(
+          main.trades.reduce((a, t) => a + (t.exitTs - t.entryTs), 0) /
+            main.trades.length /
+            HOUR_MS,
+          1
+        )
+      : 0;
+
   const step = Math.max(1, Math.floor(curve.length / 60));
   const equityCurvePct: number[] = [];
   for (let i = 0; i < curve.length; i += step) {
@@ -487,7 +539,9 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
     outOfSampleAvgR: round(oosR, 3),
     randomEntryPercentile: round(randomPercentile, 1),
     trials: Math.max(1, input.trials),
-    funding: input.funding
+    funding: input.funding,
+    weeklyEquityPct,
+    avgHoldHours
   };
 
   return {
@@ -508,6 +562,7 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
     buyAndHoldReturnPct: round(main.buyAndHoldReturnPct ?? 0),
     equityCurvePct,
     days: input.days,
-    seaTrial
+    seaTrial,
+    lookalike: null
   };
 }

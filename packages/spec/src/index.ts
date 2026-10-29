@@ -7,9 +7,13 @@ import {
   type FeatureSnapshot,
   type LookbackRequirement,
   type Proposal,
-  type ProposalMenu
+  type ProposalMenu,
+  type SettledFundingRate
 } from "@keel/core";
-import type { Strategy } from "@keel/strategy";
+import type { ManagedPosition, PositionInstruction, Strategy } from "@keel/strategy";
+import { HigherTimeframeSchema, TIMEFRAME_HOURS, type HigherTimeframe } from "./timeframes.js";
+
+export * from "./timeframes.js";
 
 // ============================================================================
 // 1. AST Expressions, Structural Budget Validator, & Zod Schema (ADR-0020 & T2/A3)
@@ -22,7 +26,10 @@ export interface AstBudgetCheckResult {
   readonly maxDepth?: number;
 }
 
-export function validateSpecAstBudget(raw: unknown): AstBudgetCheckResult {
+/** Exit rules have their own node budget, so exits never crowd out entries (ADR-0029). */
+export const MAX_EXIT_AST_NODES = 16;
+
+export function validateSpecAstBudget(raw: unknown, nodeLimit = 32): AstBudgetCheckResult {
   if (typeof raw !== "object" || raw === null) {
     return { valid: false, error: "Spec must be a non-null object" };
   }
@@ -71,6 +78,13 @@ export function validateSpecAstBudget(raw: unknown): AstBudgetCheckResult {
     const entryRules = [rules["longEntry"], rules["shortEntry"]].filter(
       (r): r is Record<string, unknown> => typeof r === "object" && r !== null
     );
+    if (rules["longExit"] !== undefined || rules["shortExit"] !== undefined) {
+      const exits = validateSpecAstBudget(
+        { rules: { longEntry: rules["longExit"], shortEntry: rules["shortExit"] } },
+        MAX_EXIT_AST_NODES
+      );
+      if (!exits.valid) return { valid: false, error: `Exit rules: ${exits.error ?? "invalid"}` };
+    }
 
     for (const entryRule of entryRules) {
       const astStack: Array<{ node: Record<string, unknown>; depth: number }> = [
@@ -94,10 +108,10 @@ export function validateSpecAstBudget(raw: unknown): AstBudgetCheckResult {
           };
         }
 
-        if (totalAstNodes > 32) {
+        if (totalAstNodes > nodeLimit) {
           return {
             valid: false,
-            error: `Total AST node count ${totalAstNodes} exceeds budget limit of 32`
+            error: `Total AST node count ${totalAstNodes} exceeds budget limit of ${nodeLimit}`
           };
         }
 
@@ -166,7 +180,9 @@ export type NumExpr =
   | {
       readonly type: "bar_field";
       /** `hour` (0-23) and `weekday` (0 = Sunday) are UTC, from the bar's open time. */
-      readonly field: "open" | "high" | "low" | "close" | "volume" | "hour" | "weekday";
+      readonly field: "open" | "high" | "low" | "close" | "volume" | "hour" | "weekday" | "funding";
+      /** Read a 4-hour or daily bar built from complete hourly bars; absent means 1H. */
+      readonly timeframe?: HigherTimeframe | undefined;
       readonly shift?: number | undefined;
       /** Another market's bar at the same hour; absent means the traded market. */
       readonly market?: string | undefined;
@@ -192,9 +208,10 @@ export const NumExprSchema: z.ZodType<NumExpr> = z.lazy(() =>
     }),
     z.object({
       type: z.literal("bar_field"),
-      field: z.enum(["open", "high", "low", "close", "volume", "hour", "weekday"]),
+      field: z.enum(["open", "high", "low", "close", "volume", "hour", "weekday", "funding"]),
       shift: z.number().int().min(0).max(500).optional(),
-      market: MarketIdSchema.optional()
+      market: MarketIdSchema.optional(),
+      timeframe: HigherTimeframeSchema.optional()
     }),
     z.object({
       type: z.literal("indicator"),
@@ -266,7 +283,9 @@ export const IndicatorDefSchema = z.object({
   period: z.number().int().min(2).max(500),
   params: z.record(z.string(), z.union([z.number(), z.string()])).optional(),
   /** Computed on another market's bars, aligned hour by hour; absent means the traded market. */
-  market: MarketIdSchema.optional()
+  market: MarketIdSchema.optional(),
+  /** Computed on 4-hour or daily bars built from complete hourly bars; absent means 1H. */
+  timeframe: HigherTimeframeSchema.optional()
 });
 export type IndicatorDef = z.infer<typeof IndicatorDefSchema>;
 
@@ -289,7 +308,14 @@ export const RiskRulesSchema = z.object({
   takeProfit: z.object({
     rewardMultiple: z.number().min(0.5).max(10)
   }),
-  timeStopBars: z.number().int().min(1).max(500).optional()
+  timeStopBars: z.number().int().min(1).max(500).optional(),
+  /** Ratchets the stop to atrMultiple ATRs behind each close; it never loosens (ADR-0029). */
+  trailingStop: z
+    .object({
+      atrMultiple: z.number().min(0.5).max(10),
+      atrPeriod: z.number().int().min(2).max(500)
+    })
+    .optional()
 });
 export type RiskRules = z.infer<typeof RiskRulesSchema>;
 
@@ -306,7 +332,10 @@ export const BaseStrategySpecV1Schema = z.object({
   indicators: z.array(IndicatorDefSchema).max(8),
   rules: z.object({
     longEntry: ConditionSchema,
-    shortEntry: ConditionSchema
+    shortEntry: ConditionSchema,
+    /** Close an open long (short) at the bar's close when this turns true (ADR-0029). */
+    longExit: ConditionSchema.optional(),
+    shortExit: ConditionSchema.optional()
   }),
   risk: RiskRulesSchema,
   cooldownBars: z.number().int().min(0).max(200).default(0),
@@ -543,6 +572,62 @@ function computeRsi(bars: readonly ConfirmedBar[], period: number): number {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
+/** Wilder's ADX with the +DI and −DI it is built from, over the given bars. */
+function computeAdx(
+  bars: readonly ConfirmedBar[],
+  period: number
+): { adx: number; plusDi: number; minusDi: number } {
+  if (bars.length < period + 2) return { adx: 0, plusDi: 0, minusDi: 0 };
+  let tr = 0;
+  let plusDm = 0;
+  let minusDm = 0;
+  const dxs: number[] = [];
+  let plusDi = 0;
+  let minusDi = 0;
+  for (let i = 1; i < bars.length; i++) {
+    const bar = bars[i];
+    const prev = bars[i - 1];
+    if (!bar || !prev) continue;
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    const up = high - Number(prev.high);
+    const down = Number(prev.low) - low;
+    const pdm = up > down && up > 0 ? up : 0;
+    const mdm = down > up && down > 0 ? down : 0;
+    const range = computeTrueRange(bar, prev.close);
+    if (i <= period) {
+      tr += range;
+      plusDm += pdm;
+      minusDm += mdm;
+    } else {
+      tr = tr - tr / period + range;
+      plusDm = plusDm - plusDm / period + pdm;
+      minusDm = minusDm - minusDm / period + mdm;
+    }
+    if (i >= period && tr > 0) {
+      plusDi = (100 * plusDm) / tr;
+      minusDi = (100 * minusDm) / tr;
+      const sum = plusDi + minusDi;
+      dxs.push(sum > 0 ? (100 * Math.abs(plusDi - minusDi)) / sum : 0);
+    }
+  }
+  if (dxs.length === 0) return { adx: 0, plusDi, minusDi };
+  let adx = dxs.slice(0, period).reduce((a, v) => a + v, 0) / Math.min(period, dxs.length);
+  for (let i = period; i < dxs.length; i++) adx = (adx * (period - 1) + (dxs[i] ?? 0)) / period;
+  return { adx, plusDi, minusDi };
+}
+
+/** Hour-on-hour close returns of the last `period` bars. */
+function closeReturns(bars: readonly ConfirmedBar[], period: number): number[] {
+  const window = bars.slice(-(period + 1));
+  const returns: number[] = [];
+  for (let i = 1; i < window.length; i++) {
+    const prev = Number(window[i - 1]?.close ?? 0);
+    returns.push(prev > 0 ? Number(window[i]?.close ?? 0) / prev - 1 : 0);
+  }
+  return returns;
+}
+
 interface EvaluatedIndicators {
   readonly [id: string]: Record<string, number>;
 }
@@ -555,6 +640,57 @@ interface EvaluatedIndicators {
 interface Frame {
   readonly bars: readonly ConfirmedBar[];
   readonly refs: Readonly<Record<string, readonly ConfirmedBar[]>>;
+  /** Settled funding of the traded market, as of the snapshot. */
+  readonly funding: readonly SettledFundingRate[];
+}
+
+const HOUR_MS = 3_600_000;
+const aggregated = new WeakMap<readonly ConfirmedBar[], Map<number, ConfirmedBar[]>>();
+
+/**
+ * Hourly bars rolled up into `hours`-hour bars aligned to UTC. Only complete buckets count, so
+ * a 4-hour or daily bar exists only once its last hour has closed: never a forming bar.
+ */
+export function aggregateBars(bars: readonly ConfirmedBar[], hours: number): ConfirmedBar[] {
+  if (hours === 1) return [...bars];
+  const cache = aggregated.get(bars) ?? new Map<number, ConfirmedBar[]>();
+  aggregated.set(bars, cache);
+  const hit = cache.get(hours);
+  if (hit) return hit;
+  const span = hours * HOUR_MS;
+  const out: ConfirmedBar[] = [];
+  let bucket: ConfirmedBar[] = [];
+  let start = -1;
+  const flush = () => {
+    const first = bucket[0];
+    const last = bucket[bucket.length - 1];
+    if (!first || !last || bucket.length !== hours || last.closeTs !== start + span) return;
+    out.push({
+      instrumentId: first.instrumentId,
+      timeframe: first.timeframe,
+      openTs: start,
+      closeTs: start + span,
+      open: first.open,
+      high: String(Math.max(...bucket.map((b) => Number(b.high)))),
+      low: String(Math.min(...bucket.map((b) => Number(b.low)))),
+      close: last.close,
+      volumeContracts: String(bucket.reduce((a, b) => a + Number(b.volumeContracts), 0)),
+      volumeQuote: String(bucket.reduce((a, b) => a + Number(b.volumeQuote), 0)),
+      confirm: "1"
+    });
+  };
+  for (const bar of bars) {
+    const s0 = Math.floor(bar.openTs / span) * span;
+    if (s0 !== start) {
+      flush();
+      start = s0;
+      bucket = [];
+    }
+    bucket.push(bar);
+  }
+  flush();
+  cache.set(hours, out);
+  return out;
 }
 
 /** The frame as it stood k bars ago. */
@@ -562,11 +698,16 @@ function dropLast(frame: Frame, k: number): Frame {
   if (k <= 0) return frame;
   const refs: Record<string, readonly ConfirmedBar[]> = {};
   for (const [market, bars] of Object.entries(frame.refs)) refs[market] = bars.slice(0, -k);
-  return { bars: frame.bars.slice(0, -k), refs };
+  return { bars: frame.bars.slice(0, -k), refs, funding: frame.funding };
 }
 
-function seriesOf(frame: Frame, market: string | undefined): readonly ConfirmedBar[] {
-  return market ? (frame.refs[market] ?? []) : frame.bars;
+function seriesOf(
+  frame: Frame,
+  market: string | undefined,
+  timeframe?: HigherTimeframe | undefined
+): readonly ConfirmedBar[] {
+  const hourly = market ? (frame.refs[market] ?? []) : frame.bars;
+  return timeframe ? aggregateBars(hourly, TIMEFRAME_HOURS[timeframe]) : hourly;
 }
 
 /**
@@ -594,7 +735,7 @@ function computeIndicators(defs: readonly IndicatorDef[], frame: Frame): Evaluat
   const result: Record<string, Record<string, number>> = {};
 
   for (const def of defs) {
-    const bars = seriesOf(frame, def.market);
+    const bars = seriesOf(frame, def.market, def.timeframe);
     const latest = bars[bars.length - 1];
     const closeNum = latest ? Number(latest.close) : 0;
     const minVol = Math.max(1e-8, closeNum * 1e-4);
@@ -659,6 +800,56 @@ function computeIndicators(defs: readonly IndicatorDef[], frame: Frame): Evaluat
         res["mean"] = volumes.reduce((acc, v) => acc + v, 0) / (volumes.length || 1);
         break;
       }
+      case "adx": {
+        const { adx, plusDi, minusDi } = computeAdx(bars, def.period);
+        res["adx"] = adx;
+        res["plus_di"] = plusDi;
+        res["minus_di"] = minusDi;
+        break;
+      }
+      case "bollinger": {
+        const closes = bars.slice(-def.period).map((b) => Number(b.close));
+        const mean = closes.reduce((acc, v) => acc + v, 0) / (closes.length || 1);
+        const variance = closes.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (closes.length || 1);
+        const sd = Math.max(minVol, Math.sqrt(variance));
+        const upper = mean + 2 * sd;
+        const lower = mean - 2 * sd;
+        res["upper"] = upper;
+        res["lower"] = lower;
+        res["percent_b"] = (closeNum - lower) / (upper - lower);
+        res["bandwidth"] = mean > 0 ? (upper - lower) / mean : 0;
+        break;
+      }
+      case "percentile": {
+        // Share of the previous `period` closes below this one, 0-100
+        const prior = bars.slice(-(def.period + 1), -1).map((b) => Number(b.close));
+        const below = prior.filter((c) => c < closeNum).length;
+        res["percentile"] = prior.length > 0 ? (100 * below) / prior.length : 50;
+        break;
+      }
+      case "correlation": {
+        // The traded market's hourly returns against the indicator's market (ADR-0029)
+        const a = closeReturns(seriesOf(frame, undefined, def.timeframe), def.period);
+        const b = closeReturns(bars, def.period);
+        const n = Math.min(a.length, b.length);
+        const xs = a.slice(-n);
+        const ys = b.slice(-n);
+        const mx = xs.reduce((acc, v) => acc + v, 0) / (n || 1);
+        const my = ys.reduce((acc, v) => acc + v, 0) / (n || 1);
+        let cov = 0;
+        let vx = 0;
+        let vy = 0;
+        for (let i = 0; i < n; i++) {
+          const dx = (xs[i] ?? 0) - mx;
+          const dy = (ys[i] ?? 0) - my;
+          cov += dx * dy;
+          vx += dx * dx;
+          vy += dy * dy;
+        }
+        res["correlation"] = vx > 0 && vy > 0 ? cov / Math.sqrt(vx * vy) : 0;
+        res["beta"] = vy > 0 ? cov / vy : 0;
+        break;
+      }
       case "momentum": {
         const anchor = bars[bars.length - 1 - def.period];
         const anchorClose = anchor ? Number(anchor.close) : closeNum;
@@ -685,12 +876,21 @@ function evaluateNumExpr(
     case "constant":
       return expr.value;
     case "bar_field": {
-      const bars = seriesOf(frame, expr.market);
+      const bars = seriesOf(frame, expr.market, expr.timeframe);
       const shift = expr.shift ?? 0;
       const idx = bars.length - 1 - shift;
       const bar = bars[idx];
-      if (!bar) return 0;
+      // No complete 4-hour or daily bar yet: NaN makes every comparison false, so nothing fires
+      if (!bar) return expr.timeframe ? Number.NaN : 0;
       switch (expr.field) {
+        case "funding": {
+          // The traded market's latest settled rate as of this bar, in basis points
+          let rate = 0;
+          for (const f of frame.funding) {
+            if (f.fundingTs <= bar.closeTs) rate = Number(f.fundingRate) * 10_000;
+          }
+          return rate;
+        }
         case "open":
           return Number(bar.open);
         case "high":
@@ -711,9 +911,12 @@ function evaluateNumExpr(
     case "indicator": {
       let targetIndicators = indicators;
       if (expr.shift && expr.shift > 0) {
-        if (frame.bars.length <= expr.shift) return 0;
+        // A shift counts bars of the indicator's own timeframe
+        const tf = indicatorDefs?.find((d) => d.id === expr.id)?.timeframe;
+        const hours = expr.shift * (tf ? TIMEFRAME_HOURS[tf] : 1);
+        if (frame.bars.length <= hours) return 0;
         targetIndicators = indicatorDefs
-          ? computeIndicators(indicatorDefs, dropLast(frame, expr.shift))
+          ? computeIndicators(indicatorDefs, dropLast(frame, hours))
           : indicators;
       }
       const ind = targetIndicators[expr.id];
@@ -833,7 +1036,9 @@ export function specReferenceMarkets(spec: StrategySpecV1): string[] {
   const markets = [
     ...spec.indicators.flatMap((i) => (i.market ? [i.market] : [])),
     ...conditionMarkets(spec.rules.longEntry),
-    ...conditionMarkets(spec.rules.shortEntry)
+    ...conditionMarkets(spec.rules.shortEntry),
+    ...(spec.rules.longExit ? conditionMarkets(spec.rules.longExit) : []),
+    ...(spec.rules.shortExit ? conditionMarkets(spec.rules.shortExit) : [])
   ];
   return [...new Set(markets)].sort();
 }
@@ -869,11 +1074,60 @@ export class SpecStrategy implements Strategy {
     this.referenceMarkets = specReferenceMarkets(this.spec);
   }
 
+  /** The traded bars with every reference market aligned, or the market that is not current. */
+  private frameOf(bars: readonly ConfirmedBar[], snapshot: FeatureSnapshot): Frame | string {
+    const latest = bars[bars.length - 1];
+    const refs: Record<string, readonly ConfirmedBar[]> = {};
+    for (const market of this.referenceMarkets) {
+      const aligned = alignReferenceBars(bars, snapshot.referenceBars?.[market] ?? []);
+      if (!latest || aligned[aligned.length - 1]?.closeTs !== latest.closeTs) return market;
+      refs[market] = aligned;
+    }
+    return { bars, refs, funding: snapshot.recentFundingRates };
+  }
+
+  /**
+   * Exits and stop management for an open position: the time stop first, then the side's exit
+   * rule, then the trailing stop. A stale reference market skips the exit rule, never the stops.
+   */
+  public manage(position: ManagedPosition, snapshot: FeatureSnapshot): PositionInstruction {
+    const timeStop = this.timeStopBars;
+    if (timeStop !== undefined && position.barsHeld >= timeStop) {
+      return { kind: "exit", reason: "time_stop" };
+    }
+    const bars = snapshot.barsByTimeframe[this.spec.timeframe] ?? [];
+    const latest = bars[bars.length - 1];
+    if (!latest) return { kind: "hold" };
+
+    const exitRule =
+      position.side === "long" ? this.spec.rules.longExit : this.spec.rules.shortExit;
+    const framed = this.frameOf(bars, snapshot);
+    if (exitRule && typeof framed !== "string") {
+      const indicators = computeIndicators(this.spec.indicators, framed);
+      if (evaluateCondition(exitRule, framed, indicators, this.spec.indicators)) {
+        return { kind: "exit", reason: "signal_exit" };
+      }
+    }
+
+    const trailing = this.spec.risk.trailingStop;
+    if (!trailing) return { kind: "hold" };
+    const close = Number(latest.close);
+    const distance = computeAtr(bars, trailing.atrPeriod) * trailing.atrMultiple;
+    if (!(distance > 0)) return { kind: "hold" };
+    const candidate = position.side === "long" ? close - distance : close + distance;
+    if (!(candidate > 0)) return { kind: "hold" };
+    return { kind: "hold", newStopPrice: toFixedDecimalString(candidate) };
+  }
+
   public evaluate(snapshot: FeatureSnapshot): ProposalMenu {
     const bars = snapshot.barsByTimeframe[this.spec.timeframe] ?? [];
     const minBars =
       this.spec.indicators.length > 0
-        ? Math.max(...this.spec.indicators.map((i) => i.period)) + 1
+        ? Math.max(
+            ...this.spec.indicators.map((i) =>
+              i.timeframe ? (i.period + 1) * TIMEFRAME_HOURS[i.timeframe] : i.period + 1
+            )
+          )
         : 2;
 
     if (bars.length < minBars) {
@@ -904,22 +1158,18 @@ export class SpecStrategy implements Strategy {
 
     // Reference markets, aligned hour by hour. A market whose latest hour has not arrived would
     // be read stale, so the strategy stands down instead.
-    const refs: Record<string, readonly ConfirmedBar[]> = {};
-    for (const market of this.referenceMarkets) {
-      const aligned = alignReferenceBars(bars, snapshot.referenceBars?.[market] ?? []);
-      if (aligned[aligned.length - 1]?.closeTs !== latest.closeTs) {
-        return {
-          instrumentId: snapshot.instrumentId,
-          asOfMs: snapshot.asOfMs,
-          strategyId: this.strategyId,
-          strategyVersion: this.version,
-          proposals: [],
-          standDownReason: `reference_market_not_current_${market}`
-        };
-      }
-      refs[market] = aligned;
+    const framed = this.frameOf(bars, snapshot);
+    if (typeof framed === "string") {
+      return {
+        instrumentId: snapshot.instrumentId,
+        asOfMs: snapshot.asOfMs,
+        strategyId: this.strategyId,
+        strategyVersion: this.version,
+        proposals: [],
+        standDownReason: `reference_market_not_current_${framed}`
+      };
     }
-    const frame: Frame = { bars, refs };
+    const frame = framed;
 
     // Compute indicators
     const indicatorDefs = this.spec.indicators;

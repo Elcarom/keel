@@ -21,6 +21,31 @@ export interface Strategy {
   /** Other markets whose confirmed 1H bars the rules read, besides the traded one. */
   readonly referenceMarkets?: readonly string[] | undefined;
   evaluate(snapshot: FeatureSnapshot): ProposalMenu;
+  /**
+   * Called on every confirmed bar while a position is open, after stops and targets were checked.
+   * It may ask to exit at this bar's close or propose a tighter protective stop; the broker only
+   * ever applies a stop that moves towards safety (ADR-0029).
+   */
+  manage?(position: ManagedPosition, snapshot: FeatureSnapshot): PositionInstruction;
+}
+
+export interface ManagedPosition {
+  readonly side: "long" | "short";
+  readonly entryPrice: string;
+  readonly protectiveStopPrice: string;
+  /** Confirmed bars closed since entry, this one included. */
+  readonly barsHeld: number;
+}
+
+export type PositionInstruction =
+  | { readonly kind: "hold"; readonly newStopPrice?: string | undefined }
+  | { readonly kind: "exit"; readonly reason: "signal_exit" | "time_stop" };
+
+/** Whether a proposed stop is strictly safer than the current one for this side. */
+export function isTighterStop(side: "long" | "short", current: string, proposed: string): boolean {
+  const c = ScaledDecimal.fromString(current);
+  const p = ScaledDecimal.fromString(proposed);
+  return side === "long" ? p.gt(c) : p.lt(c);
 }
 
 function toFixedDecimalString(value: number, decimals = 8): string {

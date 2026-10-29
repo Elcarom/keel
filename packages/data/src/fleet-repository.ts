@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS fleet_backtest_data (
   instrument_id TEXT PRIMARY KEY,
   source TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS fleet_duties (
+  duty TEXT PRIMARY KEY,
+  last_run_ms INTEGER NOT NULL
+);
 `;
 
 type Row = Record<string, unknown>;
@@ -202,7 +207,8 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
           tagline = excluded.tagline,
           status = excluded.status,
           status_reason = excluded.status_reason,
-          retired_at_ms = excluded.retired_at_ms`
+          retired_at_ms = excluded.retired_at_ms,
+          allocation_usdt = excluded.allocation_usdt`
       ).run(
         bot.botId,
         bot.name,
@@ -320,6 +326,18 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
         `INSERT INTO fleet_backtest_data (instrument_id, source) VALUES (?, ?)
          ON CONFLICT(instrument_id) DO UPDATE SET source = excluded.source`
       ).run(`${instrumentId}@${windowFromTs}`, source);
+    },
+
+    getDutyLastRun(duty: string): number | null {
+      const row = db.prepare(`SELECT last_run_ms FROM fleet_duties WHERE duty = ?`).get(duty);
+      return row ? Number(row["last_run_ms"]) : null;
+    },
+
+    setDutyLastRun(duty: string, ms: number): void {
+      db.prepare(
+        `INSERT INTO fleet_duties (duty, last_run_ms) VALUES (?, ?)
+         ON CONFLICT(duty) DO UPDATE SET last_run_ms = excluded.last_run_ms`
+      ).run(duty, ms);
     }
   };
 }

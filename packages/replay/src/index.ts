@@ -24,7 +24,10 @@ import {
   type Proposal,
   type SettledFundingRate
 } from "@keel/core";
-import { BaselineChooser, type Strategy } from "@keel/strategy";
+import { BaselineChooser, isTighterStop, type Strategy } from "@keel/strategy";
+
+export type ReplayExitReason =
+  "stop" | "take-profit" | "signal-exit" | "time-stop" | "end-of-replay";
 
 export interface ReplayTradeRecord {
   readonly proposalId: string;
@@ -43,7 +46,7 @@ export interface ReplayTradeRecord {
   readonly netPnlUsdt: ScaledDecimal;
   readonly netR: number;
   readonly stressNetR: number;
-  readonly exitReason: "stop" | "take-profit" | "end-of-replay";
+  readonly exitReason: ReplayExitReason;
 }
 
 export interface ReplayRunInput {
@@ -736,8 +739,11 @@ export function computeRandomEntryBaseline(params: {
 interface ActivePosition {
   readonly proposal: Proposal;
   readonly entryTs: number;
+  /** Index of the entry bar, for counting bars held. */
+  readonly entryIdx: number;
   readonly entryPrice: ScaledDecimal;
-  readonly protectiveStopPrice: ScaledDecimal;
+  /** Ratcheted by a trailing stop; only ever towards safety (ADR-0029). */
+  protectiveStopPrice: ScaledDecimal;
   readonly takeProfitPrice: ScaledDecimal | null;
   readonly contracts: ScaledDecimal;
   readonly initialRiskUsdt: ScaledDecimal;
@@ -1160,7 +1166,7 @@ export class ReplayEngine {
       exitTs: number,
       exitPrice: ScaledDecimal,
       exitSlippageUsdt: ScaledDecimal,
-      exitReason: "stop" | "take-profit" | "end-of-replay"
+      exitReason: ReplayExitReason
     ) => {
       const baseQty = pos.contracts.mul(spec.contractValue);
       const exitNotionalUsdt = exitPrice.mul(baseQty);
@@ -1293,6 +1299,7 @@ export class ReplayEngine {
           active = {
             proposal: pendingProposal,
             entryTs: bar.openTs,
+            entryIdx: idx,
             entryPrice,
             protectiveStopPrice: sizing.effectiveStopPrice,
             takeProfitPrice: tpPrice,
@@ -1347,6 +1354,51 @@ export class ReplayEngine {
           const exitSlippageUsdt = exitRes.slippageAmount.mul(baseQty);
           closePosition(active, nowMs, exitRes.exitPrice, exitSlippageUsdt, reason);
           active = null;
+        }
+      }
+
+      // 2b. Exit rules, time stops and trailing stops, decided on this confirmed bar (ADR-0029)
+      if (active && params.strategy.manage && idx < bars.length - 1) {
+        const snapshot = inMemorySnapshot
+          ? inMemorySnapshot(nowMs)
+          : this.marketDataRepo.buildFeatureSnapshot({
+              instrumentId: params.instrumentId,
+              asOfMs: nowMs,
+              requirements: params.strategy.lookbacks
+            });
+        const instruction = params.strategy.manage(
+          {
+            side: active.proposal.side,
+            entryPrice: active.entryPrice.toString(),
+            protectiveStopPrice: active.protectiveStopPrice.toString(),
+            barsHeld: idx - active.entryIdx + 1
+          },
+          snapshot
+        );
+        if (instruction.kind === "exit") {
+          const exitMarket = computeMarketExitPrice({
+            side: active.proposal.side,
+            marketPrice: barClose,
+            slippageBps: params.slippageBps
+          });
+          const baseQty = active.contracts.mul(spec.contractValue);
+          closePosition(
+            active,
+            nowMs,
+            exitMarket.exitPrice,
+            exitMarket.slippageAmount.mul(baseQty),
+            instruction.reason === "time_stop" ? "time-stop" : "signal-exit"
+          );
+          active = null;
+        } else if (
+          instruction.newStopPrice !== undefined &&
+          isTighterStop(
+            active.proposal.side,
+            active.protectiveStopPrice.toString(),
+            instruction.newStopPrice
+          )
+        ) {
+          active.protectiveStopPrice = ScaledDecimal.fromString(instruction.newStopPrice);
         }
       }
 

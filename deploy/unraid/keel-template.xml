@@ -1,19 +1,19 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Keel</Name>
-  <Repository>ghcr.io/elcarom/psychic-octo-funicular:latest</Repository>
-  <Registry>https://github.com/Elcarom/psychic-octo-funicular/pkgs/container/psychic-octo-funicular</Registry>
+  <Repository>ghcr.io/elcarom/keel:latest</Repository>
+  <Registry>https://github.com/Elcarom/keel/pkgs/container/keel</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/Elcarom/psychic-octo-funicular/issues</Support>
-  <Project>https://github.com/Elcarom/psychic-octo-funicular</Project>
-  <Overview>Keel — Self-hosted systematic crypto-derivatives research lab and execution platform. Paper-first by default with deterministic risk engine, SQLite WAL state, and measurable Gemini AI decision support.</Overview>
+  <Support>https://github.com/Elcarom/keel/issues</Support>
+  <Project>https://github.com/Elcarom/keel</Project>
+  <Overview>Keel — a self-hosted lab for systematic crypto-perpetuals strategies. Claude drafts and invents strategies in the Shipyard; each is put through a two-year sea trial and ranked, then launched as a paper-trading Boat in your Fleet. Paper-first, with a deterministic risk engine that never asks a model anything.</Overview>
   <Category>Tools:Utilities Productivity:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/Elcarom/psychic-octo-funicular/main/deploy/unraid/keel-icon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/Elcarom/keel/main/deploy/unraid/keel-icon.svg</Icon>
   <ExtraParams>--stop-timeout=30</ExtraParams>
   <PostArgs/>
   <CPUset/>
@@ -25,8 +25,8 @@
   <Config Name="Backups Directory (/backups)" Target="/backups" Default="/mnt/user/appdata/keel/backups" Mode="rw" Description="Mounted volume for scheduled and on-demand atomic SQLite VACUUM INTO backups." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/keel/backups</Config>
   <Config Name="Vault Master Key" Target="KEEL_MASTER_KEY" Default="" Mode="" Description="Required. At least 32 characters with 12 distinct characters (generate with: openssl rand -base64 48). Keep it in your password manager: the vault cannot be decrypted without it." Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="Allow Plain-HTTP Sign-In (LAN testing)" Target="KEEL_ALLOW_INSECURE_HTTP" Default="false" Mode="" Description="Set true to sign in over plain http://[IP]:[PORT] on your LAN. Browsers refuse the Secure session cookie on plain HTTP, so sign-in silently fails without this. Leave false when Keel is reached through HTTPS (Cloudflare Tunnel)." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
-  <Config Name="Enable Scheduler" Target="KEEL_ENABLE_SCHEDULER" Default="true" Mode="" Description="true fetches new hourly bars from OKX and steps your paper bots. Without it, Fleet bots never trade." Type="Variable" Display="always" Required="false" Mask="false">true</Config>
-  <Config Name="Anthropic API Key (optional)" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Lets Claude design bots in the Shipyard. You can instead store it in the Engine Room vault. Without a key the Shipyard drafts sample propositions." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Enable Scheduler" Target="KEEL_ENABLE_SCHEDULER" Default="true" Mode="" Description="true fetches new hourly bars from OKX and steps your paper Boats. Without it, the Fleet never trades." Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+  <Config Name="Anthropic API Key (optional)" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Lets Claude design and invent Boats in the Shipyard. You can instead store it in the Engine Room vault. Without a key the Shipyard offers samples, and Inventor via your chat still works with your Claude subscription." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="Unraid user ID (nobody = 99)." Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Unraid group ID (users = 100)." Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
   <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation umask." Type="Variable" Display="advanced" Required="true" Mask="false">022</Config>

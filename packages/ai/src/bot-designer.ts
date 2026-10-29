@@ -1,11 +1,12 @@
 import {
+  ARCHETYPE_FAMILY,
   ARCHETYPE_LABELS,
   BOT_BLUEPRINT_DRAFT_JSON_SCHEMA,
   BotBlueprintDraftSchema,
   normalizeBlueprint,
   type BotArchetype,
   type BotBlueprint,
-  type BotBlueprintDraft,
+  type BotBlueprintDraftInput,
   type Clock,
   type DesignBrief,
   type DesignSource,
@@ -72,7 +73,7 @@ Reversion:
 - rsi_reversal: enters as the L-bar RSI climbs back above 50-10T (long) or falls back below 50+10T (short); T 2 means 30/70. T 1.5-3.5.
 - failed_breakout: the previous bar poked beyond the L-bar channel and this bar closed back inside it; trades back into the range. T unused.
 - capitulation_fade: a bar whose range exceeds T times the L-bar ATR, against the trend (below the L-bar average for longs), that still closes up, above its open (down for shorts): the panic was absorbed. T 1.5-3.
-Every trade has a protective stop stopAtrMultiple ATRs away and a take-profit at rewardMultiple times the risk.
+Every trade has a protective stop stopAtrMultiple ATRs away and a take-profit at rewardMultiple times the risk. Two optional exits change a boat's character: trailingAtrMultiple (0.5-6) ratchets the stop that many ATRs behind each close so trends can run (pair it with a high rewardMultiple), and maxBarsHeld (2-240) closes a position after that many hours (good for reversion). Use null for either to leave it off.
 
 Propose genuinely different ideas: vary archetype, family, horizon and risk, prefer the styles and instruments the operator asked for, and spread propositions across the instruments offered. Be honest in the rationale about when the idea should fail. Each proposition goes through an automatic sea trial: a two-year backtest, cost stress, walk-forward, parameter nudges and a sibling market. So favour ideas with a structural reason to work over finely tuned numbers, and do not invent performance numbers.`;
 
@@ -260,10 +261,10 @@ export function withUniqueNames(
 }
 
 /** Drafts propositions without a model: varied, deterministic, shaped by the brief. */
-export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraft[] {
+export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraftInput[] {
   const styles = brief.styles.length > 0 ? brief.styles : SURPRISE_ORDER;
   const shape = RISK_SHAPES[brief.riskAppetite];
-  const drafts: BotBlueprintDraft[] = [];
+  const drafts: BotBlueprintDraftInput[] = [];
   for (let i = 0; i < brief.count; i++) {
     const archetype = styles[i % styles.length] ?? "breakout";
     const round = Math.floor(i / styles.length);
@@ -291,7 +292,10 @@ export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraft[] {
       stopAtrMultiple: shape.stopAtrMultiple,
       rewardMultiple: shape.rewardMultiple,
       rationale: `${sample.rationale} (${ARCHETYPE_LABELS[archetype]}, ${brief.riskAppetite} sizing.)`,
-      basket
+      basket,
+      // Trend followers let winners run on a trailing stop; reversion trades are given a day
+      trailingAtrMultiple: ARCHETYPE_FAMILY[archetype] === "trend" ? 3 : null,
+      maxBarsHeld: ARCHETYPE_FAMILY[archetype] === "reversion" ? 24 : null
     });
   }
   return drafts;
@@ -314,8 +318,12 @@ export class BotDesigner {
     this.checkInvention = options.checkInvention ?? null;
   }
 
-  public async design(brief: DesignBrief, takenNames: readonly string[]): Promise<BotDesignResult> {
-    if (brief.mode === "inventor") return this.invent(brief, takenNames);
+  public async design(
+    brief: DesignBrief,
+    takenNames: readonly string[],
+    fleetToday = ""
+  ): Promise<BotDesignResult> {
+    if (brief.mode === "inventor") return this.invent(brief, takenNames, fleetToday);
     if (!this.isLive()) {
       return {
         source: "sample",
@@ -331,7 +339,9 @@ export class BotDesigner {
       riskAppetite: brief.riskAppetite,
       direction: brief.direction,
       operatorNotes: brief.notes || "none",
-      namesAlreadyInTheFleet: takenNames
+      namesAlreadyInTheFleet: takenNames,
+      fleetToday: fleetToday || "unknown",
+      diversity: "Prefer styles, coins and horizons the fleet today lacks."
     });
 
     const response = await this.gateway.completeStructured(
@@ -357,7 +367,8 @@ export class BotDesigner {
    */
   private async invent(
     brief: DesignBrief,
-    takenNames: readonly string[]
+    takenNames: readonly string[],
+    fleetToday: string
   ): Promise<BotDesignResult> {
     const check = this.checkInvention;
     if (!check) throw new Error("Inventor mode is not available on this server");
@@ -392,7 +403,9 @@ export class BotDesigner {
         riskAppetite: brief.riskAppetite,
         direction: brief.direction,
         operatorNotes: brief.notes || "none",
-        namesAlreadyInTheFleet: takenNames
+        namesAlreadyInTheFleet: takenNames,
+        fleetToday: fleetToday || "unknown",
+        diversity: "Prefer mechanisms, coins and horizons the fleet today lacks."
       })
     );
     let results = checkAll(first.parsed.propositions.slice(0, brief.count));

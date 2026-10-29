@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import {
+  ARCHETYPE_FAMILY,
   FLEET_INSTRUMENTS,
+  LOOKALIKE_CORRELATION,
   SIBLING_INSTRUMENTS,
   ScaledDecimal,
   blueprintMarkets,
@@ -16,11 +18,14 @@ import {
   type DesignBatch,
   type DesignBrief,
   type DesignSource,
+  type EquityPoint,
   type FleetInstrument,
   type FleetOverview,
   type InventionRejection,
   type InventorPromptRequest,
   type KeelConfig,
+  type Lookalike,
+  type NotificationMessage,
   type LedgerRepository,
   type PaperAccountRepository,
   type PaperPositionRecord,
@@ -51,6 +56,7 @@ import {
   compileBlueprint,
   readInventionFile
 } from "@keel/spec";
+import { FleetDuties, driftOf } from "./fleet-duties.js";
 import { PaperBroker } from "./paper-broker.js";
 import {
   ASSUMED_FUNDING_BPS_PER_8H,
@@ -63,6 +69,7 @@ import {
   combineRuns,
   neighbourBlueprints,
   variantOf,
+  weeklyCorrelation,
   type SeaTrialSettings,
   type TrialRun
 } from "./sea-trial.js";
@@ -87,6 +94,26 @@ function siblingFor(
   const preferred = SIBLING_INSTRUMENTS[lead];
   if (!used(preferred)) return preferred;
   return FLEET_INSTRUMENTS.find((m) => !used(m)) ?? preferred;
+}
+
+const DAY_MS = 24 * HOUR_MS;
+
+/** The boats' daily equity added up on one grid: each boat counts from its first day. */
+function fleetEquityHistory(bots: readonly Bot[]): EquityPoint[] {
+  const times = [...new Set(bots.flatMap((b) => b.equityHistory.map((p) => p.ts)))].sort(
+    (a, b) => a - b
+  );
+  return times.map((ts) => {
+    const total = bots.reduce((sum, b) => {
+      let value: string | null = null;
+      for (const p of b.equityHistory) {
+        if (p.ts > ts) break;
+        value = p.equityUsdt;
+      }
+      return value === null ? sum : sum.add(ScaledDecimal.fromString(value));
+    }, ScaledDecimal.zero());
+    return { ts, equityUsdt: total.toFixed(2) };
+  });
 }
 
 /** Other markets a blueprint's rules read, besides the coins it trades. */
@@ -140,6 +167,8 @@ export interface FleetServiceOptions {
   readonly ingestor?: OkxPublicIngestor | undefined;
   /** Tests shrink the sea trial's random paths; production uses the defaults. */
   readonly seaTrial?: Partial<SeaTrialSettings> | undefined;
+  /** Where the unattended duties send digests and alerts (Discord). */
+  readonly notify?: ((message: NotificationMessage) => Promise<unknown>) | undefined;
 }
 
 function newId(prefix: string, nowMs: number): string {
@@ -171,6 +200,7 @@ export class FleetService {
   private readonly seaTrialSettings: SeaTrialSettings;
   /** What each assessing batch's sea trial is doing right now, for the Shipyard. */
   private readonly progress = new Map<string, string>();
+  private readonly duties: FleetDuties;
 
   public constructor(options: FleetServiceOptions) {
     this.clock = options.clock;
@@ -182,6 +212,13 @@ export class FleetService {
     this.isSchedulerRunning = options.isSchedulerRunning;
     this.ingestor = options.ingestor ?? null;
     this.seaTrialSettings = { ...DEFAULT_SEA_TRIAL_SETTINGS, ...options.seaTrial };
+    this.duties = new FleetDuties({
+      clock: this.clock,
+      repo: this.repo,
+      fleet: this,
+      getConfig: this.getConfig,
+      notify: options.notify
+    });
 
     if (this.repo.listWallets().length === 0) {
       this.openWallet("Main Treasury", DEFAULT_WALLET_USDT);
@@ -265,7 +302,7 @@ export class FleetService {
 
   public async design(brief: DesignBrief): Promise<DesignBatch> {
     const taken = this.repo.listBots().map((b) => b.name);
-    const result = await this.designer.design(brief, taken);
+    const result = await this.designer.design(brief, taken, this.fleetSummary());
     return this.launchBatch(brief, result.source, result.note, result.blueprints);
   }
 
@@ -273,7 +310,8 @@ export class FleetService {
   public inventorPrompt(request: InventorPromptRequest): string {
     return inventorChatPrompt({
       ...request,
-      namesAlreadyInTheFleet: this.repo.listBots().map((b) => b.name)
+      namesAlreadyInTheFleet: this.repo.listBots().map((b) => b.name),
+      fleetToday: this.fleetSummary()
     });
   }
 
@@ -392,7 +430,8 @@ export class FleetService {
             `Sea trial ${index + 1} of ${pending.length}: ${proposition.blueprint.name} — ${stage}`
           );
         try {
-          const assessment = await this.seaTrial(proposition, trials, say);
+          const trial = await this.seaTrial(proposition, trials, say);
+          const assessment = { ...trial, lookalike: this.lookalikeOf(proposition, trial) };
           this.repo.saveProposition({ ...proposition, status: "ranked", assessment, error: null });
         } catch (err) {
           this.repo.saveProposition({
@@ -406,6 +445,65 @@ export class FleetService {
       this.progress.delete(batchId);
     }
     this.rankBatch(batchId);
+  }
+
+  /**
+   * The boat or open proposition whose backtest moved most like this one, when the two are close
+   * enough to be the same bet (ADR-0030).
+   */
+  private lookalikeOf(proposition: Proposition, assessment: Assessment): Lookalike | null {
+    const mine = assessment.seaTrial?.weeklyEquityPct ?? [];
+    const candidates: { name: string; kind: Lookalike["kind"]; curve: readonly number[] }[] = [
+      ...this.repo
+        .listBots()
+        .filter((b) => b.status !== "retired")
+        .map((b) => ({
+          name: b.name,
+          kind: "boat" as const,
+          curve: b.backtest?.seaTrial?.weeklyEquityPct ?? []
+        })),
+      ...this.repo
+        .listBatches(50)
+        .flatMap((batch) => this.repo.listPropositions(batch.batchId))
+        .filter((p) => p.status === "ranked" && p.propositionId !== proposition.propositionId)
+        .map((p) => ({
+          name: p.blueprint.name,
+          kind: "proposition" as const,
+          curve: p.assessment?.seaTrial?.weeklyEquityPct ?? []
+        }))
+    ];
+    let best: Lookalike | null = null;
+    for (const c of candidates) {
+      const correlation = weeklyCorrelation(mine, c.curve);
+      if (correlation !== null && correlation >= (best?.correlation ?? LOOKALIKE_CORRELATION)) {
+        best = { name: c.name, kind: c.kind, correlation };
+      }
+    }
+    return best;
+  }
+
+  /** One line on what the fleet already sails, so Claude can fill its gaps. */
+  public fleetSummary(): string {
+    const active = this.repo.listBots().filter((b) => b.status !== "retired");
+    if (active.length === 0) return "The fleet is empty: anything goes.";
+    const count = (values: readonly string[]) =>
+      [...values.reduce((m, v) => m.set(v, (m.get(v) ?? 0) + 1), new Map<string, number>())]
+        .sort((a, b) => b[1] - a[1])
+        .map(([v, n]) => `${v} ${n}`)
+        .join(", ");
+    const families = active.map((b) =>
+      b.blueprint.archetype === "invented" ? "invented" : ARCHETYPE_FAMILY[b.blueprint.archetype]
+    );
+    const coins = active.flatMap((b) => blueprintMarkets(b.blueprint).map(coin));
+    const holds = active
+      .map((b) => b.backtest?.seaTrial?.avgHoldHours ?? 0)
+      .filter((h) => h > 0)
+      .sort((a, b) => a - b);
+    const holdText =
+      holds.length > 0
+        ? `; typical trades last ${Math.round(holds[0] ?? 0)}-${Math.round(holds[holds.length - 1] ?? 0)} hours`
+        : "";
+    return `${active.length} boat${active.length === 1 ? "" : "s"}. Styles: ${count(families)}. Coins: ${count(coins)}${holdText}.`;
   }
 
   private rankBatch(batchId: string): void {
@@ -807,6 +905,51 @@ export class FleetService {
   }
 
   /** Closes every bot position (Kill Switch Flatten). Statuses are left for the operator. */
+  /** Runs the unattended duties that are due (ADR-0030); the scheduler calls it every step. */
+  public runDuties(): Promise<string[]> {
+    return this.duties.run();
+  }
+
+  /**
+   * Evens out the stakes of a wallet's running boats that are flat, so each risks the same share.
+   * Money moves through the wallet (one boat returns, another draws), so the wallet nets to zero,
+   * and each boat's ledger records the capital flow, which resets its loss-limit baselines.
+   */
+  public rebalanceStakes(walletId: string): string[] {
+    const boats = this.repo
+      .listBots()
+      .filter((b) => b.walletId === walletId && b.status === "running")
+      .filter((b) => this.engineFor(b).accountRepo.listOpenPositions().length === 0);
+    if (boats.length < 2) return [];
+    const equities = boats.map((b) => this.equityOf(b));
+    const total = equities.reduce((sum, e) => sum.add(e), ScaledDecimal.zero());
+    const target = total.divFloor(ScaledDecimal.fromString(String(boats.length)));
+    const nowMs = this.clock.nowMs();
+    const moved: string[] = [];
+    boats.forEach((bot, i) => {
+      const delta = target.sub(equities[i] ?? target);
+      if (delta.abs().lt(ScaledDecimal.fromString("1"))) return;
+      this.engineFor(bot).ledgerRepo.rebaseCapital({
+        ts: nowMs,
+        targetEquityUsdt: target,
+        description: "Weekly stake rebalance"
+      });
+      this.repo.appendWalletEntry({
+        walletId,
+        ts: nowMs,
+        amountUsdt: ScaledDecimal.zero().sub(delta).toFixed(8),
+        reason: delta.isPositive() ? "allocation" : "return",
+        botId: bot.botId
+      });
+      this.repo.saveBot({
+        ...bot,
+        allocationUsdt: ScaledDecimal.fromString(bot.allocationUsdt).add(delta).toFixed(8)
+      });
+      moved.push(`${bot.name} ${delta.isPositive() ? "+" : ""}${delta.toFixed(2)} USDT`);
+    });
+    return moved;
+  }
+
   public flattenAll(reason: string): number {
     let closed = 0;
     for (const bot of this.repo.listBots()) {
@@ -1048,7 +1191,33 @@ export class FleetService {
         exitReason: p.exitReason
       }));
 
-    return {
+    // Daily equity since launch: the stake plus every trade closed by then, then equity now
+    const nowMs = this.clock.nowMs();
+    const firstDay = Math.floor(bot.createdAtMs / DAY_MS) * DAY_MS;
+    const stepDays = Math.max(1, Math.ceil((nowMs - firstDay) / DAY_MS / 180));
+    const equityHistory: EquityPoint[] = [];
+    let realized = ScaledDecimal.zero();
+    let next = 0;
+    for (let ts = firstDay + DAY_MS; ts < nowMs; ts += stepDays * DAY_MS) {
+      while (next < closed.length && (closed[next]?.closedAtMs ?? Infinity) <= ts) {
+        const p = closed[next];
+        if (p) realized = realized.add(this.netPnl(p));
+        next++;
+      }
+      equityHistory.push({ ts, equityUsdt: allocation.add(realized).toFixed(2) });
+    }
+    equityHistory.push({ ts: nowMs, equityUsdt: equity.toFixed(2) });
+
+    const coins = blueprintMarkets(bot.blueprint).map((instrumentId) => {
+      const mine = closed.filter((p) => p.instrumentId === instrumentId);
+      return {
+        instrumentId,
+        trades: mine.length,
+        pnlUsdt: mine.reduce((sum, p) => sum.add(this.netPnl(p)), ScaledDecimal.zero()).toFixed(2)
+      };
+    });
+
+    const view: Omit<Bot, "health"> = {
       botId: bot.botId,
       name: bot.name,
       tagline: bot.tagline,
@@ -1075,8 +1244,17 @@ export class FleetService {
         strategyId: bot.botId
       }),
       equityCurve: curve,
-      recentTrades
+      recentTrades,
+      equityHistory,
+      coins
     };
+    const health: Bot["health"] =
+      driftOf({ ...view, health: "new" }) !== null
+        ? "drifting"
+        : view.tradesCount < 10
+          ? "new"
+          : "on_course";
+    return { ...view, health };
   }
 
   public getBot(botId: string): Bot {
@@ -1109,11 +1287,13 @@ export class FleetService {
         activeBots: active.filter((b) => b.status === "running").length,
         openPositions: active.reduce((n, b) => n + b.openPositions.length, 0)
       },
+      equityHistory: fleetEquityHistory(active),
       schedulerRunning: this.isSchedulerRunning(),
       killSwitchActive: killed,
       killSwitchReason: killed ? breaker.reason : null,
       designer: this.designerInfo(),
-      liveTradingAvailable: false
+      liveTradingAvailable: false,
+      duties: this.duties.status()
     };
   }
 }

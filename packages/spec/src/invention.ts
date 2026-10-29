@@ -6,6 +6,7 @@ import {
   type IndicatorDef,
   type NumExpr
 } from "./index.js";
+import { TIMEFRAME_HOURS, type HigherTimeframe } from "./timeframes.js";
 
 // ============================================================================
 // Inventions: entry rules Claude wrote itself in the Strategy Spec condition language. They are
@@ -23,7 +24,11 @@ export const INDICATOR_OUTPUTS: Readonly<Record<IndicatorKind, readonly string[]
   momentum: ["momentum", "atr"],
   ema: ["ema"],
   rsi: ["rsi"],
-  volume_sma: ["mean"]
+  volume_sma: ["mean"],
+  adx: ["adx", "plus_di", "minus_di"],
+  bollinger: ["percent_b", "upper", "lower", "bandwidth"],
+  percentile: ["percentile"],
+  correlation: ["correlation", "beta"]
 };
 
 /** The furthest an invention may look back with `shift`, in bars. */
@@ -38,14 +43,24 @@ const KIND_NAMES: Readonly<Record<IndicatorKind, string>> = {
   momentum: "momentum",
   ema: "EMA",
   rsi: "RSI",
-  volume_sma: "average volume"
+  volume_sma: "average volume",
+  adx: "ADX",
+  bollinger: "Bollinger %B",
+  percentile: "percentile rank",
+  correlation: "correlation"
 };
 
 const OUTPUT_NAMES: Readonly<Record<string, string>> = {
   highest_high: "high",
   lowest_low: "low",
   mean: "mean",
-  stddev: "volatility"
+  stddev: "volatility",
+  plus_di: "+DI",
+  minus_di: "−DI",
+  upper: "upper band",
+  lower: "lower band",
+  bandwidth: "width",
+  beta: "beta"
 };
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -70,6 +85,11 @@ function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
 }
 
+const TIMEFRAME_WORDS: Readonly<Record<HigherTimeframe, string>> = {
+  "4H": "4-hour",
+  "1D": "daily"
+};
+
 /** "BTC-USDT-SWAP" reads as "BTC". */
 function coinOf(market: string): string {
   return market.replace("-USDT-SWAP", "");
@@ -84,15 +104,19 @@ function describeExpr(expr: NumExpr, defs: ReadonlyMap<string, IndicatorDef>): s
   switch (expr.type) {
     case "constant":
       return formatNumber(expr.value);
-    case "bar_field":
+    case "bar_field": {
       if (expr.field === "hour") return `the UTC hour${ago(expr.shift)}`;
       if (expr.field === "weekday") return `the weekday${ago(expr.shift)}`;
-      return `${expr.market ? `${coinOf(expr.market)} ` : ""}${expr.field}${ago(expr.shift)}`;
+      if (expr.field === "funding") return `funding (bps)${ago(expr.shift)}`;
+      const tf = expr.timeframe ? `${TIMEFRAME_WORDS[expr.timeframe]} ` : "";
+      return `${expr.market ? `${coinOf(expr.market)} ` : ""}${tf}${expr.field}${ago(expr.shift)}`;
+    }
     case "indicator": {
       const def = defs.get(expr.id);
       if (!def) return expr.id;
       const coin = def.market ? `${coinOf(def.market)} ` : "";
-      const base = `${coin}${KIND_NAMES[def.kind]}(${def.period})`;
+      const tf = def.timeframe ? `${TIMEFRAME_WORDS[def.timeframe]} ` : "";
+      const base = `${coin}${tf}${KIND_NAMES[def.kind]}(${def.period})`;
       // A kind's main output reads as the indicator itself; secondary outputs are named
       const main = INDICATOR_OUTPUTS[def.kind][0];
       const output =
@@ -140,36 +164,50 @@ export function parseInventionRules(invention: Invention): {
   readonly indicators: readonly IndicatorDef[];
   readonly longEntry: Condition;
   readonly shortEntry: Condition;
+  readonly longExit?: Condition | undefined;
+  readonly shortExit?: Condition | undefined;
 } {
   return {
     indicators: invention.indicators.map((i) => IndicatorDefSchema.parse(i)),
     longEntry: ConditionSchema.parse(invention.longEntry),
-    shortEntry: ConditionSchema.parse(invention.shortEntry)
+    shortEntry: ConditionSchema.parse(invention.shortEntry),
+    ...(invention.longExit !== undefined
+      ? { longExit: ConditionSchema.parse(invention.longExit) }
+      : {}),
+    ...(invention.shortExit !== undefined
+      ? { shortExit: ConditionSchema.parse(invention.shortExit) }
+      : {})
   };
 }
 
-function exprShift(expr: NumExpr): number {
+/** How many hourly bars back an expression reads: shifts count bars of their own timeframe. */
+function exprShift(expr: NumExpr, defs?: ReadonlyMap<string, IndicatorDef>): number {
   switch (expr.type) {
     case "constant":
       return 0;
-    case "bar_field":
-    case "indicator":
-      return expr.shift ?? 0;
+    case "bar_field": {
+      const hours = expr.timeframe ? TIMEFRAME_HOURS[expr.timeframe] : 1;
+      return (expr.shift ?? 0) * hours + (hours > 1 ? hours : 0);
+    }
+    case "indicator": {
+      const tf = defs?.get(expr.id)?.timeframe;
+      return (expr.shift ?? 0) * (tf ? TIMEFRAME_HOURS[tf] : 1);
+    }
     case "binary_op":
-      return Math.max(exprShift(expr.left), exprShift(expr.right));
+      return Math.max(exprShift(expr.left, defs), exprShift(expr.right, defs));
   }
 }
 
 /** The furthest back a condition reads; crossings also read the bar before. */
-export function conditionShift(cond: Condition): number {
+export function conditionShift(cond: Condition, defs?: ReadonlyMap<string, IndicatorDef>): number {
   switch (cond.type) {
     case "comparison":
-      return Math.max(exprShift(cond.left), exprShift(cond.right));
+      return Math.max(exprShift(cond.left, defs), exprShift(cond.right, defs));
     case "crosses_above":
     case "crosses_below":
-      return Math.max(exprShift(cond.seriesA), exprShift(cond.seriesB)) + 1;
+      return Math.max(exprShift(cond.seriesA, defs), exprShift(cond.seriesB, defs)) + 1;
     case "logical_op":
-      return Math.max(0, ...cond.operands.map(conditionShift));
+      return Math.max(0, ...cond.operands.map((o) => conditionShift(o, defs)));
   }
 }
 
@@ -178,6 +216,8 @@ export function describeInvention(
   b: Pick<BotBlueprint, "direction" | "stopAtrMultiple" | "rewardMultiple"> & {
     readonly basket?: readonly string[] | undefined;
     readonly instrumentId?: string | undefined;
+    readonly trailingAtrMultiple?: number | null | undefined;
+    readonly maxBarsHeld?: number | null | undefined;
   },
   invention: Invention
 ): string[] {
@@ -197,6 +237,16 @@ export function describeInvention(
       ? "Never goes short"
       : `Short when ${describeCondition(rules.shortEntry, defs)}`,
     `Stop ${b.stopAtrMultiple}× ATR(14) away, target ${b.rewardMultiple}× the risk`,
+    ...(rules.longExit && b.direction !== "short_only"
+      ? [`Exit longs when ${describeCondition(rules.longExit, defs)}`]
+      : []),
+    ...(rules.shortExit && b.direction !== "long_only"
+      ? [`Exit shorts when ${describeCondition(rules.shortExit, defs)}`]
+      : []),
+    ...(b.trailingAtrMultiple
+      ? [`Trail the stop ${b.trailingAtrMultiple}× ATR(14) behind each close`]
+      : []),
+    ...(b.maxBarsHeld ? [`Close any position after ${b.maxBarsHeld} hours`] : []),
     ...basket
   ];
 }
@@ -247,6 +297,8 @@ export function nudgeInvention(
     })),
     longEntry: scaleCondition(rules.longEntry, constantScale),
     shortEntry: scaleCondition(rules.shortEntry, constantScale),
+    ...(rules.longExit ? { longExit: scaleCondition(rules.longExit, constantScale) } : {}),
+    ...(rules.shortExit ? { shortExit: scaleCondition(rules.shortExit, constantScale) } : {}),
     rules: []
   };
   return { ...b, invention: { ...invention, rules: describeInvention(b, invention) } };

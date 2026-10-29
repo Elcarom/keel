@@ -24,6 +24,8 @@ test.describe("Keel M5 — Exchange Broker panel refuses orders outside exchange
 
     // 2. Exchange broker panel is visible; without credentials the DMS cannot be armed
     await expect(page.getByTestId("exchange-broker-panel")).toBeVisible();
+    // In Paper mode the exchange tools are folded away until asked for
+    await page.getByTestId("exchange-tools-toggle").click();
     await expect(page.getByTestId("broker-venue-badge")).toContainText("OKX-EEA");
     await expect(page.getByTestId("broker-dms-badge")).toContainText("IDLE");
 

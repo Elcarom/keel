@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { compileBlueprint } from "./blueprint.js";
 import { ConditionSchema, type Condition, type NumExpr } from "./index.js";
+import { HigherTimeframeSchema, TIMEFRAME_HOURS } from "./timeframes.js";
 import { INDICATOR_OUTPUTS, MAX_INVENTION_SHIFT, describeInvention } from "./invention.js";
 
 /** What Claude returns for one invention, before Keel has checked a single rule. */
@@ -29,7 +30,8 @@ export const InventionDraftSchema = z.object({
         id: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,23}$/, "ids are letters, digits and _"),
         kind: z.enum(INDICATOR_KINDS),
         period: z.number(),
-        market: z.string().optional()
+        market: z.string().optional(),
+        timeframe: HigherTimeframeSchema.optional()
       })
     )
     .min(1)
@@ -38,6 +40,10 @@ export const InventionDraftSchema = z.object({
   shortEntry: z.unknown(),
   stopAtrMultiple: z.number(),
   rewardMultiple: z.number(),
+  longExit: z.unknown().optional(),
+  shortExit: z.unknown().optional(),
+  trailingAtrMultiple: z.number().nullable().optional(),
+  maxBarsHeld: z.number().nullable().optional(),
   basket: z.array(z.string()).max(20).optional()
 });
 
@@ -64,6 +70,9 @@ const isFleetInstrument = (market: string): boolean =>
 
 const MARKET_LIST = FLEET_INSTRUMENTS.join(", ");
 
+/** Higher-timeframe windows and shifts stay inside the Spec's 500-bar lookback (20 days). */
+const MAX_HIGHER_TIMEFRAME_HOURS = 480;
+
 function exprProblems(expr: NumExpr, kinds: ReadonlyMap<string, string>, where: string): string[] {
   switch (expr.type) {
     case "constant":
@@ -75,6 +84,13 @@ function exprProblems(expr: NumExpr, kinds: ReadonlyMap<string, string>, where: 
       }
       if (expr.market !== undefined && !isFleetInstrument(expr.market)) {
         problems.push(`${where}: market "${expr.market}" must be one of ${MARKET_LIST}`);
+      }
+      if (expr.field === "funding" && (expr.market !== undefined || expr.timeframe !== undefined)) {
+        problems.push(`${where}: funding is read for the traded coin on 1H bars only`);
+      }
+      const hours = expr.timeframe ? TIMEFRAME_HOURS[expr.timeframe] : 1;
+      if ((expr.shift ?? 0) * hours > MAX_HIGHER_TIMEFRAME_HOURS) {
+        problems.push(`${where}: a ${expr.timeframe} shift of ${expr.shift} reaches back too far`);
       }
       return problems;
     }
@@ -142,6 +158,20 @@ export function checkInvention(
 
   const ids = d.indicators.map((i) => i.id);
   if (new Set(ids).size !== ids.length) return fail("indicator ids must be unique");
+  const tooLong = d.indicators.find(
+    (i) =>
+      i.timeframe !== undefined &&
+      i.period * TIMEFRAME_HOURS[i.timeframe] > MAX_HIGHER_TIMEFRAME_HOURS
+  );
+  if (tooLong?.timeframe) {
+    return fail(
+      `indicator "${tooLong.id}": a ${tooLong.timeframe} period may cover at most ${MAX_HIGHER_TIMEFRAME_HOURS / TIMEFRAME_HOURS[tooLong.timeframe]} bars`
+    );
+  }
+  const unpaired = d.indicators.find((i) => i.kind === "correlation" && i.market === undefined);
+  if (unpaired) {
+    return fail(`indicator "${unpaired.id}": correlation needs the "market" to correlate with`);
+  }
   const foreign = d.indicators.find((i) => i.market !== undefined && !isFleetInstrument(i.market));
   if (foreign) {
     return fail(
@@ -154,9 +184,22 @@ export function checkInvention(
   if (!long.success) return fail(zodMessage(long.error, "longEntry."));
   const short = ConditionSchema.safeParse(d.shortEntry);
   if (!short.success) return fail(zodMessage(short.error, "shortEntry."));
+  const exitOf = (raw: unknown, where: string) => {
+    if (raw === undefined || raw === null) return { ok: true as const, data: undefined };
+    const parsed = ConditionSchema.safeParse(raw);
+    return parsed.success
+      ? { ok: true as const, data: parsed.data }
+      : { ok: false as const, error: zodMessage(parsed.error, `${where}.`) };
+  };
+  const longExit = exitOf(d.longExit, "longExit");
+  if (!longExit.ok) return fail(longExit.error);
+  const shortExit = exitOf(d.shortExit, "shortExit");
+  if (!shortExit.ok) return fail(shortExit.error);
   const problems = [
     ...conditionProblems(long.data, kinds, "longEntry"),
-    ...conditionProblems(short.data, kinds, "shortEntry")
+    ...conditionProblems(short.data, kinds, "shortEntry"),
+    ...(longExit.data ? conditionProblems(longExit.data, kinds, "longExit") : []),
+    ...(shortExit.data ? conditionProblems(shortExit.data, kinds, "shortExit") : [])
   ];
   if (problems.length > 0) return fail(problems.slice(0, 4).join("; "));
 
@@ -174,18 +217,29 @@ export function checkInvention(
     id: i.id,
     kind: i.kind,
     period: clamp(i.period, 2, 200, true),
-    ...(i.market ? { market: i.market as FleetInstrument } : {})
+    ...(i.market ? { market: i.market as FleetInstrument } : {}),
+    ...(i.timeframe ? { timeframe: i.timeframe } : {})
   }));
   const periods = indicators.map((i) => i.period);
   const lookbackPeriod = clamp(Math.max(...periods), 5, 200, true);
   const fastPeriod = clamp(Math.min(...periods, lookbackPeriod - 2), 3, 100, true);
   const stopAtrMultiple = clamp(d.stopAtrMultiple, 0.5, 6);
   const rewardMultiple = clamp(d.rewardMultiple, 0.8, 6);
+  const trailingAtrMultiple =
+    d.trailingAtrMultiple === null || d.trailingAtrMultiple === undefined
+      ? null
+      : clamp(d.trailingAtrMultiple, 0.5, 6);
+  const maxBarsHeld =
+    d.maxBarsHeld === null || d.maxBarsHeld === undefined
+      ? null
+      : clamp(d.maxBarsHeld, 2, 240, true);
 
   const invention: Invention = {
     indicators,
     longEntry: long.data,
     shortEntry: short.data,
+    ...(longExit.data ? { longExit: longExit.data } : {}),
+    ...(shortExit.data ? { shortExit: shortExit.data } : {}),
     rules: []
   };
   const blueprint = BotBlueprintSchema.parse({
@@ -201,10 +255,20 @@ export function checkInvention(
     rewardMultiple,
     rationale: d.rationale.trim().slice(0, 600),
     basket,
+    trailingAtrMultiple,
+    maxBarsHeld,
     invention: {
       ...invention,
       rules: describeInvention(
-        { direction, stopAtrMultiple, rewardMultiple, instrumentId, basket },
+        {
+          direction,
+          stopAtrMultiple,
+          rewardMultiple,
+          instrumentId,
+          basket,
+          trailingAtrMultiple,
+          maxBarsHeld
+        },
         invention
       )
     }

@@ -1,6 +1,6 @@
 # Runbook: Incident Response
 
-Plain, deterministic steps when a `CRITICAL` or `WARNING` alert fires on Discord or in Mission Control.
+Plain, deterministic steps when a `CRITICAL` or `WARNING` alert fires on Discord or in the Fleet.
 
 ---
 
@@ -8,7 +8,7 @@ Plain, deterministic steps when a `CRITICAL` or `WARNING` alert fires on Discord
 
 If you suspect abnormal execution, stale market data, or a reconciliation mismatch while in `Demo`, `Live-Ramp`, or `Live`:
 
-1. Open **Keel → Mission Control** on your phone or browser and press **KILL SWITCH (Flatten & Halt)**.
+1. Open **Keel → Engine Room** on your phone or browser and press **KILL SWITCH (Flatten & Halt)**.
 2. If the dashboard is unreachable, log into the **OKX mobile app / web UI** directly and click **Close All** on the Positions tab and **Cancel All** on Open Orders.
 3. Stop the Unraid container (`docker stop keel`) if the process is misbehaving; OKX's 60-second **Dead-Man's Switch** (`cancel-all-after`) will automatically cancel any remaining resting entry orders while leaving attached mark-price **Protective Stops** intact.
 

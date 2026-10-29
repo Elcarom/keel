@@ -14,35 +14,42 @@ export type InventionCheckResult =
 export type InventionChecker = (raw: unknown, brief: DesignBrief) => InventionCheckResult;
 
 /** The condition language and Keel's limits, shared by the API prompt and the chat prompt. */
-const INVENTOR_LANGUAGE = `Each invention trades USDT perpetuals on confirmed 1-hour bars: its own "instrumentId" and, if you like, a "basket" of up to 4 more coins that run the same rules, one position per coin, all funded from one stake. You write its entry rules as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes each position and enters at the next bar's open.
+const INVENTOR_LANGUAGE = `Each invention trades USDT perpetuals on confirmed 1-hour bars: its own "instrumentId" and, if you like, a "basket" of up to 4 more coins that run the same rules, one position per coin, all funded from one stake. You write its entry rules, and if you like its exit rules, as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes each position and enters at the next bar's open.
+
+EXITS (all optional): "longExit" / "shortExit" close an open position at the bar's close when the condition turns true. "trailingAtrMultiple" (0.5-6) ratchets the stop that many ATR(14) behind each close, so winners can run; it never loosens. "maxBarsHeld" (2-240) closes any position after that many hours. Exits are how an idea says when it is over: a reversion trade that has reverted, a trend that has turned, a session that has ended.
+
+Rules may read higher timeframes: "timeframe": "4H" or "1D" builds 4-hour and daily bars from complete hourly ones, so you can trade the hour in the direction of the day. Funding history only reaches back a few months, so across most of the two-year trial "funding" reads 0: use it as a refinement, not the whole idea.
 
 Rules may also read other markets. Without "market", prices and indicators read the coin being traded (in a basket, each coin in turn). With "market", they read that market's bar for the same hour, e.g. BTC's, whichever coin is traded. Keel only trades once every market the rules read has posted that hour, so nothing reads the future.
 
 THE LANGUAGE
 Numbers (NumExpr):
 - {"type":"constant","value":1.5}
-- {"type":"bar_field","field":"close"} with field one of open, high, low, close, volume, hour (0-23 UTC), weekday (0 = Sunday, UTC); optional "shift": n reads n bars ago (max 48); optional "market": "BTC-USDT-SWAP" reads that market instead
+- {"type":"bar_field","field":"close"} with field one of open, high, low, close, volume, hour (0-23 UTC), weekday (0 = Sunday, UTC), funding (the traded coin's latest settled 8-hour funding rate, in basis points); optional "shift": n reads n bars ago (max 48); optional "market": "BTC-USDT-SWAP" reads that market instead; optional "timeframe": "4H" or "1D" reads the last complete 4-hour or daily bar
 - {"type":"indicator","id":"<your id>","output":"<output>"} with optional "shift" (max 48)
 - {"type":"binary_op","op":"+"|"-"|"*"|"/","left":NumExpr,"right":NumExpr}
 Conditions:
 - {"type":"comparison","op":">"|">="|"<"|"<=","left":NumExpr,"right":NumExpr}
 - {"type":"crosses_above"|"crosses_below","seriesA":NumExpr,"seriesB":NumExpr} (true on the bar A crosses B)
 - {"type":"logical_op","op":"and"|"or","operands":[Condition, ...]}
-Indicators you declare (1-6), each {"id","kind","period"} with period 2-200, plus an optional "market" to compute it on that market's bars, and the outputs you may read:
+Indicators you declare (1-6), each {"id","kind","period"} with period 2-200, plus an optional "market" to compute it on that market's bars and an optional "timeframe" ("4H" or "1D") to compute it on 4-hour or daily bars (a 4H period may be at most 120 bars, a 1D period at most 20), and the outputs you may read:
 - donchian: highest_high, lowest_low (of the previous period bars, excluding the current one)
 - sma: mean · ema: ema · rsi: rsi (Wilder, 0-100) · atr: atr · stddev: stddev
 - zscore: zscore, mean, stddev (of closes) · momentum: momentum (close change over period, ATR-scaled), atr
 - volume_sma: mean (average volume)
+- adx: adx (trend strength 0-100), plus_di, minus_di · bollinger (2 standard deviations): percent_b (0 at the lower band, 1 at the upper), upper, lower, bandwidth (band width ÷ mean)
+- percentile: percentile (share of the previous period closes below this one, 0-100)
+- correlation (needs "market"): correlation (-1..1) and beta of the traded coin's hourly returns against that market's
 
 HARD LIMITS (Keel rejects anything beyond them)
-- longEntry and shortEntry together use at most 32 nodes (every condition and every number counts as one node).
+- longEntry and shortEntry together use at most 32 nodes (every condition and every number counts as one node); longExit and shortExit share a separate 16.
 - Nesting: with one "and"/"or" at the top, its operands are comparisons or crosses, and each side of those is a simple number or ONE binary_op of two simple numbers. With a single comparison or cross at the top (no and/or), each side may nest binary_ops two deep, e.g. (high - low) / atr. Never put and/or inside and/or.
 - Every indicator id you read must be declared, with an output its kind has.
 - If a direction makes no sense for your idea, still give a valid rule for it and set "direction" to long_only or short_only.
 
 OUTPUT SHAPE
 {"propositions":[ ... ]}, each item:
-{"name","tagline" (one playful sentence),"rationale" (why it should work and when it should fail, 2-3 sentences),"instrumentId","basket" ([] or up to 4 more coins),"direction" ("both"|"long_only"|"short_only"),"indicators":[...],"longEntry":Condition,"shortEntry":Condition,"stopAtrMultiple" (0.5-6),"rewardMultiple" (0.8-6)}
+{"name","tagline" (one playful sentence),"rationale" (why it should work and when it should fail, 2-3 sentences),"instrumentId","basket" ([] or up to 4 more coins),"direction" ("both"|"long_only"|"short_only"),"indicators":[...],"longEntry":Condition,"shortEntry":Condition,"stopAtrMultiple" (0.5-6),"rewardMultiple" (0.8-6),"longExit" (Condition or null),"shortExit" (Condition or null),"trailingAtrMultiple" (number or null),"maxBarsHeld" (number or null)}
 Markets are written in full, e.g. "SOL-USDT-SWAP". Keel trades and reads: ${FLEET_INSTRUMENTS.join(", ")}.
 
 THE SEA TRIAL
@@ -55,6 +62,7 @@ ${INVENTOR_LANGUAGE}
 HOW TO INVENT WELL
 - Start from a mechanism: who is forced to trade, when, and why price should respond. Examples: session opens and closes, weekend illiquidity, volatility regimes, crowded breakouts, exhaustion after a run of bars, volume shocks.
 - Combine signals into ideas a textbook would not list; each proposition must be genuinely different from the others.
+- Design the exit as carefully as the entry: trailing stops for trends, time limits for session and calendar effects, exit rules for reversion that has run its course.
 - Think across markets: BTC leading the alts, one coin's strength against another, a basket of coins that should share an edge. Use a basket when the idea should hold across similar coins; keep one coin when it is specific to one market.
 - Prefer few, structural conditions over finely tuned thresholds.
 - Never claim performance; Keel measures it.
@@ -71,6 +79,8 @@ export interface InventorChatPromptOptions {
   readonly direction: DesignBrief["direction"];
   readonly notes: string;
   readonly namesAlreadyInTheFleet: readonly string[];
+  /** One line on what the fleet already sails (FleetService.fleetSummary). */
+  readonly fleetToday?: string | undefined;
 }
 
 /**
@@ -100,6 +110,7 @@ YOUR BRIEF
 - Direction: ${direction}
 - What I am hunting for: ${hunting}
 - Names already in my fleet (do not reuse): ${fleet}
+- My fleet today: ${options.fleetToday ?? "unknown"} Prefer what it lacks; an idea that trades like a boat I already have adds nothing.
 
 ${INVENTOR_LANGUAGE}
 
@@ -114,7 +125,9 @@ Think it through before you write any JSON. Go wide first: sketch two or three t
   - volatility against its own longer norm
   - the UTC clock and weekday
   - other markets: BTC or ETH leading the alts, a coin's strength or weakness against another, moves one market has made and another has not yet followed
+  - trend strength (ADX), Bollinger bands, percentile ranks, and correlation or beta against another market
   Long and short rules need not mirror each other.
+- Design the exits, not just the entries. A trailing stop lets a trend run; a time limit ends a session or calendar trade; an exit rule closes a reversion trade once it has reverted. Many ideas are defined more by how they leave than how they arrive.
 - Use baskets. When an idea should hold across similar coins, trade it on a basket of them: it diversifies the boat and gives the sea trial far more evidence. Keep a single coin when the idea is specific to one market. Aim for a real mix of single-coin boats, basket boats and cross-market rules across your ${n}.
 - Make the ideas genuinely different from each other: different mechanisms, horizons and families (trend, breakout, reversion, calendar, volatility, volume, pattern), never two variations of one theme. Skip what a textbook lists first, such as plain moving-average crosses or plain RSI 30/70, unless you give it a real twist.
 - Be bold in the idea and humble in the parameters. Use a few structural conditions and round numbers rather than finely tuned thresholds, because the sea trial nudges every one.

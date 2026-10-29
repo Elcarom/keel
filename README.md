@@ -1,17 +1,22 @@
-# Keel (`@keel/*`)
+# Keel
 
-**Keel** is a self-hosted systematic crypto-derivatives research lab and execution platform built for single-container deployment on Unraid behind a Cloudflare Tunnel.
+**Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on Unraid behind a Cloudflare Tunnel. A keel keeps a ship steady, and the whole product follows the sea:
 
-It pairs a strictly deterministic money path (fixed-point `ScaledDecimal` accounting, stop-distance `1R` sizing, two-tier portfolio risk caps, atomic exchange-side **Protective Stops**, and an OKX **Dead-Man's Switch**) with a measurable, budget-capped **Gemini AI layer** (**Shadow Advisor**, **Context Analyst**, **Strategy Lab**, **Post-Trade Analyst**, **Risk & Ops Copilot**, and **EventGateAdvisor**) governed by a six-stage **Promotion Ladder**.
+- **The Shipyard** drafts strategy **Propositions**. Claude can fill one of 13 reviewed **Blueprints**, invent brand-new entry rules in **Inventor Mode**, or you can import inventions from your own Claude chat with no API fees. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
+- **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin or a **Basket** of up to five, from its own **Boat Book** and stake.
+- **The Treasury** holds the paper **Wallets** that fund the Fleet.
+- **The Engine Room** holds configuration, the secret vault, the Kill Switch, the research tools and the budget-capped Gemini advisory layer.
+
+The money path never asks a model anything. It uses fixed-point `ScaledDecimal` accounting, stop-distance `1R` sizing, two-tier risk caps, exchange-side **Protective Stops** and an OKX **Dead-Man's Switch**, all strictly deterministic. Claude drafts rules; Keel's compiled rules and Risk Engine trade them.
 
 ---
 
 ## Core Principles
 
-1. **Measurement before freedom**: Every strategy and AI capability starts in replay or forward shadow mode and earns authority only through quantitative out-of-sample gates ([ADR-0007](./docs/adr/0007-promotion-ladder-gates-and-contamination-free-ai-eval.md)).
-2. **The money path is deterministic**: `@keel/risk`, `@keel/ledger`, and `@keel/broker` contain zero AI calls and zero raw floating-point balance math ([ADR-0008](./docs/adr/0008-monorepo-stack-decimal-math-and-worker-sandbox.md)).
-3. **No look-ahead or repainting**: Signals use **Confirmed Bars** (`confirm === "1"`) only, and all external context features enforce strict `As-Of Timestamps` (`max(publishedAt, ingestedAt)`).
-4. **Safe by default**: Ships in `Paper` Execution Mode by default. Real-money capabilities require passing human gates **G1**, **G2**, and **G3** ([docs/runbooks/go-live-checklist.md](./docs/runbooks/go-live-checklist.md)).
+1. **Measurement before freedom**: Every strategy and AI capability starts in replay or forward shadow mode, and earns authority only by passing quantitative out-of-sample gates ([ADR-0007](./docs/adr/0007-promotion-ladder-gates-and-contamination-free-ai-eval.md), [ADR-0025](./docs/adr/0025-sea-trials-rank-propositions.md)).
+2. **The money path is deterministic**: Risk, ledger, broker, reconciliation and stops contain no AI calls and no raw floating-point balance maths ([ADR-0008](./docs/adr/0008-monorepo-stack-decimal-math-and-worker-sandbox.md)).
+3. **No look-ahead or repainting**: Signals use **Confirmed Bars** (`confirm === "1"`) only. Every other market or context feature is read strictly as of the same moment ([ADR-0028](./docs/adr/0028-baskets-and-reference-markets.md)).
+4. **Safe by default**: Keel ships in `Paper` Execution Mode. Real-money capabilities require passing human gates **G1**, **G2** and **G3** ([docs/runbooks/go-live-checklist.md](./docs/runbooks/go-live-checklist.md)).
 
 ---
 
@@ -19,14 +24,37 @@ It pairs a strictly deterministic money path (fixed-point `ScaledDecimal` accoun
 
 - **Domain Glossary**: [`GLOSSARY.md`](./GLOSSARY.md)
 - **Architecture Decision Records**: [`docs/adr/`](./docs/adr/)
-  - [ADR-0001: Linear Perpetuals Domain Scope](./docs/adr/0001-linear-perpetuals-domain-scope.md)
-  - [ADR-0002: Stop-Distance Risk Sizing (1R) & Two-Tier Portfolio Caps](./docs/adr/0002-stop-based-r-sizing-and-two-tier-risk-caps.md)
-  - [ADR-0003: Cloudflare Tunnel Ingress & Defense-in-Depth Auth](./docs/adr/0003-cloudflare-tunnel-and-defense-in-depth-auth.md)
-  - [ADR-0004: Single-Container SQLite (WAL) Behind Repository Ports](./docs/adr/0004-sqlite-wal-behind-repository-ports.md)
-  - [ADR-0005: Shared Typed API Contract via ts-rest, Fastify, and Zod](./docs/adr/0005-ts-rest-fastify-zod-api-contract.md)
-  - [ADR-0006: Atomic Attached Protective Stops & OKX Dead-Man's Switch](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)
-  - [ADR-0007: Promotion-Ladder Gates & Contamination-Free AI Evaluation](./docs/adr/0007-promotion-ladder-gates-and-contamination-free-ai-eval.md)
-  - [ADR-0008: Monorepo Stack, Fixed-Point Decimal Math, & Worker Sandbox](./docs/adr/0008-monorepo-stack-decimal-math-and-worker-sandbox.md)
+  - [0001. Scope Core Domain to Multi-Venue Linear Quote-Settled Perpetuals](./docs/adr/0001-linear-perpetuals-domain-scope.md)
+  - [0002. Stop-Distance Risk Sizing (1R) and Two-Tier Portfolio Risk Caps](./docs/adr/0002-stop-based-r-sizing-and-two-tier-risk-caps.md)
+  - [0003. Cloudflare Tunnel Ingress with Defense-in-Depth Authentication](./docs/adr/0003-cloudflare-tunnel-and-defense-in-depth-auth.md)
+  - [0004. Single-Container SQLite (WAL) Behind Repository Interfaces](./docs/adr/0004-sqlite-wal-behind-repository-ports.md)
+  - [0005. Shared Typed API Contract via ts-rest, Fastify, and Zod](./docs/adr/0005-ts-rest-fastify-zod-api-contract.md)
+  - [0006. Atomic Attached Protective Stops and OKX Cancel-All-After Dead-Man's Switch](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)
+  - [0007. Quantitative Promotion-Ladder Gates and Contamination-Free AI Evaluation](./docs/adr/0007-promotion-ladder-gates-and-contamination-free-ai-eval.md)
+  - [0008. Monorepo Stack, Fixed-Point Decimal Accounting, and Isolated Worker Sandbox](./docs/adr/0008-monorepo-stack-decimal-math-and-worker-sandbox.md)
+  - [0009. Backtest Realism, Sealed Holdout Split, and Statistical Validation](./docs/adr/0009-backtest-realism-holdout-split-and-statistical-validation.md)
+  - [0010. Unified Risk Routing, State Persistence, and Verifiable Exchange Reconciliation](./docs/adr/0010-unified-risk-routing-and-verifiable-exchange-reconciliation.md)
+  - [0011. Sealed 2026 Holdout Partition and Quarantine](./docs/adr/0011-sealed-2026-holdout-partition-and-quarantine.md)
+  - [0012. Research Trial Accounting, Baseline Gates, and Scheduler Safety](./docs/adr/0012-research-trial-accounting-baseline-gates-and-scheduler-safety.md)
+  - [ADR-0013: Security Vault Hardening, Persistent Login Throttling, & Versioned Cryptographic Formats](./docs/adr/0013-security-vault-hardening-login-throttling-and-versioned-formats.md)
+  - [ADR-0014: Shared Execution Model, Adverse Exit Slippage, & Cost Stress Parity](./docs/adr/0014-shared-execution-model-adverse-exit-slippage-and-cost-stress-parity.md)
+  - [ADR-0015: Persisted Research Trial Counter, Immutable Experiment History, & Sealed 2026 Holdout Enforcement](./docs/adr/0015-research-trial-counter-immutable-experiments-and-holdout-seal.md)
+  - [ADR-0016: Benchmark Distribution Gate, Replay Hardening, & Research Report Integrity](./docs/adr/0016-benchmark-distribution-gate-and-report-integrity.md)
+  - [ADR-0017: Scheduler Bar Catch-Up, Explicit Opt-In Defaults, & Read-Only Risk Metrics (R6, N1)](./docs/adr/0017-scheduler-bar-catch-up-and-read-only-risk-metrics.md)
+  - [ADR-0018: Exchange Broker Truthfulness, Fill Polling, & Order Lifecycle Remediation (M-B, M-C, M-D, M-E)](./docs/adr/0018-broker-truthfulness-and-exchange-contract-remediation.md)
+  - [ADR-0019: Shadow Stage Resolution, Deduplicated Picks, & Runtime Promotion Re-Check (T7 / M-H)](./docs/adr/0019-shadow-stage-resolution-and-runtime-promotion-recheck.md)
+  - [ADR-0020: Strategy Spec V1 AST, Canonical Hash, and Pure Causal Interpreter](./docs/adr/0020-strategy-spec-v1-ast-and-canonical-hash.md)
+  - [ADR-0021: Strategy Spec Registry, Monotonic Trial Coupling, and Promotion Quarantine](./docs/adr/0021-spec-registry-and-quarantine-promotion.md)
+  - [ADR-0022: Separate Paper and Exchange Trading Books](./docs/adr/0022-separate-paper-and-exchange-trading-books.md)
+  - [ADR-0023: Exchange Execution Is Operator-Initiated](./docs/adr/0023-exchange-execution-is-operator-initiated.md)
+  - [ADR-0024: Fleet Bots Are Compiled from LLM-Drafted Blueprints and Trade Their Own Books](./docs/adr/0024-fleet-bots-from-llm-blueprints.md)
+  - [ADR-0025: Propositions Are Ranked by Sea Trials, Not a Single Backtest](./docs/adr/0025-sea-trials-rank-propositions.md)
+  - [ADR-0026: Claude May Invent Entry Rules, Within the Spec Language](./docs/adr/0026-claude-invents-entry-rules.md)
+  - [ADR-0027: Inventions May Arrive as a File From the Operator's Own Claude Chat](./docs/adr/0027-imported-inventions.md)
+  - [ADR-0028: Boats May Trade a Basket of Coins and Read Other Markets](./docs/adr/0028-baskets-and-reference-markets.md)
+  - [ADR-0029: Exit Rules, Time Stops and Trailing Stops](./docs/adr/0029-exits-and-position-management.md)
+  - [ADR-0030: Unattended Fleet Duties and the Diversity Guard](./docs/adr/0030-fleet-duties-and-diversity.md)
+  - [ADR-0031: Higher-Timeframe Bars and Funding in the Rule Language](./docs/adr/0031-higher-timeframes-and-funding.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)
@@ -70,7 +98,7 @@ name: keel
 
 services:
   keel:
-    image: ghcr.io/elcarom/psychic-octo-funicular:latest
+    image: ghcr.io/elcarom/keel:latest
     container_name: keel
     restart: unless-stopped
     environment:
@@ -123,7 +151,7 @@ docker run -d \
   -p 8080:8080 \
   -v /mnt/user/appdata/keel/data:/data \
   -v /mnt/user/appdata/keel/backups:/backups \
-  ghcr.io/elcarom/psychic-octo-funicular:latest
+  ghcr.io/elcarom/keel:latest
 ```
 
 #### Environment Variables
@@ -185,10 +213,11 @@ Keel never exposes an unauthenticated configuration or setup screen. On initial 
 
 ### 5. Configuring Secrets in the Vault
 
-Once logged into the Mission Control dashboard:
+Once signed in, open the **Engine Room** (top right of the Fleet):
 
 1. Navigate to the **AES-256-GCM Secret Vault** section.
 2. Store your credentials safely:
+   - `anthropicApiKey`: Anthropic API key, so Claude can design and invent Boats in the Shipyard. Optional: without it, the Shipyard offers samples, and the **⇅ Inventor via your chat** mode needs no key at all.
    - `geminiApiKey`: Google Gemini API key for the advisory AI layer.
    - `okxApiKey`, `okxSecretKey`, `okxPassphrase`: OKX V5 API key (requires **Trade** and **Read** permissions only; **Withdrawal MUST be disabled**).
    - `discordWebhookUrl`: Discord webhook for `CRITICAL` kill-switch/stop-failure alerts and `WARNING` notifications.
