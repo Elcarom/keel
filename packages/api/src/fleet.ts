@@ -4,7 +4,9 @@ import {
   ScaledDecimal,
   overlapsSealed2026Holdout,
   type Assessment,
+  type BatchBrief,
   type Bot,
+  type BotBlueprint,
   type BotRecord,
   type BotTrade,
   type CircuitBreakerRecord,
@@ -14,6 +16,8 @@ import {
   type DesignSource,
   type FleetInstrument,
   type FleetOverview,
+  type InventionRejection,
+  type InventorPromptRequest,
   type KeelConfig,
   type LedgerRepository,
   type PaperAccountRepository,
@@ -22,7 +26,12 @@ import {
   type SeaTrialVariant,
   type Wallet
 } from "@keel/core";
-import { type BotDesigner } from "@keel/ai";
+import {
+  inventorChatPrompt,
+  inventorChatRepairPrompt,
+  withUniqueNames,
+  type BotDesigner
+} from "@keel/ai";
 import {
   bookSchemaSql,
   botBook,
@@ -34,7 +43,12 @@ import {
   type SqliteDataStore
 } from "@keel/data";
 import { seedFromString, type ReplayEngine, type ReplayRunResult } from "@keel/replay";
-import { SpecStrategy, compileBlueprint } from "@keel/spec";
+import {
+  SpecStrategy,
+  checkImportedInvention,
+  compileBlueprint,
+  readInventionFile
+} from "@keel/spec";
 import { PaperBroker } from "./paper-broker.js";
 import {
   ASSUMED_FUNDING_BPS_PER_8H,
@@ -220,20 +234,75 @@ export class FleetService {
   public async design(brief: DesignBrief): Promise<DesignBatch> {
     const taken = this.repo.listBots().map((b) => b.name);
     const result = await this.designer.design(brief, taken);
+    return this.launchBatch(brief, result.source, result.note, result.blueprints);
+  }
+
+  /** The Inventor prompt to paste into a Claude chat, briefed like the Shipyard's own. */
+  public inventorPrompt(request: InventorPromptRequest): string {
+    return inventorChatPrompt({
+      ...request,
+      namesAlreadyInTheFleet: this.repo.listBots().map((b) => b.name)
+    });
+  }
+
+  /**
+   * Imports inventions from a file a Claude chat wrote (ADR-0027). Each one faces exactly the
+   * checks an API invention faces; those that pass are sea-trialled and ranked as a new batch, and
+   * the rest come back with a repair message for the same chat.
+   */
+  public importInventions(text: string): {
+    batch: DesignBatch | null;
+    rejected: InventionRejection[];
+    repairPrompt: string | null;
+  } {
+    const file = readInventionFile(text);
+    if (!file.ok) throw new FleetError(400, file.error);
+    const checks = file.inventions.map(checkImportedInvention);
+    const rejected = checks.flatMap((c) => (c.ok ? [] : [{ name: c.name, error: c.error }]));
+    const accepted = withUniqueNames(
+      checks.flatMap((c) => (c.ok ? [c.blueprint] : [])),
+      this.repo.listBots().map((b) => b.name)
+    );
+    const repairPrompt = rejected.length > 0 ? inventorChatRepairPrompt(rejected) : null;
+    if (accepted.length === 0) return { batch: null, rejected, repairPrompt };
+
+    const brief: BatchBrief = {
+      mode: "inventor",
+      instruments: [...new Set(accepted.map((b) => b.instrumentId))],
+      styles: [],
+      riskAppetite: "balanced",
+      direction: "any",
+      count: accepted.length,
+      notes: "Imported from a JSON file"
+    };
+    const note =
+      rejected.length > 0
+        ? `${rejected.length} invention${rejected.length === 1 ? "" : "s"} in the file broke Keel's rules and ${rejected.length === 1 ? "was" : "were"} left out: ${rejected.map((r) => r.name).join(", ")}.`
+        : null;
+    return { batch: this.launchBatch(brief, "imported", note, accepted), rejected, repairPrompt };
+  }
+
+  /** Saves a batch and its propositions, then queues their sea trials. */
+  private launchBatch(
+    brief: BatchBrief,
+    source: DesignSource,
+    note: string | null,
+    blueprints: readonly BotBlueprint[]
+  ): DesignBatch {
     const nowMs = this.clock.nowMs();
     const batch = this.repo.saveBatch({
       batchId: newId("d", nowMs),
       createdAtMs: nowMs,
       brief,
-      source: result.source,
-      note: result.note
+      source,
+      note
     });
-    for (const blueprint of result.blueprints) {
+    for (const blueprint of blueprints) {
       this.repo.saveProposition({
         propositionId: newId("p", nowMs),
         batchId: batch.batchId,
         createdAtMs: nowMs,
-        source: result.source,
+        source,
         blueprint,
         status: "assessing",
         assessment: null,

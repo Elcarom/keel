@@ -652,5 +652,23 @@
     "claim": "Inventions face the full sea trial, with every window and threshold nudged, before they can launch.",
     "testFile": "packages/api/test/fleet.test.ts",
     "testName": "sea-trials inventions with nudged windows and thresholds, and launches one as a boat"
+  },
+  {
+    "id": "CLAIM-IMPORT-SAME-CHECKS",
+    "claim": "ADR-0027: Imported Inventions face the same checks and Sea Trial as API inventions, and rejected ones come back with a repair message.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "imports a Claude chat's file: checks each invention, sea-trials the good and returns the rest for repair"
+  },
+  {
+    "id": "CLAIM-IMPORT-STRICT-MARKET",
+    "claim": "ADR-0027: An Imported Invention keeps its own market and direction, and a market Keel does not trade is rejected, not replaced.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "keeps an imported invention's own market and direction, and refuses markets Keel does not trade"
+  },
+  {
+    "id": "CLAIM-IMPORT-PROMPT",
+    "claim": "ADR-0027: Keel writes the chat prompt from the brief, with the condition language and the names already in the fleet.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "writes a chat prompt carrying the brief, the language and the names already taken"
   }
 ]

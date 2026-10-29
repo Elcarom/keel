@@ -3,7 +3,7 @@ import {
   AssessmentSchema,
   BotBlueprintSchema,
   BotStatusSchema,
-  DesignBriefSchema,
+  BatchBriefSchema,
   DesignSourceSchema,
   PropositionStatusSchema,
   ScaledDecimal,
@@ -123,7 +123,7 @@ function mapBatch(row: Row): DesignBatchRecord {
   return {
     batchId: str(row, "batch_id"),
     createdAtMs: Number(row["created_at_ms"]),
-    brief: DesignBriefSchema.parse(JSON.parse(str(row, "brief_json"))),
+    brief: BatchBriefSchema.parse(JSON.parse(str(row, "brief_json"))),
     source: DesignSourceSchema.parse(str(row, "source")),
     note: nullableStr(row, "note")
   };

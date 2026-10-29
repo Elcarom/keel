@@ -188,6 +188,10 @@ _Avoid_: Custom strategy, AI strategy (the AI never trades it; the compiled rule
 The Shipyard mode in which Claude writes Inventions rather than filling Blueprints.
 _Avoid_: Free mode, creative mode
 
+**Imported Invention**:
+An Invention the operator brings in as a file, written by Claude in the operator's own chat rather than through Keel's API key. It keeps its own market and direction, and faces exactly the checks and Sea Trial any other Invention faces.
+_Avoid_: Uploaded strategy, manual strategy
+
 **Proposition**:
 A Blueprint offered as a candidate Boat, with its Sea Trial Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
 _Avoid_: Proposal, idea, candidate strategy

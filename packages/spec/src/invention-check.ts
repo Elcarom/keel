@@ -3,6 +3,7 @@ import {
   BotBlueprintSchema,
   FLEET_INSTRUMENTS,
   INDICATOR_KINDS,
+  MAX_IMPORTED_INVENTIONS,
   type BotBlueprint,
   type DesignBrief,
   type FleetInstrument,
@@ -181,4 +182,80 @@ export function checkInvention(
     return fail(err instanceof Error ? err.message : String(err));
   }
   return { ok: true, blueprint };
+}
+
+/**
+ * Checks an invention from an imported file. No brief stands behind a file, so the invention keeps
+ * its own instrument and direction, and an instrument Keel does not trade is an error rather
+ * than quietly replaced.
+ */
+export function checkImportedInvention(raw: unknown): InventionCheck {
+  const check = checkInvention(raw, { instruments: [...FLEET_INSTRUMENTS], direction: "any" });
+  if (!check.ok) return check;
+  const asked =
+    typeof raw === "object" && raw !== null && "instrumentId" in raw
+      ? (raw as { instrumentId: unknown }).instrumentId
+      : undefined;
+  if (asked !== check.blueprint.instrumentId) {
+    return {
+      ok: false,
+      name: check.blueprint.name,
+      error: `instrumentId must be one of ${FLEET_INSTRUMENTS.join(", ")}`
+    };
+  }
+  return check;
+}
+
+export type InventionFileRead =
+  | { readonly ok: true; readonly inventions: readonly unknown[] }
+  | { readonly ok: false; readonly error: string };
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reads the inventions out of a file or a pasted Claude reply: plain JSON, a fenced ```json
+ * block, or JSON with prose around it. The JSON may be {"propositions": [...]},
+ * {"inventions": [...]}, a bare array or a single invention.
+ */
+export function readInventionFile(text: string): InventionFileRead {
+  const trimmed = text.trim();
+  const fenced = /```(?:json)?\s*\n([\s\S]*?)```/.exec(trimmed)?.[1];
+  const firstBrace = trimmed.search(/[[{]/);
+  const lastBrace = Math.max(trimmed.lastIndexOf("}"), trimmed.lastIndexOf("]"));
+  const json =
+    parseJson(trimmed) ??
+    (fenced === undefined ? undefined : parseJson(fenced)) ??
+    (firstBrace >= 0 && lastBrace > firstBrace
+      ? parseJson(trimmed.slice(firstBrace, lastBrace + 1))
+      : undefined);
+  if (json === undefined) {
+    return { ok: false, error: "No JSON found. Paste Claude's reply or choose the .json file." };
+  }
+
+  const list: unknown = Array.isArray(json)
+    ? json
+    : typeof json === "object" && json !== null
+      ? ((json as Record<string, unknown>)["propositions"] ??
+        (json as Record<string, unknown>)["inventions"] ??
+        ("longEntry" in json ? [json] : undefined))
+      : undefined;
+  if (!Array.isArray(list) || list.length === 0) {
+    return {
+      ok: false,
+      error: 'Expected {"propositions": [...]} with at least one invention in it.'
+    };
+  }
+  if (list.length > MAX_IMPORTED_INVENTIONS) {
+    return {
+      ok: false,
+      error: `The file holds ${list.length} inventions; import at most ${MAX_IMPORTED_INVENTIONS} at a time.`
+    };
+  }
+  return { ok: true, inventions: list };
 }

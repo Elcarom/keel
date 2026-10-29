@@ -14,8 +14,11 @@ import {
   type DesignMode,
   type DesignBatch,
   type DesignBrief,
+  type DesignSource,
   type FleetInstrument,
   type FleetOverview,
+  type InventionRejection,
+  type InventorPromptRequest,
   type Proposition,
   type SeaTrial,
   type Verdict,
@@ -229,10 +232,16 @@ function InventionRules({ rules }: { rules: readonly string[] }) {
   );
 }
 
-function InventedBadge({ sample }: { sample: boolean }) {
+const INVENTED_BADGES: Record<DesignSource, string> = {
+  claude: "✦ Invented by Claude",
+  imported: "✦ Invented in your Claude chat",
+  sample: "✦ Sample invention"
+};
+
+function InventedBadge({ source }: { source: DesignSource }) {
   return (
     <span className="rounded-full border border-violet-400/40 bg-violet-400/10 px-2 py-0.5 text-[11px] font-semibold text-violet-200">
-      {sample ? "✦ Sample invention" : "✦ Invented by Claude"}
+      {INVENTED_BADGES[source]}
     </span>
   );
 }
@@ -899,6 +908,196 @@ const FAMILY_LABELS: Record<ArchetypeFamily, string> = {
 
 const MAJORS: readonly FleetInstrument[] = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
 
+/** A read-only block of text with a copy button; selecting it works where the clipboard API is off. */
+function CopyBox({ text, testId, rows = 8 }: { text: string; testId: string; rows?: number }) {
+  const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Plain http on a LAN has no clipboard API: fall back to a selection copy
+      ref.current?.select();
+      document.execCommand("copy");
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="space-y-2">
+      <textarea
+        ref={ref}
+        readOnly
+        rows={rows}
+        value={text}
+        data-testid={testId}
+        onFocus={(e) => e.currentTarget.select()}
+        className={`${input} font-mono-tabular text-xs`}
+      />
+      <button type="button" className={ghostBtn} onClick={() => void copy()}>
+        {copied ? "Copied ✓" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Inventor mode without the API: Keel writes the prompt, the operator runs it in their own Claude
+ * chat, and the JSON that comes back is checked and sea-trialled like any other invention.
+ */
+function ImportSteps({
+  request,
+  onImported
+}: {
+  request: InventorPromptRequest;
+  onImported: () => Promise<void>;
+}) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    accepted: number;
+    rejected: readonly InventionRejection[];
+    repairPrompt: string | null;
+  } | null>(null);
+
+  const getPrompt = async () => {
+    setError(null);
+    const res = await api.fleet.inventorPrompt({ body: request });
+    if (res.status === 200) setPrompt(res.body.prompt);
+    else setError(errorOf(res.body));
+  };
+
+  const readFile = async (file: File | undefined) => {
+    if (file) setText(await file.text());
+  };
+
+  const importText = async () => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    const res = await api.fleet.importInventions({ body: { text } });
+    setBusy(false);
+    if (res.status !== 200) {
+      setError(errorOf(res.body));
+      return;
+    }
+    setResult({
+      accepted: res.body.batch?.propositions.length ?? 0,
+      rejected: res.body.rejected,
+      repairPrompt: res.body.repairPrompt
+    });
+    if (res.body.batch) {
+      setText("");
+      await onImported();
+    }
+  };
+
+  const step = "mb-1 text-sm font-semibold text-slate-100";
+  return (
+    <div className="space-y-5" data-testid="import-steps">
+      <div className="rounded-xl border border-[#2B3947] p-4">
+        <p className={step}>1 · Ask your own Claude</p>
+        <p className="mb-3 text-xs text-slate-400">
+          Keel writes a prompt holding the whole rule language and your brief above. Paste it into a
+          new chat at claude.ai. That uses your subscription, so there are no API fees. Opus with
+          extended thinking gives the most inventive answers.
+        </p>
+        {prompt === null ? (
+          <button
+            type="button"
+            className={ghostBtn}
+            data-testid="get-inventor-prompt-btn"
+            onClick={() => void getPrompt()}
+          >
+            Write the prompt for {request.count} {request.count === 1 ? "idea" : "ideas"}
+          </button>
+        ) : (
+          <div className="space-y-2">
+            <CopyBox text={prompt} testId="inventor-prompt" />
+            <button
+              type="button"
+              className="text-xs font-semibold text-teal-300 hover:text-teal-200"
+              onClick={() => void getPrompt()}
+            >
+              Rewrite it for the brief as it is now
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-[#2B3947] p-4">
+        <p className={step}>2 · Bring the answer back</p>
+        <p className="mb-3 text-xs text-slate-400">
+          Choose the .json file Claude made, or paste its whole reply. Keel finds the JSON, checks
+          every rule, attaches the stop and puts each invention that passes through a sea trial.
+        </p>
+        <input
+          type="file"
+          accept=".json,.txt,application/json,text/plain"
+          data-testid="import-file-input"
+          onChange={(e) => void readFile(e.target.files?.[0])}
+          className="mb-2 block text-xs text-slate-300 file:mr-3 file:rounded-lg file:border file:border-[#2B3947] file:bg-transparent file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-200"
+        />
+        <textarea
+          rows={6}
+          value={text}
+          data-testid="import-text"
+          onChange={(e) => setText(e.target.value)}
+          placeholder={'…or paste Claude\'s reply here: {"propositions": [ … ]}'}
+          className={`${input} font-mono-tabular text-xs`}
+        />
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            className={primaryBtn}
+            data-testid="import-submit-btn"
+            disabled={busy || text.trim().length === 0}
+            onClick={() => void importText()}
+          >
+            {busy ? "Checking the rules…" : "Sea-trial these inventions"}
+          </button>
+        </div>
+      </div>
+
+      {error && <Banner kind="danger">{error}</Banner>}
+      {result && result.accepted > 0 && (
+        <Banner kind="ok" testId="import-success-banner">
+          {result.accepted} invention{result.accepted === 1 ? " is" : "s are"} on the slipway for a
+          sea trial.
+        </Banner>
+      )}
+      {result && result.rejected.length > 0 && (
+        <div className="space-y-2" data-testid="import-rejections">
+          <Banner kind="warn">
+            <p className="font-semibold">
+              Keel rejected {result.rejected.length}{" "}
+              {result.rejected.length === 1 ? "invention" : "inventions"}:
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+              {result.rejected.map((r, i) => (
+                <li key={`${r.name}-${i}`}>
+                  <strong>{r.name}</strong>: {r.error}
+                </li>
+              ))}
+            </ul>
+          </Banner>
+          {result.repairPrompt && (
+            <>
+              <p className="text-xs text-slate-400">
+                Paste this into the same Claude chat to have the rejected ones fixed, then import
+                its answer:
+              </p>
+              <CopyBox text={result.repairPrompt} testId="repair-prompt" rows={4} />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BriefForm({
   onDesigned,
   designer
@@ -917,6 +1116,10 @@ function BriefForm({
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Import is Inventor mode run in the operator's own Claude chat, so it is not a DesignMode
+  const [importing, setImporting] = useState(false);
+  const [importCount, setImportCount] = useState(6);
+  const inventing = importing || brief.mode === "inventor";
 
   const toggleInstrument = (id: FleetInstrument) =>
     setBrief((b) => {
@@ -953,7 +1156,7 @@ function BriefForm({
         <div>
           <h2 className="text-lg font-bold text-slate-50">Draw up a brief</h2>
           <p className="text-sm text-slate-400">
-            {brief.mode === "inventor"
+            {inventing
               ? "Claude invents brand-new entry rules. Keel checks every rule, attaches the stop and puts each invention through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged windows and thresholds, and a sibling market. Then it ranks them."
               : "Claude drafts the propositions. Keel then puts every one through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market. Then it ranks them."}
           </p>
@@ -966,13 +1169,15 @@ function BriefForm({
               : "border-amber-400/40 text-amber-200"
           }`}
         >
-          {designer.source === "claude"
-            ? `Designer: Claude (${designer.model})`
-            : "Designer: sample mode (no Anthropic key)"}
+          {importing
+            ? "Designer: your own Claude chat"
+            : designer.source === "claude"
+              ? `Designer: Claude (${designer.model})`
+              : "Designer: sample mode (no Anthropic key)"}
         </span>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Design mode">
+      <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Design mode">
         {(
           [
             [
@@ -984,10 +1189,15 @@ function BriefForm({
               "inventor",
               "✦ Inventor",
               "Claude writes brand-new rules from indicators, price, volume and the clock. Thinks harder; costs a little more per brief."
+            ],
+            [
+              "import",
+              "⇅ Inventor via your chat",
+              "Inventor mode with no API fees: copy Keel's prompt into claude.ai, then bring back the JSON file it writes."
             ]
           ] as const
         ).map(([mode, label, hint]) => {
-          const selected = brief.mode === mode;
+          const selected = mode === "import" ? importing : !importing && brief.mode === mode;
           return (
             <button
               key={mode}
@@ -995,10 +1205,13 @@ function BriefForm({
               role="radio"
               aria-checked={selected}
               data-testid={`mode-${mode}`}
-              onClick={() => setBrief((b) => ({ ...b, mode: mode as DesignMode }))}
+              onClick={() => {
+                setImporting(mode === "import");
+                if (mode !== "import") setBrief((b) => ({ ...b, mode: mode as DesignMode }));
+              }}
               className={`rounded-xl border p-3 text-left transition ${
                 selected
-                  ? mode === "inventor"
+                  ? mode !== "blueprint"
                     ? "border-violet-400 bg-violet-400/10"
                     : "border-teal-400 bg-teal-400/10"
                   : "border-[#2B3947] hover:border-slate-400"
@@ -1045,7 +1258,7 @@ function BriefForm({
         </div>
       </fieldset>
 
-      {brief.mode === "blueprint" && (
+      {!inventing && (
         <fieldset>
           <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
             Styles{" "}
@@ -1095,23 +1308,30 @@ function BriefForm({
       )}
 
       <div className="grid gap-5 md:grid-cols-3">
-        <fieldset>
-          <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-            Appetite for risk
-          </legend>
-          <div className="flex flex-wrap gap-2">
-            {(["cautious", "balanced", "bold"] as const).map((r) => (
-              <Chip
-                key={r}
-                selected={brief.riskAppetite === r}
-                onClick={() => setBrief((b) => ({ ...b, riskAppetite: r }))}
-              >
-                {r[0]?.toUpperCase()}
-                {r.slice(1)}
-              </Chip>
-            ))}
-          </div>
-        </fieldset>
+        {importing ? (
+          <p className="text-xs text-slate-400">
+            Claude sets each invention&apos;s stop and target to suit its idea; Keel attaches the
+            stop.
+          </p>
+        ) : (
+          <fieldset>
+            <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              Appetite for risk
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {(["cautious", "balanced", "bold"] as const).map((r) => (
+                <Chip
+                  key={r}
+                  selected={brief.riskAppetite === r}
+                  onClick={() => setBrief((b) => ({ ...b, riskAppetite: r }))}
+                >
+                  {r[0]?.toUpperCase()}
+                  {r.slice(1)}
+                </Chip>
+              ))}
+            </div>
+          </fieldset>
+        )}
         <fieldset>
           <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
             Direction
@@ -1139,15 +1359,26 @@ function BriefForm({
             How many ideas
           </legend>
           <div className="flex flex-wrap gap-2">
-            {[2, 3, 4, 5, 6].map((n) => (
-              <Chip
-                key={n}
-                selected={brief.count === n}
-                onClick={() => setBrief((b) => ({ ...b, count: n }))}
-              >
-                {n}
-              </Chip>
-            ))}
+            {importing
+              ? [3, 6, 10, 15, 20].map((n) => (
+                  <Chip
+                    key={n}
+                    selected={importCount === n}
+                    onClick={() => setImportCount(n)}
+                    testId={`import-count-${n}`}
+                  >
+                    {n}
+                  </Chip>
+                ))
+              : [2, 3, 4, 5, 6].map((n) => (
+                  <Chip
+                    key={n}
+                    selected={brief.count === n}
+                    onClick={() => setBrief((b) => ({ ...b, count: n }))}
+                  >
+                    {n}
+                  </Chip>
+                ))}
           </div>
         </fieldset>
       </div>
@@ -1157,7 +1388,7 @@ function BriefForm({
           htmlFor="brief-notes"
           className="mb-2 block text-xs font-semibold tracking-wide text-slate-400 uppercase"
         >
-          {brief.mode === "inventor" ? "What edge are you hunting?" : "Anything else for Claude?"}
+          {inventing ? "What edge are you hunting?" : "Anything else for Claude?"}
         </label>
         <textarea
           id="brief-notes"
@@ -1167,7 +1398,7 @@ function BriefForm({
           value={brief.notes}
           onChange={(e) => setBrief((b) => ({ ...b, notes: e.target.value }))}
           placeholder={
-            brief.mode === "inventor"
+            inventing
               ? "e.g. fade the moves thin weekend books leave behind, or catch breakouts when Europe wakes up"
               : "e.g. something calm that holds trades for a day or two, or a quick boat that only trades ETH breakouts"
           }
@@ -1175,24 +1406,38 @@ function BriefForm({
         />
       </div>
 
-      {error && <Banner kind="danger">{error}</Banner>}
+      {importing ? (
+        <ImportSteps
+          request={{
+            instruments: brief.instruments,
+            direction: brief.direction,
+            count: importCount,
+            notes: brief.notes
+          }}
+          onImported={onDesigned}
+        />
+      ) : (
+        <>
+          {error && <Banner kind="danger">{error}</Banner>}
 
-      <div className="flex justify-end">
-        <button
-          type="submit"
-          data-testid="design-submit-btn"
-          className={primaryBtn}
-          disabled={submitting}
-        >
-          {submitting
-            ? brief.mode === "inventor"
-              ? "Claude is at the drawing table…"
-              : "Claude is sketching hulls…"
-            : brief.mode === "inventor"
-              ? "Commission inventions"
-              : "Draft propositions"}
-        </button>
-      </div>
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              data-testid="design-submit-btn"
+              className={primaryBtn}
+              disabled={submitting}
+            >
+              {submitting
+                ? brief.mode === "inventor"
+                  ? "Claude is at the drawing table…"
+                  : "Claude is sketching hulls…"
+                : brief.mode === "inventor"
+                  ? "Commission inventions"
+                  : "Draft propositions"}
+            </button>
+          </div>
+        </>
+      )}
     </form>
   );
 }
@@ -1608,7 +1853,7 @@ function PropositionCard({
                   {rankLabel}
                 </span>
               )}
-              {b.invention && <InventedBadge sample={proposition.source === "sample"} />}
+              {b.invention && <InventedBadge source={proposition.source} />}
             </div>
             <p className="text-xs text-slate-400">
               {ARCHETYPE_LABELS[b.archetype]} · {pair(b.instrumentId)} ·{" "}
@@ -1850,7 +2095,11 @@ function ShipyardView({
               {batch.status === "assessing" ? "Fresh off the drawing board" : "Ranked propositions"}{" "}
               <span className="text-sm font-normal text-slate-400">
                 · {new Date(batch.createdAtMs).toLocaleString()} ·{" "}
-                {batch.source === "claude" ? "by Claude" : "samples"}
+                {batch.source === "claude"
+                  ? "by Claude"
+                  : batch.source === "imported"
+                    ? "imported from your Claude chat"
+                    : "samples"}
               </span>
             </h2>
             <span className="text-xs text-slate-400">

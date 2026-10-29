@@ -13,9 +13,8 @@ export type InventionCheckResult =
 /** Validates one raw invention against the brief; implemented by @keel/spec's checkInvention. */
 export type InventionChecker = (raw: unknown, brief: DesignBrief) => InventionCheckResult;
 
-export const INVENTOR_SYSTEM_PROMPT = `You invent trading strategies for Keel, a self-hosted crypto perpetual-futures lab, and you are expected to be original. Keel's theme is the sea: every strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
-
-Each invention trades one USDT perpetual on confirmed 1-hour bars. You write its entry rules as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes the position and enters at the next bar's open. One position at a time.
+/** The condition language and Keel's limits, shared by the API prompt and the chat prompt. */
+const INVENTOR_LANGUAGE = `Each invention trades one USDT perpetual on confirmed 1-hour bars. You write its entry rules as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes the position and enters at the next bar's open. One position at a time.
 
 THE LANGUAGE
 Numbers (NumExpr):
@@ -35,22 +34,106 @@ Indicators you declare (1-6), each {"id","kind","period"} with period 2-200, and
 
 HARD LIMITS (Keel rejects anything beyond them)
 - longEntry and shortEntry together use at most 32 nodes (every condition and every number counts as one node).
-- Keep nesting shallow: at the top, one "and"/"or" (or a single comparison/cross); its operands are comparisons or crosses; each side of a comparison is a simple number or ONE binary_op of two simple numbers. No and/or inside and/or.
+- Nesting: with one "and"/"or" at the top, its operands are comparisons or crosses, and each side of those is a simple number or ONE binary_op of two simple numbers. With a single comparison or cross at the top (no and/or), each side may nest binary_ops two deep, e.g. (high - low) / atr. Never put and/or inside and/or.
 - Every indicator id you read must be declared, with an output its kind has.
 - If a direction makes no sense for your idea, still give a valid rule for it and set "direction" to long_only or short_only.
 
-OUTPUT
-Return only JSON: {"propositions":[ ... ]}, each item:
+OUTPUT SHAPE
+{"propositions":[ ... ]}, each item:
 {"name","tagline" (one playful sentence),"rationale" (why it should work and when it should fail, 2-3 sentences),"instrumentId","direction" ("both"|"long_only"|"short_only"),"indicators":[...],"longEntry":Condition,"shortEntry":Condition,"stopAtrMultiple" (0.5-6),"rewardMultiple" (0.8-6)}
+
+THE SEA TRIAL
+Keel measures every invention itself: a two-year backtest with doubled costs and funding, walk-forward folds, a random-entry baseline, every window and threshold nudged (windows -25% and +33%, thresholds ±10%), and the same rules on a sibling market. Fragile curve-fits sink. Trades should happen often enough to judge: roughly 30-300 over two years.`;
+
+export const INVENTOR_SYSTEM_PROMPT = `You invent trading strategies for Keel, a self-hosted crypto perpetual-futures lab, and you are expected to be original. Keel's theme is the sea: every strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
+
+${INVENTOR_LANGUAGE}
 
 HOW TO INVENT WELL
 - Start from a mechanism: who is forced to trade, when, and why price should respond. Examples: session opens and closes, weekend illiquidity, volatility regimes, crowded breakouts, exhaustion after a run of bars, volume shocks.
 - Combine signals into ideas a textbook would not list; each proposition must be genuinely different from the others.
-- Prefer few, structural conditions over finely tuned thresholds. Every invention faces an automatic sea trial: a two-year backtest, doubled costs, walk-forward, every window and threshold nudged, and a sibling market. Fragile curve-fits sink.
-- Trades should happen often enough to judge: roughly 30-300 over two years.
-- Never claim performance; Keel measures it.`;
+- Prefer few, structural conditions over finely tuned thresholds.
+- Never claim performance; Keel measures it.
+
+Return only the JSON.`;
 
 export const INVENTOR_REPAIR_PROMPT = `Some of your inventions failed Keel's checks. For each one below, return a corrected version that keeps the idea but fixes exactly the problem named. Same JSON shape as before: {"propositions":[...]}, one per failed invention, in the same order.`;
+
+const FENCE = "```";
+
+export interface InventorChatPromptOptions {
+  readonly count: number;
+  readonly instruments: readonly string[];
+  readonly direction: DesignBrief["direction"];
+  readonly notes: string;
+  readonly namesAlreadyInTheFleet: readonly string[];
+}
+
+/**
+ * The Inventor prompt for a Claude chat (claude.ai or any Claude app), so a subscription can stand
+ * in for the API. It hands Claude the whole language and asks for range, not caution: Keel's checks
+ * and the sea trial do the doubting.
+ */
+export function inventorChatPrompt(options: InventorChatPromptOptions): string {
+  const n = options.count;
+  const direction =
+    options.direction === "long_only"
+      ? "long only: set every direction to long_only"
+      : options.direction === "short_only"
+        ? "short only: set every direction to short_only"
+        : "your call, per strategy: both, long_only or short_only";
+  const hunting = options.notes.trim() || "anything with a real edge; surprise me";
+  const fleet =
+    options.namesAlreadyInTheFleet.length > 0
+      ? options.namesAlreadyInTheFleet.join(", ")
+      : "none yet";
+  return `You are the inventor-in-residence at Keel, a self-hosted lab that researches systematic strategies on crypto perpetual futures. I want ${n} brand-new trading ${n === 1 ? "strategy" : "strategies"} from you, as creative, novel and interesting as you can make them. You have full creative freedom inside the language below; its hard limits are the only rules. Keel's theme is the sea: each strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
+
+YOUR BRIEF
+- Strategies: ${n}
+- Markets (instrumentId); spread your ideas across them: ${options.instruments.join(", ")}
+- Direction: ${direction}
+- What I am hunting for: ${hunting}
+- Names already in my fleet (do not reuse): ${fleet}
+
+${INVENTOR_LANGUAGE}
+
+HOW TO INVENT
+Think it through before you write any JSON. Go wide first: sketch two or three times as many ideas as I asked for, then keep the ${n} most original and most plausible.
+- Every idea starts from a mechanism: who is forced to buy or sell, when, and why price should respond. Examples are liquidations and stop cascades, funding resets, session handovers between Asia, Europe and the US, thin weekend books, options-expiry Fridays, volatility that compresses then releases, volume that leads price, exhaustion after a run of bars, and failed moves that trap one side. Anything else you can defend counts too.
+- Use the whole language. Arithmetic builds new series:
+  - ratios and spreads between indicators
+  - candle anatomy from open, high, low and close (body, wicks, range)
+  - multi-bar shapes with shift
+  - volume against its own average
+  - volatility against its own longer norm
+  - the UTC clock and weekday
+  Long and short rules need not mirror each other.
+- Make the ideas genuinely different from each other: different mechanisms, horizons and families (trend, breakout, reversion, calendar, volatility, volume, pattern), never two variations of one theme. Skip what a textbook lists first, such as plain moving-average crosses or plain RSI 30/70, unless you give it a real twist.
+- Be bold in the idea and humble in the parameters. Use a few structural conditions and round numbers rather than finely tuned thresholds, because the sea trial nudges every one.
+- Fit the stop and target to each idea's horizon: tight and quick for snapbacks, wide and patient for trends.
+- In each rationale, say why it should work and exactly when it should fail. Never claim performance; Keel measures it.
+
+BEFORE YOU ANSWER
+Check every strategy against the hard limits:
+- count the nodes across both entries (32 at most)
+- make sure no and/or sits inside another
+- make sure every indicator id you read is declared, with an output its kind has
+One slip and Keel rejects the whole strategy.
+
+YOUR ANSWER
+Write one short line per strategy saying what it hunts. Then put all ${n} in a single ${FENCE}json code block as {"propositions":[ ... ]}, with exactly the fields of the output shape. Use no comments and no trailing commas in the JSON. If you can create files, also offer the JSON as keel-inventions.json.`;
+}
+
+/** A message for the same Claude chat, asking it to fix what Keel rejected from its file. */
+export function inventorChatRepairPrompt(
+  rejected: readonly { readonly name: string; readonly error: string }[]
+): string {
+  const problems = rejected.map((r) => `- ${r.name}: ${r.error}`).join("\n");
+  return `Keel rejected ${rejected.length} of your strategies. Fix each one: keep its idea, but remove the problem Keel names. Then check it against the hard limits again. Answer with only the corrected strategies, in one ${FENCE}json code block as {"propositions":[ ... ]}.
+
+${problems}`;
+}
 
 /** Starting stop and target for sample inventions, by the brief's risk appetite. */
 const SAMPLE_RISK: Readonly<Record<DesignBrief["riskAppetite"], readonly [number, number]>> = {

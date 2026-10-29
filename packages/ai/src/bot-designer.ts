@@ -246,6 +246,19 @@ function uniqueName(name: string, taken: Set<string>): string {
   return `${name.slice(0, 30)} ${taken.size + 1}`;
 }
 
+/** Renames blueprints whose names are already taken, or repeated, with an ordinal: "Riptide II". */
+export function withUniqueNames(
+  blueprints: readonly BotBlueprint[],
+  takenNames: readonly string[]
+): BotBlueprint[] {
+  const taken = new Set(takenNames.map((n) => n.toLowerCase()));
+  return blueprints.map((b) => {
+    const name = uniqueName(b.name, taken);
+    taken.add(name.toLowerCase());
+    return { ...b, name };
+  });
+}
+
 /** Drafts propositions without a model: varied, deterministic, shaped by the brief. */
 export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraft[] {
   const styles = brief.styles.length > 0 ? brief.styles : SURPRISE_ORDER;
@@ -411,12 +424,7 @@ export class BotDesigner {
     blueprints: readonly BotBlueprint[],
     takenNames: readonly string[]
   ): BotBlueprint[] {
-    const taken = new Set(takenNames.map((n) => n.toLowerCase()));
-    return blueprints.map((b) => {
-      const name = uniqueName(b.name, taken);
-      taken.add(name.toLowerCase());
-      return { ...b, name };
-    });
+    return withUniqueNames(blueprints, takenNames);
   }
 
   private finish(

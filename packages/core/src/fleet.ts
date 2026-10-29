@@ -263,6 +263,31 @@ export const DesignBriefSchema = z.object({
 });
 export type DesignBrief = z.infer<typeof DesignBriefSchema>;
 
+/** The most inventions one imported file may hold: each takes a sea trial of about 15 seconds. */
+export const MAX_IMPORTED_INVENTIONS = 20;
+
+/** The brief a batch was drawn up under; an imported file may hold more ideas than a brief asks. */
+export const BatchBriefSchema = DesignBriefSchema.extend({
+  count: z.number().int().min(1).max(MAX_IMPORTED_INVENTIONS)
+});
+export type BatchBrief = z.infer<typeof BatchBriefSchema>;
+
+/** What the operator wants a Claude chat to invent, for the copy-and-paste Inventor prompt. */
+export const InventorPromptRequestSchema = z.object({
+  instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
+  direction: z.enum(["any", "long_only", "short_only"]),
+  count: z.number().int().min(1).max(MAX_IMPORTED_INVENTIONS),
+  notes: z.string().max(1000)
+});
+export type InventorPromptRequest = z.infer<typeof InventorPromptRequestSchema>;
+
+/** An imported invention Keel refused, with the reason in words Claude can act on. */
+export const InventionRejectionSchema = z.object({
+  name: z.string(),
+  error: z.string()
+});
+export type InventionRejection = z.infer<typeof InventionRejectionSchema>;
+
 export const VerdictSchema = z.enum(["seaworthy", "promising", "choppy", "sinks"]);
 export type Verdict = z.infer<typeof VerdictSchema>;
 
@@ -373,7 +398,8 @@ export const PropositionStatusSchema = z.enum([
 ]);
 export type PropositionStatus = z.infer<typeof PropositionStatusSchema>;
 
-export const DesignSourceSchema = z.enum(["claude", "sample"]);
+/** Who wrote a batch: Claude over the API, Keel's samples, or a file the operator imported. */
+export const DesignSourceSchema = z.enum(["claude", "sample", "imported"]);
 export type DesignSource = z.infer<typeof DesignSourceSchema>;
 
 export const PropositionSchema = z.object({
@@ -393,7 +419,7 @@ export type Proposition = z.infer<typeof PropositionSchema>;
 export const DesignBatchSchema = z.object({
   batchId: z.string(),
   createdAtMs: z.number().int(),
-  brief: DesignBriefSchema,
+  brief: BatchBriefSchema,
   source: DesignSourceSchema,
   status: z.enum(["assessing", "done"]),
   note: z.string().nullable(),
@@ -531,7 +557,7 @@ export interface BotRecord {
 export interface DesignBatchRecord {
   readonly batchId: string;
   readonly createdAtMs: number;
-  readonly brief: DesignBrief;
+  readonly brief: BatchBrief;
   readonly source: DesignSource;
   readonly note: string | null;
 }

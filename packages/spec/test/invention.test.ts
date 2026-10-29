@@ -5,7 +5,14 @@ import {
   type ConfirmedBar,
   type DesignBrief
 } from "@keel/core";
-import { SpecStrategy, checkInvention, compileBlueprint, nudgeInvention } from "../src/index.js";
+import {
+  SpecStrategy,
+  checkImportedInvention,
+  checkInvention,
+  compileBlueprint,
+  nudgeInvention,
+  readInventionFile
+} from "../src/index.js";
 
 const BRIEF: Pick<DesignBrief, "instruments" | "direction"> = {
   instruments: ["BTC-USDT-SWAP", "SOL-USDT-SWAP"],
@@ -182,6 +189,51 @@ describe("Inventions", () => {
       recentFundingRates: []
     });
     expect(early.proposals.map((p) => p.side)).toEqual(["long"]);
+  });
+
+  it("reads inventions from a file or a pasted chat reply in any of its usual shapes", () => {
+    const inventions = (text: string) => {
+      const read = readInventionFile(text);
+      if (!read.ok) throw new Error(read.error);
+      return read.inventions.map((i) => (i as { name: string }).name);
+    };
+    expect(inventions(JSON.stringify({ propositions: [SNAPBACK] }))).toEqual(["Tidal Snapback"]);
+    expect(inventions(JSON.stringify({ inventions: [SNAPBACK, SNAPBACK] }))).toHaveLength(2);
+    expect(inventions(JSON.stringify([SNAPBACK]))).toEqual(["Tidal Snapback"]);
+    expect(inventions(JSON.stringify(SNAPBACK))).toEqual(["Tidal Snapback"]);
+    expect(
+      inventions(
+        `Here you go.\n\n\`\`\`json\n${JSON.stringify({ propositions: [SNAPBACK] })}\n\`\`\`\nEnjoy!`
+      )
+    ).toEqual(["Tidal Snapback"]);
+    expect(
+      inventions(`Prose first ${JSON.stringify({ propositions: [SNAPBACK] })} prose after`)
+    ).toEqual(["Tidal Snapback"]);
+
+    const fails = (text: string) => {
+      const read = readInventionFile(text);
+      return read.ok ? null : read.error;
+    };
+    expect(fails("nothing to see")).toMatch(/^No JSON found/);
+    expect(fails(JSON.stringify({ propositions: [] }))).toMatch(/at least one invention/);
+    expect(fails(JSON.stringify(Array.from({ length: 21 }, () => SNAPBACK)))).toMatch(
+      /holds 21 inventions; import at most 20/
+    );
+  });
+
+  it("keeps an imported invention's own market and direction, and refuses markets Keel does not trade", () => {
+    const own = checkImportedInvention({
+      ...SNAPBACK,
+      instrumentId: "LINK-USDT-SWAP",
+      direction: "short_only"
+    });
+    if (!own.ok) throw new Error(own.error);
+    expect(own.blueprint.instrumentId).toBe("LINK-USDT-SWAP");
+    expect(own.blueprint.direction).toBe("short_only");
+
+    const pepe = checkImportedInvention({ ...SNAPBACK, instrumentId: "PEPE-USDT-SWAP" });
+    expect(pepe).toMatchObject({ ok: false, name: "Tidal Snapback" });
+    expect(pepe.ok ? "" : pepe.error).toMatch(/^instrumentId must be one of BTC-USDT-SWAP/);
   });
 
   it("nudges windows and thresholds, but never the clock", () => {

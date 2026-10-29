@@ -168,6 +168,101 @@ describe("Fleet API", () => {
     }
   }, 60_000);
 
+  it("writes a chat prompt carrying the brief, the language and the names already taken", async () => {
+    const { call, designAndWait, launch } = await setup();
+    await launch(await designAndWait(2), "1000", "Old Salt");
+    const res = await call("POST", "/api/v1/fleet/inventor-prompt", {
+      instruments: ["SOL-USDT-SWAP", "DOGE-USDT-SWAP"],
+      direction: "long_only",
+      count: 12,
+      notes: "weekend liquidity"
+    });
+    expect(res.status).toBe(200);
+    const prompt = String(res.body["prompt"]);
+    expect(prompt).toContain("I want 12 brand-new trading strategies");
+    expect(prompt).toContain("SOL-USDT-SWAP, DOGE-USDT-SWAP");
+    expect(prompt).toContain("set every direction to long_only");
+    expect(prompt).toContain("weekend liquidity");
+    expect(prompt).toContain("Old Salt");
+    expect(prompt).toContain('"type":"crosses_above"|"crosses_below"');
+  }, 60_000);
+
+  it("imports a Claude chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
+    const { call } = await setup();
+    const good = {
+      name: "Morning Squall",
+      tagline: "Rides the first strong hour after Europe wakes.",
+      rationale: "Fresh orders arrive at the London open. It fails on quiet days.",
+      instrumentId: "ETH-USDT-SWAP",
+      direction: "both",
+      indicators: [{ id: "push", kind: "momentum", period: 6 }],
+      longEntry: {
+        type: "comparison",
+        op: ">=",
+        left: { type: "indicator", id: "push", output: "momentum" },
+        right: { type: "constant", value: 1 }
+      },
+      shortEntry: {
+        type: "comparison",
+        op: "<=",
+        left: { type: "indicator", id: "push", output: "momentum" },
+        right: { type: "constant", value: -1 }
+      },
+      stopAtrMultiple: 2,
+      rewardMultiple: 2
+    };
+    const reply = [
+      "Here are your strategies:",
+      "```json",
+      JSON.stringify({
+        propositions: [
+          good,
+          { ...good, name: "Ghost Ship", instrumentId: "PEPE-USDT-SWAP" },
+          { ...good, name: "Leaky Hull", longEntry: { ...good.longEntry, op: "==" } }
+        ]
+      }),
+      "```",
+      "Good luck at sea!"
+    ].join("\n");
+
+    const res = await call("POST", "/api/v1/fleet/designs/import", { text: reply });
+    expect(res.status).toBe(200);
+    const rejected = res.body["rejected"] as { name: string; error: string }[];
+    expect(rejected.map((r) => r.name)).toEqual(["Ghost Ship", "Leaky Hull"]);
+    expect(rejected[0]?.error).toMatch(/^instrumentId must be one of BTC-USDT-SWAP/);
+    expect(rejected[1]?.error).toMatch(/^longEntry\./);
+    expect(String(res.body["repairPrompt"])).toContain("- Ghost Ship: instrumentId must be");
+
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 400 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+    }
+    expect(batch?.source).toBe("imported");
+    expect(batch?.note).toContain("Ghost Ship, Leaky Hull");
+    expect(batch?.brief.instruments).toEqual(["ETH-USDT-SWAP"]);
+    const [p] = batch?.propositions ?? [];
+    expect(batch?.propositions).toHaveLength(1);
+    expect(p?.source).toBe("imported");
+    expect(p?.status).toBe("ranked");
+    expect(p?.blueprint.instrumentId).toBe("ETH-USDT-SWAP");
+    expect(p?.blueprint.invention?.rules[0]).toBe("Long when momentum(6) ≥ 1");
+    expect(p?.assessment?.seaTrial?.neighbours).toHaveLength(4);
+
+    // A file with nothing usable in it says so, and starts no batch
+    const empty = await call("POST", "/api/v1/fleet/designs/import", { text: "no json here" });
+    expect(empty.status).toBe(400);
+    expect(empty.body["error"]).toMatch(/No JSON found/);
+    const allBad = await call("POST", "/api/v1/fleet/designs/import", {
+      text: JSON.stringify([{ ...good, indicators: [] }])
+    });
+    expect(allBad.status).toBe(200);
+    expect(allBad.body["batch"]).toBeNull();
+    expect(allBad.body["rejected"]).toHaveLength(1);
+  }, 60_000);
+
   it("sea-trials inventions with nudged windows and thresholds, and launches one as a boat", async () => {
     const { call, clock, dataStore, overview } = await setup();
     const res = await call("POST", "/api/v1/fleet/designs", {

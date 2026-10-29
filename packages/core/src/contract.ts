@@ -33,6 +33,8 @@ import {
   DesignBatchSchema,
   DesignBriefSchema,
   FleetOverviewSchema,
+  InventionRejectionSchema,
+  InventorPromptRequestSchema,
   PropositionSchema,
   WalletSchema
 } from "./fleet.js";
@@ -205,6 +207,38 @@ export const keelApiContract = c.router({
         502: ApiErrorSchema
       },
       summary: "Ask the boat designer for propositions; each is then backtested and ranked"
+    },
+    inventorPrompt: {
+      method: "POST",
+      path: "/api/v1/fleet/inventor-prompt",
+      body: InventorPromptRequestSchema,
+      responses: {
+        200: z.object({ prompt: z.string() }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "The Inventor prompt to paste into a Claude chat, which answers with a JSON file"
+    },
+    importInventions: {
+      method: "POST",
+      path: "/api/v1/fleet/designs/import",
+      body: z.object({ text: z.string().min(1).max(400_000) }),
+      responses: {
+        200: z.object({
+          /** Null when no invention in the file passed Keel's checks. */
+          batch: DesignBatchSchema.nullable(),
+          rejected: z.array(InventionRejectionSchema),
+          /** A message to paste back into the same Claude chat to fix what was rejected. */
+          repairPrompt: z.string().nullable()
+        }),
+        400: ApiErrorSchema,
+        401: ApiErrorSchema,
+        404: ApiErrorSchema,
+        409: ApiErrorSchema
+      },
+      summary: "Check inventions from a JSON file, then sea-trial and rank the ones that pass"
     },
     discardProposition: {
       method: "POST",

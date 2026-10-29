@@ -76,4 +76,63 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await page.getByTestId("open-engine-room").click();
     await expect(page.getByTestId("back-to-fleet")).toBeVisible();
   });
+
+  test("hands the Inventor prompt to the operator's own Claude chat and imports its answer", async ({
+    page
+  }) => {
+    test.setTimeout(480_000);
+    await page.goto("/");
+    const bootstrapPanel = page.getByTestId("bootstrap-panel");
+    await expect(bootstrapPanel.or(page.getByTestId("login-panel"))).toBeVisible();
+    if (await bootstrapPanel.isVisible()) {
+      await page.getByTestId("bootstrap-token-input").fill("keel-e2e-bootstrap-token-2026");
+    }
+    await page.getByTestId("bootstrap-username-input").fill("captain");
+    await page.getByTestId("bootstrap-password-input").fill("correct-horse-battery-staple");
+    await page.getByTestId("bootstrap-submit-btn").click();
+    await page.getByTestId("tab-shipyard").click();
+
+    // Step 1: Keel writes the prompt for the brief
+    await page.getByTestId("mode-import").click();
+    await expect(page.getByTestId("designer-source")).toContainText("your own Claude chat");
+    await page.getByTestId("import-count-10").click();
+    await page.getByTestId("brief-notes").fill("session handovers");
+    await page.getByTestId("get-inventor-prompt-btn").click();
+    await expect(page.getByTestId("inventor-prompt")).toHaveValue(/I want 10 brand-new/);
+    await expect(page.getByTestId("inventor-prompt")).toHaveValue(/session handovers/);
+
+    // Step 2: the chat's reply comes back; the broken invention returns with a repair message
+    const rule = (op: string, value: number) => ({
+      type: "comparison",
+      op,
+      left: { type: "indicator", id: "heat", output: "rsi" },
+      right: { type: "constant", value }
+    });
+    const invention = {
+      name: "Harbour Bell",
+      tagline: "Answers the bell when the fast RSI swings too far.",
+      rationale: "Sharp hourly extremes revert. It fails in strong trends.",
+      instrumentId: "BTC-USDT-SWAP",
+      direction: "both",
+      indicators: [{ id: "heat", kind: "rsi", period: 7 }],
+      longEntry: rule("<", 25),
+      shortEntry: rule(">", 75),
+      stopAtrMultiple: 2,
+      rewardMultiple: 1.5
+    };
+    const broken = { ...invention, name: "Bilge Pump", longEntry: rule("<", 25), indicators: [] };
+    await page
+      .getByTestId("import-text")
+      .fill("```json\n" + JSON.stringify({ propositions: [invention, broken] }) + "\n```");
+    await page.getByTestId("import-submit-btn").click();
+    await expect(page.getByTestId("import-success-banner")).toContainText("1 invention is");
+    await expect(page.getByTestId("import-rejections")).toContainText("Bilge Pump");
+    await expect(page.getByTestId("repair-prompt")).toHaveValue(/Keel rejected 1 of your/);
+
+    const batch = page.getByTestId("design-batch").first();
+    await expect(batch).toContainText("imported from your Claude chat");
+    await expect(batch.getByText("✦ Invented in your Claude chat")).toBeVisible();
+    await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
+    await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
+  });
 });

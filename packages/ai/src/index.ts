@@ -766,12 +766,16 @@ export {
 export {
   BotDesigner,
   sampleBlueprints,
+  withUniqueNames,
   type BotDesignResult,
   type BotDesignerOptions
 } from "./bot-designer.js";
 export {
   INVENTOR_SYSTEM_PROMPT,
+  inventorChatPrompt,
+  inventorChatRepairPrompt,
   sampleInventions,
   type InventionChecker,
-  type InventionCheckResult
+  type InventionCheckResult,
+  type InventorChatPromptOptions
 } from "./inventor.js";
