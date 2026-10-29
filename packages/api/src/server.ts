@@ -186,7 +186,9 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
   const claudeGateway = new ClaudeLlmGateway({
     clock,
     getConfig: () => getActiveSnapshot().config.ai,
-    getApiKey: () => getSecretSafe("anthropicApiKey") ?? process.env["ANTHROPIC_API_KEY"] ?? null
+    // A blank variable (as docker-compose passes when it is unset) means no key
+    getApiKey: () =>
+      getSecretSafe("anthropicApiKey") ?? (process.env["ANTHROPIC_API_KEY"]?.trim() || null)
   });
   const designerIsLive = (): boolean =>
     claudeGateway.hasApiKey() && !getActiveSnapshot().config.ai.simulateResponses;

@@ -1,6 +1,6 @@
 # Keel
 
-**Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on Unraid behind a Cloudflare Tunnel. A keel keeps a ship steady, and the whole product follows the sea:
+**Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on your own server: Unraid, or any Docker host. A keel keeps a ship steady, and the whole product follows the sea:
 
 - **The Shipyard** drafts strategy **Propositions**. Claude can fill one of 13 reviewed **Blueprints**, invent brand-new entry rules in **Inventor Mode**, or you can import inventions from your own Claude chat with no API fees. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
 - **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin or a **Basket** of up to five, from its own **Boat Book** and stake.
@@ -63,188 +63,158 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
 
 ---
 
-## Deployment Guide
+## Setting sail
 
-Keel is packaged as a single self-contained Docker container hosting both the Fastify API and the compiled React dashboard on port `8080`. It runs under a non-root user (`PUID=99`, `PGID=100`, `UMASK=022`) using `tini` as PID 1 and is designed to sit behind a **Cloudflare Tunnel (`cloudflared`)** on Unraid or any standard Linux host.
+Keel is one container. It serves the dashboard and the API on port `8080`, runs as a non-root user (`PUID=99`, `PGID=100`) with `tini` as PID 1, and keeps everything in two folders. On your LAN you reach it at `http://<server-ip>:8080`; for the wider world, put a Cloudflare Tunnel in front (step 5).
 
-### 1. Host Directory & Permission Setup
+### 1. Make a berth
 
-Prepare persistent host storage for application data and SQLite backups:
+Create the two folders Keel keeps its state in:
 
 ```bash
-# On Unraid:
+# Unraid
 mkdir -p /mnt/user/appdata/keel/data /mnt/user/appdata/keel/backups
 chown -R 99:100 /mnt/user/appdata/keel
-chmod 755 /mnt/user/appdata/keel/data /mnt/user/appdata/keel/backups
 
-# On Generic Linux / Docker Host:
+# Any other Docker host
 mkdir -p ./keel-data ./keel-backups
 sudo chown -R 99:100 ./keel-data ./keel-backups
 ```
 
-- `/data`: Holds the SQLite WAL database (`keel.db`), AES-256-GCM master vault key (`secret.key`, mode `0600`), and historical market data snapshots.
-- `/backups`: Holds atomic point-in-time SQLite snapshots generated via `VACUUM INTO`.
+- `/data` holds the SQLite database (`keel.db`), the encrypted vault and the market history.
+- `/backups` holds point-in-time snapshots of the database.
 
----
+### 2. Launch it
 
-### 2. Deployment Methods
+**Docker Compose (recommended, including Unraid's Compose Manager).** Copy [`docker-compose.yml`](./docker-compose.yml) and [`.env.example`](./.env.example), renamed to `.env`, into one folder. Then set the master key in `.env`:
 
-#### Method A: Docker Compose (Recommended for Unraid / Docker Compose Manager)
-
-Use the repository's [`docker-compose.yml`](./docker-compose.yml):
-
-```yaml
-name: keel
-
-services:
-  keel:
-    image: ghcr.io/elcarom/keel:latest
-    container_name: keel
-    restart: unless-stopped
-    environment:
-      - PUID=99
-      - PGID=100
-      - UMASK=022
-      - PORT=8080
-      - DATA_DIR=/data
-      - BACKUPS_DIR=/backups
-      - LOG_LEVEL=info
-      - KEEL_MASTER_KEY=${KEEL_MASTER_KEY:?KEEL_MASTER_KEY must be set (generate with: openssl rand -base64 48)}
-    ports:
-      - "8080:8080"
-    volumes:
-      - /mnt/user/appdata/keel/data:/data
-      - /mnt/user/appdata/keel/backups:/backups
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+```bash
+KEEL_MASTER_KEY=<paste the output of: openssl rand -base64 48>
 ```
 
-Run:
+Keep that key in your password manager: without it the vault can't be decrypted. Then:
 
 ```bash
 docker compose up -d
 ```
 
-#### Method B: Unraid Community Apps XML Template
+The compose file defaults are set for a home server:
 
-1. Copy [`deploy/unraid/keel-template.xml`](./deploy/unraid/keel-template.xml) to `/boot/config/plugins/dockerMan/templates-user/my-keel.xml` on your Unraid flash drive.
-2. In the Unraid WebGUI, navigate to **Docker → Add Container** and select **Keel** from the Template dropdown.
-3. Confirm `/data`, `/backups`, and port `8080` paths, then click **Apply**.
+| Setting                    | Default | What it does                                                                                                                         |
+| :------------------------- | :------ | :----------------------------------------------------------------------------------------------------------------------------------- |
+| `KEEL_PORT`                | `8080`  | The host port. Change it if 8080 is taken; the container always listens on 8080 inside                                               |
+| `KEEL_ALLOW_INSECURE_HTTP` | `true`  | Lets you sign in over plain `http://` on your LAN. Requests over HTTPS still get `Secure` cookies. Set `false` if you only use HTTPS |
+| `KEEL_ENABLE_SCHEDULER`    | `true`  | Fetches new hourly bars and steps the Fleet. Without it, boats never trade                                                           |
+| `ANTHROPIC_API_KEY`        | blank   | Optional: lets Claude design boats. You can store it in the vault instead, or skip it and use **⇅ Inventor via your chat**           |
 
-#### Method C: Docker Run CLI
+**Unraid template.** Copy [`deploy/unraid/keel-template.xml`](./deploy/unraid/keel-template.xml) to `/boot/config/plugins/dockerMan/templates-user/my-keel.xml`, then choose **Docker → Add Container → Keel**. Fill in the master key, check the paths and port, and click **Apply**. See [`docs/unraid.md`](./docs/unraid.md) for the details, including moving from the old `psychic-octo-funicular` image name.
+
+**Plain `docker run`:**
 
 ```bash
-docker run -d \
-  --name keel \
-  --restart unless-stopped \
-  -e PUID=99 \
-  -e PGID=100 \
-  -e UMASK=022 \
-  -e PORT=8080 \
-  -e DATA_DIR=/data \
-  -e BACKUPS_DIR=/backups \
-  -e KEEL_MASTER_KEY="$(openssl rand -base64 48)" \
+docker run -d --name keel --restart unless-stopped \
+  -e KEEL_MASTER_KEY="<your key>" \
+  -e KEEL_ALLOW_INSECURE_HTTP=true -e KEEL_ENABLE_SCHEDULER=true \
+  -e DATA_DIR=/data -e BACKUPS_DIR=/backups \
   -p 8080:8080 \
   -v /mnt/user/appdata/keel/data:/data \
   -v /mnt/user/appdata/keel/backups:/backups \
   ghcr.io/elcarom/keel:latest
 ```
 
-#### Environment Variables
+### 3. First time aboard
 
-| Variable                                          | Default            | Purpose                                                                                                                                                                                                                                   |
-| :------------------------------------------------ | :----------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `KEEL_MASTER_KEY`                                 | _(required)_       | Vault master key: at least 32 characters and 12 distinct characters. The vault refuses to run without it                                                                                                                                  |
-| `PORT` / `HOST`                                   | `8080` / `0.0.0.0` | Listen address                                                                                                                                                                                                                            |
-| `DATA_DIR` or `KEEL_DB_PATH`                      | in-memory          | SQLite location. Without either, all state is lost on restart                                                                                                                                                                             |
-| `BACKUPS_DIR` or `KEEL_BACKUPS_DIR`               | unset              | Directory for SQLite backups                                                                                                                                                                                                              |
-| `LOG_LEVEL`                                       | `info`             | Pino log level                                                                                                                                                                                                                            |
-| `KEEL_ALLOW_INSECURE_HTTP`                        | `false`            | `true` lets you sign in over plain `http://` on a trusted LAN. Without it, browsers drop the `Secure` session cookie and sign-in silently fails. HTTPS requests still get `Secure` cookies. Leave it `false` behind the Cloudflare Tunnel |
-| `KEEL_ENABLE_SCHEDULER`                           | `false`            | `true` fetches new hourly bars and steps strategies and Fleet boats; without it boats never trade (the Unraid template turns it on). The dead-man's switch heartbeat runs in exchange modes either way                                    |
-| `KEEL_BOOTSTRAP_TOKEN`                            | generated          | One-time token for the first admin bootstrap                                                                                                                                                                                              |
-| `KEEL_CF_ACCESS_SECRET`                           | unset              | Cloudflare Access JWT signing secret, when Cloudflare headers are trusted                                                                                                                                                                 |
-| `KEEL_AI_SIMULATE_RESPONSES`                      | `false`            | `true` makes the AI layer return deterministic simulated responses instead of calling Gemini, and makes the Shipyard draft sample propositions instead of calling Claude (used by the e2e suite)                                          |
-| `KEEL_GEMINI_API_KEY`, `KEEL_DISCORD_WEBHOOK_URL` | unset              | Fallbacks used only when the vault has no `geminiApiKey` / `discordWebhookUrl`                                                                                                                                                            |
-| `ANTHROPIC_API_KEY`                               | unset              | Fallback used only when the vault has no `anthropicApiKey`. Lets Claude design boats in the Shipyard; without a key it drafts sample propositions                                                                                         |
+Keel has no open setup screen. On its first start it prints a one-time token:
 
-OKX trading keys have no environment fallback: store them in the vault (section 5).
+```bash
+docker logs keel
+# [KEEL BOOTSTRAP] One-time admin bootstrap token: 3f9c…  (48 hex characters)
+```
 
----
+Open `http://<server-ip>:8080` (or your tunnel's address). Paste the token, choose a username and a password of 10 or more characters, and enrol the authenticator-app (TOTP) secret Keel shows you. The token stops working the moment the first account exists.
 
-### 3. Cloudflare Tunnel Ingress Setup
+### 4. Stow the keys
 
-Keel is architected to sit securely behind **Cloudflare Zero Trust (`cloudflared`)** ([ADR-0003](./docs/adr/0003-cloudflare-tunnel-and-defense-in-depth-auth.md)):
+In the **Engine Room**, under **Secrets**, store what you use. Every secret is encrypted at rest with AES-256-GCM and never sent back over the API.
 
-1. In your **Cloudflare Zero Trust Dashboard**, navigate to **Networks → Tunnels** and select your tunnel.
-2. Add a **Public Hostname** (e.g. `keel.yourdomain.com`):
-   - **Service**: `HTTP`
-   - **URL**: `<unraid-lan-ip>:8080` (or `keel:8080` if sharing a Docker network with `cloudflared`).
-3. **Defense-in-Depth**:
-   - Keel honors `CF-Connecting-IP` and `X-Forwarded-Proto` for audit logging and secure cookie enforcement.
-   - Keel emits an automated **15-second Server-Sent Events (SSE) heartbeat** on `/api/v1/stream/heartbeat` to prevent Cloudflare's 100-second edge read timeout from disconnecting live dashboard charts.
-   - Attach a Cloudflare Access policy with identity provider + email OTP for edge filtering.
+| Secret                                       | What for                                                                                                                             |
+| :------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
+| `anthropicApiKey`                            | Claude designs and invents boats in the Shipyard. Optional: without it you get samples, and **⇅ Inventor via your chat** still works |
+| `discordWebhookUrl`                          | Alerts, plus the Fleet's daily digest                                                                                                |
+| `geminiApiKey`                               | The Engine Room's advisory AI layer                                                                                                  |
+| `okxApiKey`, `okxSecretKey`, `okxPassphrase` | OKX exchange access, for later. **Trade and Read only, withdrawals disabled.** Fleet boats trade on paper and never use them         |
+
+### 5. Open waters: a Cloudflare Tunnel
+
+To reach Keel from outside your home, put it behind Cloudflare Zero Trust ([ADR-0003](./docs/adr/0003-cloudflare-tunnel-and-defense-in-depth-auth.md)):
+
+1. In **Networks → Tunnels**, add a public hostname such as `keel.yourdomain.com`, pointing at `http://<server-ip>:8080` (or `http://keel:8080` on a shared Docker network).
+2. Add a Cloudflare Access policy (your identity provider or an email code) so only you reach the sign-in page.
+3. Keel reads `CF-Connecting-IP` and `X-Forwarded-Proto` for its audit log and to keep cookies `Secure` over HTTPS. A 15-second heartbeat on `/api/v1/stream/heartbeat` keeps Cloudflare from closing live views.
+
+If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=false`.
 
 ---
 
-### 4. First-Boot Admin Bootstrap
+## A tour of the ship
 
-Keel never exposes an unauthenticated configuration or setup screen. On initial start against an empty `/data` directory:
+- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial** and is ranked: seaworthy, promising, choppy or sinks. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
+- **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
+- **Treasury:** the paper wallets that fund the boats.
+- **Logbook:** recent trades across the Fleet, and what the unattended duties have done.
+- **Engine Room:** settings, secrets, research tools, the Kill Switch and the audit trail, with a section bar to jump between them.
 
-1. Inspect container logs:
-   ```bash
-   docker logs keel
-   ```
-2. Locate the one-time bootstrap token generated in stdout:
-   ```text
-   ================================================================================
-   [KEEL BOOTSTRAP] Initial Admin Setup Token:
-   keel-bootstrap-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   ================================================================================
-   ```
-3. Open `https://keel.yourdomain.com` in your browser.
-4. Enter the one-time token, choose your master admin username and password (`Argon2id`), and enroll your RFC 6238 TOTP authenticator app.
-5. The bootstrap token is immediately invalidated upon first account initialization.
+### Unattended duties
 
----
+Fixed rules run after every scheduler step, on paper only. A model never decides what to launch, dock or fund ([ADR-0030](./docs/adr/0030-fleet-duties-and-diversity.md)). Switch them in **Engine Room → Settings**:
 
-### 5. Configuring Secrets in the Vault
-
-Once signed in, open the **Engine Room** (top right of the Fleet):
-
-1. Navigate to the **AES-256-GCM Secret Vault** section.
-2. Store your credentials safely:
-   - `anthropicApiKey`: Anthropic API key, so Claude can design and invent Boats in the Shipyard. Optional: without it, the Shipyard offers samples, and the **⇅ Inventor via your chat** mode needs no key at all.
-   - `geminiApiKey`: Google Gemini API key for the advisory AI layer.
-   - `okxApiKey`, `okxSecretKey`, `okxPassphrase`: OKX V5 API key (requires **Trade** and **Read** permissions only; **Withdrawal MUST be disabled**).
-   - `discordWebhookUrl`: Discord webhook for `CRITICAL` kill-switch/stop-failure alerts and `WARNING` notifications.
-3. All secrets are encrypted at rest under `/data/secret.key` using AES-256-GCM with PBKDF2 salt and authentication tag. Plaintext is never stored in SQLite or exposed over the API.
+| Duty         | Starts | What it does                                                                                                             |
+| :----------- | :----- | :----------------------------------------------------------------------------------------------------------------------- |
+| Drift watch  | on     | Docks a boat doing clearly worse than its Sea Trial expected                                                             |
+| Daily digest | on     | Sends a Discord summary of every boat once a day                                                                         |
+| Autopilot    | off    | Launches seaworthy, original Propositions, funded only from a wallet named **Autopilot**, whose balance is its whole cap |
+| Night shift  | off    | Drafts a new brief daily or weekly (needs an Anthropic key)                                                              |
+| Rebalancing  | off    | Evens out the stakes of a wallet's flat boats every Monday                                                               |
 
 ---
 
-### 6. Production Health & Graceful Shutdown
+## Keeping watch
 
-- **Health Checks**:
-  - `GET /healthz`: Process status and heartbeat timestamp.
-  - `GET /readyz`: Execution mode readiness (`Paper`, `Demo`, `Live-Ramp`, `Live`).
-  - `GET /metrics`: Prometheus telemetry (uptime, execution mode, circuit breaker status).
-- **Graceful Shutdown**:
-  - `tini` forwards `SIGTERM` signals to Keel.
-  - Upon shutdown, Keel stops unattended background ingest-and-tick scheduler loops cleanly, flushes the SQLite WAL, and executes container shutdown policies (`hold` or `flatten`). In `Demo` and `Live` modes, open positions remain safeguarded by exchange-resident mark-price **Protective Stops** (`attachAlgoOrds`), while the 60-second OKX **Dead-Man's Switch** (`cancel-all-after`) automatically cancels any resting entry orders ([ADR-0006](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
+- `GET /healthz` reports that the process is up, `GET /readyz` reports the Execution Mode, and `GET /metrics` serves Prometheus telemetry.
+- On shutdown, `tini` passes `SIGTERM` to Keel, which stops the scheduler, flushes SQLite and applies its shutdown policy (`hold` or `flatten`). On a real exchange account, open positions keep their exchange-side Protective Stops, and OKX's 60-second Dead-Man's Switch cancels any resting entries ([ADR-0006](./docs/adr/0006-okx-attached-protective-stops-and-dead-mans-switch.md)).
+
+### Every environment variable
+
+| Variable                                          | Default                                                  | Purpose                                                                         |
+| :------------------------------------------------ | :------------------------------------------------------- | :------------------------------------------------------------------------------ |
+| `KEEL_MASTER_KEY`                                 | _(required)_                                             | Vault master key: at least 32 characters, 12 of them distinct                   |
+| `PORT` / `HOST`                                   | `8080` / `0.0.0.0`                                       | Listen address inside the container                                             |
+| `DATA_DIR` or `KEEL_DB_PATH`                      | in-memory                                                | Where SQLite lives. Without either, everything is lost on restart               |
+| `BACKUPS_DIR` or `KEEL_BACKUPS_DIR`               | unset                                                    | Where backups go                                                                |
+| `LOG_LEVEL`                                       | `info`                                                   | Pino log level                                                                  |
+| `KEEL_ALLOW_INSECURE_HTTP`                        | `false` (`true` in the compose file)                     | Sign-in over plain HTTP on a trusted LAN                                        |
+| `KEEL_ENABLE_SCHEDULER`                           | `false` (`true` in the compose file and Unraid template) | Hourly bars and Fleet steps                                                     |
+| `KEEL_BOOTSTRAP_TOKEN`                            | generated                                                | Sets the one-time first-admin token instead of generating one                   |
+| `KEEL_CF_ACCESS_SECRET`                           | unset                                                    | Cloudflare Access JWT signing secret                                            |
+| `KEEL_AI_SIMULATE_RESPONSES`                      | `false`                                                  | Deterministic simulated AI answers and Shipyard samples (used by the e2e suite) |
+| `ANTHROPIC_API_KEY`                               | unset                                                    | Used when the vault has no `anthropicApiKey`; a blank value counts as unset     |
+| `KEEL_GEMINI_API_KEY`, `KEEL_DISCORD_WEBHOOK_URL` | unset                                                    | Used when the vault has no `geminiApiKey` or `discordWebhookUrl`                |
+
+OKX keys have no environment fallback: they live only in the vault.
 
 ---
 
-## Development Commands
+## In the dry dock
 
 ```bash
 pnpm install        # Install workspace dependencies
-pnpm build          # Build @keel/core, @keel/api, and @keel/web
-pnpm typecheck      # Strict TypeScript check across all packages
-pnpm lint           # ESLint strict check (zero `any` in domain code)
-pnpm format:check   # Prettier formatting verification
-pnpm test           # Run Vitest unit & fast-check property suites
-pnpm test:e2e       # Run Playwright end-to-end browser tests
+pnpm build          # Build every package
+pnpm typecheck      # Strict TypeScript across packages
+pnpm lint           # ESLint, no `any` in domain code
+pnpm format:check   # Prettier
+pnpm test           # Vitest unit and fast-check property suites
+pnpm test:e2e       # Playwright end-to-end tests
+pnpm check-claims   # Every documented claim maps to a passing test
 ```
+
+To build the image yourself: `docker build -t keel .`
