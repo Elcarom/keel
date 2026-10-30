@@ -54,6 +54,25 @@ export function HealthBadge({ health }: { health: Bot["health"] }) {
   );
 }
 
+/** How the boat ranks against propositions (ADR-0033). */
+export function StandingBadge({ standing }: { standing: Bot["standing"] }) {
+  if (!standing) return null;
+  return (
+    <span
+      data-testid="boat-standing"
+      title={
+        standing.proven
+          ? "Its sea-trial score, shifting towards its live paper results over its first 90 days. A proposition must beat it clearly to take its place."
+          : "Still proving itself: its sea-trial score for now. It cannot be replaced yet."
+      }
+      className="rounded-full border border-slate-500/40 px-2 py-0.5 text-[11px] font-semibold text-slate-200"
+    >
+      Standing {standing.score}
+      {standing.proven ? "" : " · proving"}
+    </span>
+  );
+}
+
 /**
  * Live equity since launch against what the sea trial expected: the band runs from the trial's
  * 5th-percentile resampled return to its median, scaled to the days the boat has sailed.
@@ -192,6 +211,7 @@ export function BoatPage({
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
+            <StandingBadge standing={bot.standing} />
             <HealthBadge health={bot.health} />
             <StatusChip status={bot.status} />
           </div>

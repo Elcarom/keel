@@ -39,6 +39,13 @@ WORKDIR /app
 RUN apk add --no-cache su-exec tini wget sqlite && \
     corepack enable && corepack prepare pnpm@9.15.4 --activate
 
+# The Claude Code CLI lets the night shift use the operator's Claude subscription (ADR-0033)
+RUN apk add --no-cache libgcc libstdc++ ripgrep && \
+    npm install -g @anthropic-ai/claude-code@2.1.312 && npm cache clean --force
+
+ENV DISABLE_AUTOUPDATER=1 \
+    USE_BUILTIN_RIPGREP=0
+
 ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0 \

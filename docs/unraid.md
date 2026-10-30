@@ -63,6 +63,16 @@ Keel never exposes an open setup page. On first boot against an empty `/data` vo
 2. Copy the one-time bootstrap setup token printed to stdout.
 3. Visit your Keel URL, enter the bootstrap token, set your strong admin password, and enroll your TOTP authenticator.
 
+### Linking your Claude subscription
+
+The night shift can research, invent and upgrade Boats on your Claude subscription rather than an API key ([ADR-0033](./adr/0033-self-managing-fleet.md)). The image already contains the Claude Code CLI.
+
+1. On any computer with Claude Code installed, run `claude setup-token` and sign in. It prints a long-lived token.
+2. In Keel, open **Engine Room → Secrets**, choose `claudeCodeToken`, and save the token. You can instead fill in the template's **Claude Subscription Token** field.
+3. In **Engine Room → Settings**, turn on **Night Shift** and **Autopilot**. Then open a paper wallet named **Autopilot** in the Treasury.
+
+The research counts towards your plan's usage limits, so it runs once a night at the set hour.
+
 ---
 
 ## 5. Updating & Graceful Shutdown

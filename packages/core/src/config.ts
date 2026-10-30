@@ -136,11 +136,19 @@ export const FleetConfigSchema = z.object({
   autopilotWalletName: z.string().min(1).max(40).default("Autopilot"),
   autopilotMinScore: z.number().int().min(45).max(100).default(65),
   autopilotStakePct: z.number().min(1).max(100).default(10),
+  /** The most running boats the Autopilot keeps in its wallet; past it, a newcomer must replace one. */
+  autopilotMaxBoats: z.number().int().min(1).max(30).default(8),
+  /** How many points a challenger must out-score a boat's Standing by to replace it. */
+  autopilotReplaceMargin: z.number().int().min(0).max(50).default(10),
+  /** Days at sea before a boat's Standing counts and it can be replaced. */
+  autopilotMinLiveDays: z.number().int().min(3).max(90).default(14),
   nightShiftEnabled: z.boolean().default(false),
-  nightShiftCadence: z.enum(["daily", "weekly"]).default("weekly"),
+  nightShiftCadence: z.enum(["daily", "weekly"]).default("daily"),
   nightShiftHourUtc: z.number().int().min(0).max(23).default(2),
   nightShiftCount: z.number().int().min(2).max(6).default(4),
   nightShiftMode: z.enum(["blueprint", "inventor"]).default("inventor"),
+  /** How many proven boats the night shift asks Claude to improve each time it runs. */
+  nightShiftUpgrades: z.number().int().min(0).max(3).default(1),
   rebalanceEnabled: z.boolean().default(false)
 });
 export type FleetConfig = z.infer<typeof FleetConfigSchema>;
@@ -671,7 +679,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "ai.botDesignerModel",
     label: "Bot Designer Claude Model",
     helpText:
-      "Claude model that drafts bot propositions in the Shipyard. Needs the Anthropic API key in the vault; without it the Shipyard drafts sample propositions.",
+      "Claude model that drafts bot propositions in the Shipyard. Needs a Claude subscription token (claudeCodeToken) or an Anthropic API key in the vault; without either the Shipyard drafts sample propositions.",
     defaultValue: "claude-opus-5-5",
     riskClass: "safe"
   },
@@ -796,6 +804,37 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     riskClass: "confirm"
   },
   {
+    path: "fleet.autopilotMaxBoats",
+    label: "Autopilot Fleet Size",
+    helpText:
+      "The most running boats the Autopilot keeps in its wallet. When it is full, a newcomer must clearly beat the weakest boat to replace it.",
+    min: 1,
+    max: 30,
+    defaultValue: 8,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.autopilotReplaceMargin",
+    label: "Replacement Margin",
+    helpText:
+      "How many points a proposition's sea-trial score must beat a boat's Standing by before the Autopilot swaps one for the other.",
+    min: 0,
+    max: 50,
+    defaultValue: 10,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.autopilotMinLiveDays",
+    label: "Days Before a Boat Is Judged",
+    helpText:
+      "A boat cannot be replaced or upgraded until it has paper traded this long, so the fleet does not churn on noise.",
+    unit: "days",
+    min: 3,
+    max: 90,
+    defaultValue: 14,
+    riskClass: "confirm"
+  },
+  {
     path: "fleet.nightShiftEnabled",
     label: "Night Shift",
     helpText: "Draw up a Shipyard brief on a schedule, so new ideas arrive on their own.",
@@ -806,7 +845,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "fleet.nightShiftCadence",
     label: "Night Shift Cadence",
     helpText: "How often the night shift drafts a brief.",
-    defaultValue: "weekly",
+    defaultValue: "daily",
     riskClass: "safe"
   },
   {
@@ -833,6 +872,16 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     label: "Night Shift Mode",
     helpText: "Blueprints fill reviewed shapes; Inventor has Claude write new rules.",
     defaultValue: "inventor",
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftUpgrades",
+    label: "Night Shift Upgrades",
+    helpText:
+      "How many proven boats the night shift asks Claude to improve each time. An improved version replaces its boat only if it clearly out-scores it.",
+    min: 0,
+    max: 3,
+    defaultValue: 1,
     riskClass: "safe"
   },
   {

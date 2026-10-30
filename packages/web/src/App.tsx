@@ -983,6 +983,9 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
                     className={inputClass}
                   >
                     <option value="geminiApiKey">geminiApiKey</option>
+                    <option value="claudeCodeToken">
+                      claudeCodeToken (Claude subscription, from `claude setup-token`)
+                    </option>
                     <option value="anthropicApiKey">anthropicApiKey (Shipyard bot designer)</option>
                     <option value="discordWebhookUrl">discordWebhookUrl</option>
                     <option value="okxApiKey">okxApiKey</option>

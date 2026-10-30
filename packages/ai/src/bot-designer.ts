@@ -28,6 +28,41 @@ export interface BotDesignResult {
   readonly note: string | null;
 }
 
+/**
+ * What the night shift has learned, for Claude to build on (ADR-0033). Each line is plain words
+ * Keel wrote from its own numbers.
+ */
+export interface DesignResearch {
+  /** Every boat at sea: its sea trial set against its live paper record. */
+  readonly fleetReport: readonly string[];
+  /** Recent ideas that failed their sea trial, and why. */
+  readonly lessons: readonly string[];
+  /** The boat an Upgrade should improve on; null when the brief fills gaps. */
+  readonly improve: {
+    readonly name: string;
+    readonly blueprint: BotBlueprint;
+    readonly record: string;
+  } | null;
+}
+
+/** The research fields of a design request, worded for Claude. */
+function researchFields(research: DesignResearch | undefined): Record<string, unknown> {
+  if (!research) return {};
+  return {
+    fleetReport: research.fleetReport.length > 0 ? research.fleetReport : "no boats at sea yet",
+    lessonsFromFailedIdeas: research.lessons.length > 0 ? research.lessons : "none yet",
+    ...(research.improve
+      ? {
+          upgrade: {
+            task: `Improve on the boat "${research.improve.name}". Keep what its record shows works and fix what it shows does not: tighter or looser entries, a better exit, a filter, a different stop, a basket, or a reference market. Each proposition must still be clearly the same idea, better, and use a new name.`,
+            boat: research.improve.blueprint,
+            record: research.improve.record
+          }
+        }
+      : {})
+  };
+}
+
 export interface BotDesignerOptions {
   readonly clock: Clock;
   readonly gateway: LlmGateway;
@@ -361,14 +396,15 @@ export class BotDesigner {
   public async design(
     brief: DesignBrief,
     takenNames: readonly string[],
-    fleetToday = ""
+    fleetToday = "",
+    research?: DesignResearch
   ): Promise<BotDesignResult> {
-    if (brief.mode === "inventor") return this.invent(brief, takenNames, fleetToday);
+    if (brief.mode === "inventor") return this.invent(brief, takenNames, fleetToday, research);
     if (!this.isLive()) {
       return {
         source: "sample",
         blueprints: this.finish(sampleBlueprints(brief), brief, takenNames),
-        note: "No Anthropic API key is set, so these are sample propositions. Add the key under Engine Room → Secrets to have Claude design your boats."
+        note: "Claude is not linked, so these are sample propositions. Add a Claude subscription token (claudeCodeToken) or an Anthropic API key under Engine Room → Secrets to have Claude design your boats."
       };
     }
 
@@ -381,7 +417,8 @@ export class BotDesigner {
       operatorNotes: brief.notes || "none",
       namesAlreadyInTheFleet: takenNames,
       fleetToday: fleetToday || "unknown",
-      diversity: "Prefer styles, coins and horizons the fleet today lacks."
+      diversity: "Prefer styles, coins and horizons the fleet today lacks.",
+      ...researchFields(research)
     });
 
     const response = await this.gateway.completeStructured(
@@ -408,7 +445,8 @@ export class BotDesigner {
   private async invent(
     brief: DesignBrief,
     takenNames: readonly string[],
-    fleetToday: string
+    fleetToday: string,
+    research: DesignResearch | undefined
   ): Promise<BotDesignResult> {
     const check = this.checkInvention;
     if (!check) throw new Error("Inventor mode is not available on this server");
@@ -419,7 +457,7 @@ export class BotDesigner {
       return {
         source: "sample",
         blueprints: this.uniqueNames(okBlueprints(results), takenNames),
-        note: "No Anthropic API key is set, so these are Keel's own sample inventions. Add the key under Engine Room → Secrets to have Claude invent strategies for you."
+        note: "Claude is not linked, so these are Keel's own sample inventions. Add a Claude subscription token (claudeCodeToken) or an Anthropic API key under Engine Room → Secrets to have Claude invent strategies for you."
       };
     }
 
@@ -445,7 +483,8 @@ export class BotDesigner {
         operatorNotes: brief.notes || "none",
         namesAlreadyInTheFleet: takenNames,
         fleetToday: fleetToday || "unknown",
-        diversity: "Prefer mechanisms, coins and horizons the fleet today lacks."
+        diversity: "Prefer mechanisms, coins and horizons the fleet today lacks.",
+        ...researchFields(research)
       })
     );
     let results = checkAll(first.parsed.propositions.slice(0, brief.count));

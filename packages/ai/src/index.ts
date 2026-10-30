@@ -764,11 +764,18 @@ export {
   type ClaudeMessagesClient
 } from "./claude.js";
 export {
+  ClaudeCodeLlmGateway,
+  type ClaudeCodeGatewayOptions,
+  type CliRun,
+  type CliRunner
+} from "./claude-code.js";
+export {
   BotDesigner,
   sampleBlueprints,
   withUniqueNames,
   type BotDesignResult,
-  type BotDesignerOptions
+  type BotDesignerOptions,
+  type DesignResearch
 } from "./bot-designer.js";
 export {
   INVENTOR_SYSTEM_PROMPT,

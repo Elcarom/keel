@@ -106,6 +106,7 @@ The compose file defaults are set for a home server:
 | `KEEL_PORT`                | `8080`  | The host port. Change it if 8080 is taken; the container always listens on 8080 inside                                               |
 | `KEEL_ALLOW_INSECURE_HTTP` | `true`  | Lets you sign in over plain `http://` on your LAN. Requests over HTTPS still get `Secure` cookies. Set `false` if you only use HTTPS |
 | `KEEL_ENABLE_SCHEDULER`    | `true`  | Fetches new hourly bars and steps the Fleet. Without it, boats never trade                                                           |
+| `CLAUDE_CODE_OAUTH_TOKEN`  | blank   | Optional: your Claude subscription, from `claude setup-token`. Lets the night shift research and upgrade boats with no API key       |
 | `ANTHROPIC_API_KEY`        | blank   | Optional: lets Claude design boats. You can store it in the vault instead, or skip it and use **⇅ Inventor via your chat**           |
 
 **Unraid template.** Copy [`deploy/unraid/keel-template.xml`](./deploy/unraid/keel-template.xml) to `/boot/config/plugins/dockerMan/templates-user/my-keel.xml`, then choose **Docker → Add Container → Keel**. Fill in the master key, check the paths and port, and click **Apply**. See [`docs/unraid.md`](./docs/unraid.md) for the details, including moving from the old `psychic-octo-funicular` image name.
@@ -167,15 +168,19 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 
 ### Unattended duties
 
-Fixed rules run after every scheduler step, on paper only. A model never decides what to launch, dock or fund ([ADR-0030](./docs/adr/0030-fleet-duties-and-diversity.md)). Switch them in **Engine Room → Settings**:
+Fixed rules run after every scheduler step, on paper only. A model never decides what to launch, dock, replace or fund ([ADR-0030](./docs/adr/0030-fleet-duties-and-diversity.md), [ADR-0033](./docs/adr/0033-self-managing-fleet.md)). Switch them in **Engine Room → Settings**:
 
-| Duty         | Starts | What it does                                                                                                             |
-| :----------- | :----- | :----------------------------------------------------------------------------------------------------------------------- |
-| Drift watch  | on     | Docks a boat doing clearly worse than its Sea Trial expected                                                             |
-| Daily digest | on     | Sends a Discord summary of every boat once a day                                                                         |
-| Autopilot    | off    | Launches seaworthy, original Propositions, funded only from a wallet named **Autopilot**, whose balance is its whole cap |
-| Night shift  | off    | Drafts a new brief daily or weekly (needs an Anthropic key)                                                              |
-| Rebalancing  | off    | Evens out the stakes of a wallet's flat boats every Monday                                                               |
+| Duty         | Starts | What it does                                                                                                                                                                                                                       |
+| :----------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Drift watch  | on     | Docks a boat doing clearly worse than its Sea Trial expected                                                                                                                                                                       |
+| Daily digest | on     | Sends a Discord summary of every boat once a day                                                                                                                                                                                   |
+| Autopilot    | off    | Manages the boats in a wallet named **Autopilot**, whose balance is its whole cap. It launches seaworthy, original Propositions until the fleet is full, then replaces the weakest proven boat with one that clearly out-scores it |
+| Night shift  | off    | Each night, shows Claude every boat's record and the ideas that failed, then asks for new ideas and an Upgrade of the weakest proven boat                                                                                          |
+| Rebalancing  | off    | Evens out the stakes of a wallet's flat boats every Monday                                                                                                                                                                         |
+
+**A fleet that runs itself.** Turn on the night shift and the Autopilot, and open a paper wallet named **Autopilot**. Each night Claude studies the fleet and drafts new ideas and Upgrades; every one faces a Sea Trial. Each boat has a **Standing**: its Sea Trial score at launch, shifting towards its live paper results over its first 90 days. When the fleet is full (8 boats by default), a Proposition must beat the weakest proven boat's Standing by 10 points to take its place. An Upgrade must beat the boat it improves on by the same margin. A boat is only judged after 14 days at sea, and at most one boat is replaced a day. Boats in other wallets are never touched.
+
+**Claude on your subscription.** The image ships the official Claude Code CLI. On any computer with Claude Code, run `claude setup-token`. Then put the token into the vault as `claudeCodeToken`, or set `CLAUDE_CODE_OAUTH_TOKEN`. Keel then calls Claude through your plan instead of the API. It uses no tools and keeps no session, and an API key is used only when no token is set. The research counts towards your plan's usage limits, which is why it runs once a night.
 
 ---
 
@@ -198,6 +203,7 @@ Fixed rules run after every scheduler step, on paper only. A model never decides
 | `KEEL_BOOTSTRAP_TOKEN`                            | generated                                                | Sets the one-time first-admin token instead of generating one                   |
 | `KEEL_CF_ACCESS_SECRET`                           | unset                                                    | Cloudflare Access JWT signing secret                                            |
 | `KEEL_AI_SIMULATE_RESPONSES`                      | `false`                                                  | Deterministic simulated AI answers and Shipyard samples (used by the e2e suite) |
+| `CLAUDE_CODE_OAUTH_TOKEN`                         | unset                                                    | Used when the vault has no `claudeCodeToken`; preferred over an API key         |
 | `ANTHROPIC_API_KEY`                               | unset                                                    | Used when the vault has no `anthropicApiKey`; a blank value counts as unset     |
 | `KEEL_GEMINI_API_KEY`, `KEEL_DISCORD_WEBHOOK_URL` | unset                                                    | Used when the vault has no `geminiApiKey` or `discordWebhookUrl`                |
 

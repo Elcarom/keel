@@ -26,7 +26,7 @@ import {
   tone,
   usd
 } from "./ui.js";
-import { HealthBadge } from "./boat-page.js";
+import { HealthBadge, StandingBadge } from "./boat-page.js";
 import { DutiesPanel } from "./logbook.js";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,7 @@ export function BotCard({
         <div className="flex flex-col items-end gap-1">
           <StatusChip status={bot.status} />
           {bot.status !== "retired" && <HealthBadge health={bot.health} />}
+          <StandingBadge standing={bot.standing} />
           <span className="rounded-full border border-sky-400/30 px-2 py-0.5 text-[10px] font-semibold tracking-wider text-sky-200 uppercase">
             Paper
           </span>

@@ -9,7 +9,8 @@ import {
   type Proposition
 } from "@keel/core";
 import { createSqliteDataStore } from "@keel/data";
-import { FleetDuties, driftOf, type FleetDutiesPort } from "../src/fleet-duties.js";
+import { type DesignResearch } from "@keel/ai";
+import { FleetDuties, driftOf, standingOf, type FleetDutiesPort } from "../src/fleet-duties.js";
 
 // Monday 2026-10-26, 08:00 UTC
 const MONDAY_8AM = Date.UTC(2026, 9, 26, 8);
@@ -102,8 +103,22 @@ function bot(overrides: Partial<Bot> = {}): Bot {
     equityHistory: [],
     health: "on_course",
     coins: [],
+    standing: null,
     ...overrides
   };
+}
+
+const DAY = 24 * 3_600_000;
+
+/** A boat launched `days` ago whose equity has moved by `daily` (repeating) each day since. */
+function sailed(days: number, daily: readonly number[], overrides: Partial<Bot> = {}): Bot {
+  const createdAtMs = MONDAY_8AM - days * DAY;
+  let equity = 1000;
+  const equityHistory = Array.from({ length: days }, (_, i) => {
+    equity *= 1 + (daily[i % daily.length] ?? 0);
+    return { ts: createdAtMs + (i + 1) * DAY, equityUsdt: equity.toFixed(2) };
+  });
+  return bot({ createdAtMs, equityHistory, ...overrides });
 }
 
 function proposition(id: string, overrides: Partial<Assessment> = {}): Proposition {
@@ -124,6 +139,8 @@ function proposition(id: string, overrides: Partial<Assessment> = {}): Propositi
 function harness(options: {
   bots?: Bot[];
   propositions?: Proposition[];
+  /** Upgrade batches: the boat each improves on, its propositions, and when it was drawn up. */
+  upgrades?: { upgradeOf: string; propositions: Proposition[]; createdAtMs?: number }[];
   wallets?: { walletId: string; name: string; availableUsdt: string; allocatedUsdt: string }[];
   configure?: (config: KeelConfig) => KeelConfig;
   designer?: string;
@@ -136,7 +153,9 @@ function harness(options: {
   const calls = {
     launched: [] as { propositionId: string; name: string; allocationUsdt: string }[],
     paused: [] as { botId: string; reason: string }[],
+    retired: [] as { botId: string; reason: string }[],
     designed: 0,
+    briefs: [] as { notes: string; research: DesignResearch; upgradeOf: string | null }[],
     rebalanced: [] as string[]
   };
   const port: FleetDutiesPort = {
@@ -145,7 +164,14 @@ function harness(options: {
       wallets: options.wallets ?? [],
       designer: { source: options.designer ?? "claude" }
     }),
-    listDesigns: () => [{ propositions: options.propositions ?? [] }],
+    listDesigns: () => [
+      { createdAtMs: 0, brief: { upgradeOf: null }, propositions: options.propositions ?? [] },
+      ...(options.upgrades ?? []).map((u) => ({
+        createdAtMs: u.createdAtMs ?? 0,
+        brief: { upgradeOf: u.upgradeOf },
+        propositions: u.propositions
+      }))
+    ],
     launch: (propositionId, input) => {
       calls.launched.push({
         propositionId,
@@ -158,8 +184,13 @@ function harness(options: {
       calls.paused.push({ botId, reason });
       return bot({ status: "paused" });
     },
-    design: () => {
+    retire: (botId, reason) => {
+      calls.retired.push({ botId, reason });
+      return bot({ status: "retired" });
+    },
+    design: (brief, research, upgradeOf) => {
       calls.designed += 1;
+      calls.briefs.push({ notes: brief.notes, research, upgradeOf });
       return Promise.resolve();
     },
     rebalanceStakes: (walletId) => {
@@ -299,7 +330,13 @@ describe("Scheduled duties", () => {
     await monday.duties.run();
     expect(monday.calls.designed).toBe(1);
 
-    const tuesday = harness({ configure: nightly, nowMs: MONDAY_8AM + 24 * 3_600_000 });
+    const tuesday = harness({
+      configure: (c) => {
+        const n = nightly(c);
+        return { ...n, fleet: { ...n.fleet, nightShiftCadence: "weekly" } };
+      },
+      nowMs: MONDAY_8AM + 24 * 3_600_000
+    });
     await tuesday.duties.run();
     expect(tuesday.calls.designed).toBe(0);
 
@@ -320,5 +357,206 @@ describe("Scheduled duties", () => {
     await duties.run();
     await duties.run();
     expect(calls.rebalanced).toEqual(["wa", "wb"]);
+  });
+});
+
+// Loses 1% then makes 0.5%, day after day: a clearly losing live record
+const LOSING = [-0.01, 0.005];
+// Makes 1% then gives back 0.5%: a clearly winning one
+const WINNING = [0.01, -0.005];
+
+describe("Standing", () => {
+  it("starts at the sea-trial score and moves towards the live record", () => {
+    expect(standingOf(sailed(0, LOSING), MONDAY_8AM, 14)).toEqual({ score: 80, proven: false });
+    const loser = standingOf(sailed(30, LOSING), MONDAY_8AM, 14);
+    const winner = standingOf(sailed(30, WINNING), MONDAY_8AM, 14);
+    expect(loser?.proven).toBe(true);
+    expect(loser?.score ?? 0).toBeLessThan(60);
+    expect(winner?.score ?? 0).toBeGreaterThan(80);
+    // After 90 days the live record is all that counts
+    expect(standingOf(sailed(120, LOSING), MONDAY_8AM, 14)?.score ?? 99).toBeLessThan(5);
+  });
+
+  it("is still proving itself until it has sailed the set number of days", () => {
+    expect(standingOf(sailed(10, LOSING), MONDAY_8AM, 14)?.proven).toBe(false);
+    expect(standingOf(bot({ backtest: null }), MONDAY_8AM, 14)).toBeNull();
+  });
+});
+
+const FULL = (c: KeelConfig): KeelConfig => ({
+  ...AUTOPILOT(c),
+  fleet: { ...AUTOPILOT(c).fleet, autopilotMaxBoats: 2, autopilotMinScore: 45 }
+});
+/** A different bet from every boat's sea trial, so it is never a lookalike. */
+const DIFFERENT = {
+  ...ASSESSMENT.seaTrial,
+  weeklyEquityPct: Array.from({ length: 40 }, (_, i) => Math.cos(i * 1.7) * 4)
+} as Assessment["seaTrial"];
+
+describe("A full fleet", () => {
+  const fleet = () => [
+    sailed(30, LOSING, { botId: "weak", name: "Leaky Hull", walletId: "wa" }),
+    sailed(30, WINNING, { botId: "strong", name: "Fair Wind", walletId: "wa" })
+  ];
+
+  it("replaces its weakest proven boat with a proposition that clearly out-scores it", async () => {
+    const { duties, calls, sent } = harness({
+      configure: FULL,
+      wallets: [AUTOPILOT_WALLET],
+      bots: fleet(),
+      propositions: [proposition("p1", { score: 70, seaTrial: DIFFERENT })]
+    });
+    await duties.run();
+    expect(calls.retired.map((r) => r.botId)).toEqual(["weak"]);
+    expect(calls.retired[0]?.reason).toMatch(
+      /^Replaced by Idea p1, a better proposition: sea-trial score 70/
+    );
+    expect(calls.launched.map((l) => l.propositionId)).toEqual(["p1"]);
+    expect(sent.map((m) => m.title)).toContain("Autopilot replaced Leaky Hull with Idea p1");
+  });
+
+  it("keeps its boats when no proposition beats the weakest by the margin", async () => {
+    const weakStanding = standingOf(fleet()[0] ?? bot(), MONDAY_8AM, 14)?.score ?? 0;
+    const { duties, calls } = harness({
+      configure: FULL,
+      wallets: [AUTOPILOT_WALLET],
+      bots: fleet(),
+      propositions: [proposition("p1", { score: weakStanding + 9, seaTrial: DIFFERENT })]
+    });
+    await duties.run();
+    expect(calls.retired).toEqual([]);
+    expect(calls.launched).toEqual([]);
+    expect(duties.status().find((d) => d.duty === "autopilot")?.note).toMatch(
+      new RegExp(`needs ${weakStanding + 10} to replace Leaky Hull`)
+    );
+  });
+
+  it("never judges a boat that is still proving itself, nor replaces more than one a day", async () => {
+    const young = harness({
+      configure: FULL,
+      wallets: [AUTOPILOT_WALLET],
+      bots: [
+        sailed(5, LOSING, { botId: "a", name: "A", walletId: "wa" }),
+        sailed(5, LOSING, { botId: "b", name: "B", walletId: "wa" })
+      ],
+      propositions: [proposition("p1", { score: 99, seaTrial: DIFFERENT })]
+    });
+    await young.duties.run();
+    expect(young.calls.retired).toEqual([]);
+
+    const busy = harness({
+      configure: FULL,
+      wallets: [AUTOPILOT_WALLET],
+      bots: [
+        ...fleet(),
+        bot({
+          botId: "gone",
+          name: "Gone",
+          walletId: "wa",
+          status: "retired",
+          retiredAtMs: MONDAY_8AM - 3_600_000,
+          statusReason: "Replaced by Fair Wind, a better proposition"
+        })
+      ],
+      propositions: [proposition("p1", { score: 99, seaTrial: DIFFERENT })]
+    });
+    await busy.duties.run();
+    expect(busy.calls.retired).toEqual([]);
+  });
+
+  it("leaves boats in other wallets alone", async () => {
+    const { duties, calls } = harness({
+      configure: FULL,
+      wallets: [AUTOPILOT_WALLET],
+      bots: [
+        ...fleet(),
+        sailed(60, LOSING, { botId: "mine", name: "Operator's Own", walletId: "w1" })
+      ],
+      propositions: [proposition("p1", { score: 70, seaTrial: DIFFERENT })]
+    });
+    await duties.run();
+    expect(calls.retired.map((r) => r.botId)).toEqual(["weak"]);
+  });
+});
+
+describe("Upgrades", () => {
+  it("an Upgrade that clearly beats its boat takes its place, though it trades much like it", async () => {
+    const parent = sailed(30, LOSING, { botId: "weak", name: "Leaky Hull", walletId: "wa" });
+    const upgrade = proposition("u1", {
+      score: 75,
+      lookalike: { name: "Leaky Hull", kind: "boat", correlation: 0.9 }
+    });
+    const { duties, calls } = harness({
+      configure: AUTOPILOT,
+      wallets: [AUTOPILOT_WALLET],
+      bots: [parent],
+      upgrades: [{ upgradeOf: "weak", propositions: [upgrade] }]
+    });
+    await duties.run();
+    expect(calls.retired.map((r) => r.botId)).toEqual(["weak"]);
+    expect(calls.retired[0]?.reason).toMatch(/its Upgrade/);
+    expect(calls.launched.map((l) => l.propositionId)).toEqual(["u1"]);
+  });
+
+  it("an Upgrade that does not beat its boat never sails beside it", async () => {
+    const parent = sailed(30, WINNING, { botId: "good", name: "Fair Wind", walletId: "wa" });
+    const { duties, calls } = harness({
+      configure: AUTOPILOT,
+      wallets: [AUTOPILOT_WALLET],
+      bots: [parent],
+      upgrades: [
+        { upgradeOf: "good", propositions: [proposition("u1", { score: 80, seaTrial: DIFFERENT })] }
+      ]
+    });
+    await duties.run();
+    expect(calls.retired).toEqual([]);
+    expect(calls.launched).toEqual([]);
+  });
+});
+
+describe("The night shift's research round", () => {
+  const nightly = (c: KeelConfig): KeelConfig => ({
+    ...c,
+    fleet: { ...c.fleet, nightShiftEnabled: true, digestEnabled: false }
+  });
+
+  it("shows Claude the fleet's record and failures, then asks for an Upgrade of the weakest proven boat", async () => {
+    const sunk = proposition("s1", {
+      verdict: "sinks",
+      headline: "Lost 12% after costs",
+      score: 20
+    });
+    const { duties, calls } = harness({
+      configure: nightly,
+      bots: [
+        sailed(30, LOSING, { botId: "weak", name: "Leaky Hull" }),
+        sailed(30, WINNING, { botId: "strong", name: "Fair Wind" }),
+        sailed(3, LOSING, { botId: "young", name: "Newcomer" })
+      ],
+      propositions: [{ ...sunk, createdAtMs: MONDAY_8AM - DAY }]
+    });
+    await duties.run();
+
+    expect(calls.briefs.map((b) => b.upgradeOf)).toEqual([null, "weak"]);
+    const [gaps, upgrade] = calls.briefs;
+    expect(gaps?.research.fleetReport).toHaveLength(3);
+    expect(gaps?.research.fleetReport[0]).toMatch(
+      /^Leaky Hull \(momentum, BTC, running\): sea trial scored 80 .*; at sea 30 days: .*standing \d+\.$/
+    );
+    expect(gaps?.research.lessons).toEqual(["Idea s1 (momentum, BTC) sinks: Lost 12% after costs"]);
+    expect(upgrade?.research.improve?.name).toBe("Leaky Hull");
+    expect(duties.status().find((d) => d.duty === "nightShift")?.note).toBe(
+      "Drafted 4 new ideas; Upgrades of Leaky Hull"
+    );
+  });
+
+  it("does not try to improve the same boat again within two weeks", async () => {
+    const { duties, calls } = harness({
+      configure: nightly,
+      bots: [sailed(30, LOSING, { botId: "weak", name: "Leaky Hull" })],
+      upgrades: [{ upgradeOf: "weak", propositions: [], createdAtMs: MONDAY_8AM - 5 * DAY }]
+    });
+    await duties.run();
+    expect(calls.briefs.map((b) => b.upgradeOf)).toEqual([null]);
   });
 });

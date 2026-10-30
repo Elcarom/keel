@@ -373,7 +373,9 @@ export const MAX_IMPORTED_INVENTIONS = 20;
 
 /** The brief a batch was drawn up under; an imported file may hold more ideas than a brief asks. */
 export const BatchBriefSchema = DesignBriefSchema.extend({
-  count: z.number().int().min(1).max(MAX_IMPORTED_INVENTIONS)
+  count: z.number().int().min(1).max(MAX_IMPORTED_INVENTIONS),
+  /** The boat this batch tries to improve on, when the night shift drew it up as an Upgrade. */
+  upgradeOf: z.string().nullable().default(null)
 });
 export type BatchBrief = z.infer<typeof BatchBriefSchema>;
 
@@ -628,6 +630,11 @@ export const BotSchema = z.object({
   equityHistory: z.array(EquityPointSchema),
   /** "drifting" when the drift watch would dock it; "new" until it has 10 trades. */
   health: z.enum(["new", "on_course", "drifting"]),
+  /**
+   * How the boat ranks against propositions (ADR-0033): its sea-trial score, blended towards its
+   * live paper results the longer it sails. Unproven until it has sailed long enough to judge.
+   */
+  standing: z.object({ score: z.number(), proven: z.boolean() }).nullable().default(null),
   /** For each coin it trades: closed trades and their net P&L. */
   coins: z.array(
     z.object({ instrumentId: z.string(), trades: z.number().int(), pnlUsdt: z.string() })

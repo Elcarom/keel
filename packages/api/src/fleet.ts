@@ -39,7 +39,8 @@ import {
   inventorChatPrompt,
   inventorChatRepairPrompt,
   withUniqueNames,
-  type BotDesigner
+  type BotDesigner,
+  type DesignResearch
 } from "@keel/ai";
 import {
   bookSchemaSql,
@@ -65,7 +66,7 @@ import {
   compileBlueprint,
   readInventionFile
 } from "@keel/spec";
-import { FleetDuties, driftOf } from "./fleet-duties.js";
+import { FleetDuties, driftOf, standingOf } from "./fleet-duties.js";
 import { PaperBroker } from "./paper-broker.js";
 import {
   ASSUMED_FUNDING_BPS_PER_8H,
@@ -342,10 +343,18 @@ export class FleetService {
   // Shipyard: design, assess, rank
   // ------------------------------------------------------------------------
 
-  public async design(brief: DesignBrief): Promise<DesignBatch> {
+  /**
+   * Drafts a batch and queues its sea trials. The night shift passes what the fleet has learned,
+   * and the boat a batch tries to improve on when it is an Upgrade (ADR-0033).
+   */
+  public async design(
+    brief: DesignBrief,
+    research?: DesignResearch,
+    upgradeOf: string | null = null
+  ): Promise<DesignBatch> {
     const taken = this.repo.listBots().map((b) => b.name);
-    const result = await this.designer.design(brief, taken, this.fleetSummary());
-    return this.launchBatch(brief, result.source, result.note, result.blueprints);
+    const result = await this.designer.design(brief, taken, this.fleetSummary(), research);
+    return this.launchBatch({ ...brief, upgradeOf }, result.source, result.note, result.blueprints);
   }
 
   /** The Inventor prompt to paste into a Claude chat, briefed like the Shipyard's own. */
@@ -385,7 +394,8 @@ export class FleetService {
       riskAppetite: "balanced",
       direction: "any",
       count: accepted.length,
-      notes: "Imported from a JSON file"
+      notes: "Imported from a JSON file",
+      upgradeOf: null
     };
     const note =
       rejected.length > 0
@@ -1023,10 +1033,10 @@ export class FleetService {
     return this.botView(this.repo.saveBot({ ...bot, status: "running", statusReason: null }));
   }
 
-  public retire(botId: string): Bot {
+  public retire(botId: string, reason?: string): Bot {
     const bot = this.requireBot(botId);
     if (bot.status === "retired") throw new FleetError(409, "The boat is already retired");
-    this.flattenBot(bot, "Retired");
+    this.flattenBot(bot, reason ?? "Retired");
     const equity = this.equityOf(bot);
     const nowMs = this.clock.nowMs();
     if (equity.isPositive()) {
@@ -1042,7 +1052,7 @@ export class FleetService {
       this.repo.saveBot({
         ...bot,
         status: "retired",
-        statusReason: `Returned ${equity.toFixed(2)} USDT to the wallet`,
+        statusReason: `${reason ? `${reason}. ` : ""}Returned ${equity.toFixed(2)} USDT to the wallet`,
         retiredAtMs: nowMs
       })
     );
@@ -1463,7 +1473,7 @@ export class FleetService {
       };
     });
 
-    const view: Omit<Bot, "health"> = {
+    const view: Omit<Bot, "health" | "standing"> = {
       botId: bot.botId,
       name: bot.name,
       tagline: bot.tagline,
@@ -1495,12 +1505,16 @@ export class FleetService {
       coins
     };
     const health: Bot["health"] =
-      driftOf({ ...view, health: "new" }) !== null
+      driftOf({ ...view, health: "new", standing: null }) !== null
         ? "drifting"
         : view.tradesCount < 10
           ? "new"
           : "on_course";
-    return { ...view, health };
+    const standing =
+      bot.status === "retired"
+        ? null
+        : standingOf(view, nowMs, this.getConfig().fleet.autopilotMinLiveDays);
+    return { ...view, health, standing };
   }
 
   public getBot(botId: string): Bot {

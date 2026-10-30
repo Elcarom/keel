@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. ADR-0033 extends the Autopilot and the night shift.
 
 ## Context and Decision
 

@@ -25,6 +25,9 @@ services:
       - KEEL_ENABLE_SCHEDULER=${KEEL_ENABLE_SCHEDULER:-true}
       # Optional: lets Claude design boats. You can store it in the Engine Room vault instead.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Optional: your Claude subscription, from `claude setup-token`, so the night shift can
+      # research new boats without an API key. You can store it in the vault instead.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
     ports:
       # Host port on the left: change KEEL_PORT if 8080 is taken
       - "${KEEL_PORT:-8080}:8080"

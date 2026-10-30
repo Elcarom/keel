@@ -13,6 +13,7 @@ export const SecretKeyNameSchema = z.enum([
   "okxPassphrase",
   "geminiApiKey",
   "anthropicApiKey",
+  "claudeCodeToken",
   "discordWebhookUrl"
 ]);
 export type SecretKeyName = z.infer<typeof SecretKeyNameSchema>;

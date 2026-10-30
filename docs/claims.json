@@ -784,5 +784,41 @@
     "claim": "ADR-0031: Funding older than the endpoint reaches is backfilled from OKX's monthly archive.",
     "testFile": "packages/data/test/funding-archive.test.ts",
     "testName": "fills funding older than the history endpoint from the archive, once"
+  },
+  {
+    "id": "CLAIM-SUBSCRIPTION-NO-TOOLS",
+    "claim": "ADR-0033: Claude is reached through the Claude Code CLI with no tools, signed in only with the subscription token.",
+    "testFile": "packages/ai/test/claude-code.test.ts",
+    "testName": "asks the Claude Code CLI with no tools, signed in only with the subscription token"
+  },
+  {
+    "id": "CLAIM-STANDING-BLEND",
+    "claim": "ADR-0033: A boat's Standing starts at its sea-trial score and moves towards its live record.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "starts at the sea-trial score and moves towards the live record"
+  },
+  {
+    "id": "CLAIM-REPLACE-WEAKEST",
+    "claim": "ADR-0033: A full fleet replaces its weakest proven boat only with a proposition that beats its Standing by the margin.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "replaces its weakest proven boat with a proposition that clearly out-scores it"
+  },
+  {
+    "id": "CLAIM-REPLACE-PATIENT",
+    "claim": "ADR-0033: Boats still proving themselves are never judged, and at most one boat is replaced a day.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "never judges a boat that is still proving itself, nor replaces more than one a day"
+  },
+  {
+    "id": "CLAIM-UPGRADE-REPLACES",
+    "claim": "ADR-0033: An Upgrade that clearly beats its boat replaces it.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "an Upgrade that clearly beats its boat takes its place, though it trades much like it"
+  },
+  {
+    "id": "CLAIM-RESEARCH-ROUND",
+    "claim": "ADR-0033: The night shift shows Claude the fleet's record and failures and asks for an Upgrade of the weakest proven boat.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "shows Claude the fleet's record and failures, then asks for an Upgrade of the weakest proven boat"
   }
 ]

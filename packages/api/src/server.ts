@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import fastifyStatic from "@fastify/static";
 import {
   CONFIG_FIELD_REGISTRY,
@@ -43,6 +44,7 @@ import {
 } from "@keel/data";
 import {
   BotDesigner,
+  ClaudeCodeLlmGateway,
   ClaudeLlmGateway,
   ContextAnalyst,
   EventGateAdvisor,
@@ -190,11 +192,29 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
     getApiKey: () =>
       getSecretSafe("anthropicApiKey") ?? (process.env["ANTHROPIC_API_KEY"]?.trim() || null)
   });
+  // The operator's own Claude subscription, through the Claude Code CLI (ADR-0033)
+  const claudeCodeGateway = new ClaudeCodeLlmGateway({
+    getConfig: () => getActiveSnapshot().config.ai,
+    getToken: () =>
+      getSecretSafe("claudeCodeToken") ?? (process.env["CLAUDE_CODE_OAUTH_TOKEN"]?.trim() || null),
+    homeDir: path.join(process.env["DATA_DIR"] ?? tmpdir(), "claude-code"),
+    command: process.env["KEEL_CLAUDE_CLI"]?.trim() || undefined
+  });
+  // A linked subscription is preferred: it is not billed per call
+  const designerGateway: LlmGateway = {
+    completeStructured: (request, schema) =>
+      claudeCodeGateway.hasToken()
+        ? claudeCodeGateway.completeStructured(request, schema)
+        : claudeGateway.completeStructured(request, schema),
+    getRemainingDailyBudgetUsd: () => claudeGateway.getRemainingDailyBudgetUsd(),
+    getRemainingMonthlyBudgetUsd: () => claudeGateway.getRemainingMonthlyBudgetUsd()
+  };
   const designerIsLive = (): boolean =>
-    claudeGateway.hasApiKey() && !getActiveSnapshot().config.ai.simulateResponses;
+    (claudeCodeGateway.hasToken() || claudeGateway.hasApiKey()) &&
+    !getActiveSnapshot().config.ai.simulateResponses;
   const botDesigner =
     options.botDesigner ??
-    new BotDesigner({ clock, gateway: claudeGateway, isLive: designerIsLive, checkInvention });
+    new BotDesigner({ clock, gateway: designerGateway, isLive: designerIsLive, checkInvention });
 
   const okxIngestor =
     options.marketIngestor ?? new OkxPublicIngestor({ marketDataRepo: dataStore.marketDataRepo });

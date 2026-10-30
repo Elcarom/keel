@@ -189,8 +189,20 @@ One of the Fleet's unattended, rule-based jobs that run after every scheduler st
 _Avoid_: Bot, agent, automation
 
 **Autopilot**:
-The Fleet Duty that launches seaworthy, original Propositions onto paper by itself, funded only from the Autopilot wallet, whose balance is its whole cap.
+The Fleet Duty that manages the Boats in the Autopilot wallet, whose balance is its whole cap. It launches seaworthy, original Propositions until the fleet is full, then replaces the weakest proven Boat with a Proposition or Upgrade whose score clearly beats its Standing.
 _Avoid_: Auto-trader
+
+**Night Shift**:
+The Fleet Duty that has Claude research the fleet each night: Claude sees every Boat's record and the ideas that failed, then drafts new Propositions and Upgrades.
+_Avoid_: Research agent, background AI
+
+**Standing**:
+How a Boat ranks against Propositions: its Sea Trial score at launch, shifting towards its live paper results over its first 90 days at sea. A Boat is proven, and can be replaced, once it has sailed long enough to judge.
+_Avoid_: Rank (a Proposition's rank is within its design batch), live score
+
+**Upgrade**:
+A Proposition the Night Shift drew up to improve on one proven Boat: the same idea, made better. It replaces that Boat only if its score clearly beats the Boat's Standing, and never sails beside it.
+_Avoid_: Version, fork, retune
 
 **Drift Watch**:
 The Fleet Duty that docks a Boat doing clearly worse than its Sea Trial expected.
