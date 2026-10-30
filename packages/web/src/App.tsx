@@ -28,6 +28,7 @@ import {
   type SystemStatusResponse
 } from "@keel/core";
 import { initClient } from "@ts-rest/core";
+import { DutySettings } from "./fleet/duty-settings.js";
 
 const apiClient = initClient(keelApiContract, {
   baseUrl: "",
@@ -882,6 +883,14 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
                 </div>
               </div>
 
+              <DutySettings
+                config={draftConfig.fleet}
+                registry={registry}
+                riskBadge={RISK_BADGE_STYLES}
+                inputClass={inputClass}
+                onChange={(fleet) => setDraftConfig({ ...draftConfig, fleet })}
+              />
+
               <div className="mt-4 grid gap-4 md:grid-cols-3">
                 <div>
                   <label className="mb-1 block text-xs font-medium">Reason for Change</label>
@@ -905,6 +914,18 @@ export function App({ onSignedIn, onExitEngineRoom }: EngineRoomProps = {}) {
                     placeholder="Confirm operator password"
                     className={inputClass}
                   />
+                  <input
+                    data-testid="step-up-totp-input"
+                    type="text"
+                    inputMode="numeric"
+                    value={stepUpTotpCode}
+                    onChange={(e) => setStepUpTotpCode(e.target.value)}
+                    placeholder="Authenticator code, if you enrolled one"
+                    className={`${inputClass} mt-2`}
+                  />
+                  <p className="mt-1 text-[11px] opacity-70">
+                    Also needed to store secrets in the vault below.
+                  </p>
                 </div>
                 <div className="flex items-end gap-2">
                   <button

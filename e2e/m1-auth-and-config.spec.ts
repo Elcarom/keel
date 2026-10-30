@@ -28,6 +28,9 @@ test.describe("Keel M1 — End-to-End Auth Bootstrap, Config Governance, Vault, 
 
     // 2. Toggle confirm-class setting (AI Strategy Lab), preview diff, and save v2
     await page.getByTestId("toggle-strategy-lab").check();
+    // The Fleet duties are switched on from the same draft (ADR-0033)
+    await page.getByTestId("duty-nightShiftEnabled").check();
+    await page.getByTestId("duty-autopilotEnabled").check();
     await page.getByTestId("preview-diff-btn").click();
     await expect(page.getByTestId("diff-preview-box")).toContainText("Highest Risk: confirm");
     await expect(page.getByTestId("diff-preview-box")).toContainText("Step-Up Required: true");
@@ -37,6 +40,8 @@ test.describe("Keel M1 — End-to-End Auth Bootstrap, Config Governance, Vault, 
 
     await expect(page.getByTestId("gov-success-banner")).toContainText("Saved Config Version v2");
     await expect(page.getByTestId("config-version-display")).toHaveText("v2");
+    await expect(page.getByTestId("duty-nightShiftEnabled")).toBeChecked();
+    await expect(page.getByTestId("duty-autopilotEnabled")).toBeChecked();
 
     const v2Hash = (await page.getByTestId("config-hash-display").textContent())?.trim();
     expect(v2Hash).not.toBe(initialHash);
