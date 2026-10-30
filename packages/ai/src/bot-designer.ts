@@ -73,6 +73,10 @@ Reversion:
 - rsi_reversal: enters as the L-bar RSI climbs back above 50-10T (long) or falls back below 50+10T (short); T 2 means 30/70. T 1.5-3.5.
 - failed_breakout: the previous bar poked beyond the L-bar channel and this bar closed back inside it; trades back into the range. T unused.
 - capitulation_fade: a bar whose range exceeds T times the L-bar ATR, against the trend (below the L-bar average for longs), that still closes up, above its open (down for shorts): the panic was absorbed. T 1.5-3.
+Pairs (set pairWith to the second coin; the boat holds instrumentId against it, one leg long and one short, so it is close to market-neutral):
+- pair_reversion: the L-bar z-score of the log price ratio of instrumentId to pairWith at or below -T buys instrumentId and sells pairWith (the mirror at or above T), and closes both legs when the ratio is back at its mean. Pick two coins that usually move together. T 1.5-3.
+- pair_momentum: when instrumentId has steadily outrun pairWith over L bars (the ratio's drift is at least T times its own noise) it buys instrumentId and sells pairWith (the mirror for -T), and closes when the drift has faded. T 1-2.5.
+A pair's legs share one stop distance, stopAtrMultiple times the wider ATR of the two coins, and leave together; rewardMultiple and trailingAtrMultiple are ignored, and maxBarsHeld defaults to three lookbacks. Leave pairWith null for every other archetype.
 Every trade has a protective stop stopAtrMultiple ATRs away and a take-profit at rewardMultiple times the risk. Two optional exits change a boat's character: trailingAtrMultiple (0.5-6) ratchets the stop that many ATRs behind each close so trends can run (pair it with a high rewardMultiple), and maxBarsHeld (2-240) closes a position after that many hours (good for reversion). Use null for either to leave it off.
 
 Propose genuinely different ideas: vary archetype, family, horizon and risk, prefer the styles and instruments the operator asked for, and spread propositions across the instruments offered. Be honest in the rationale about when the idea should fail. Each proposition goes through an automatic sea trial: a two-year backtest, cost stress, walk-forward, parameter nudges and a sibling market. So favour ideas with a structural reason to work over finely tuned numbers, and do not invent performance numbers.`;
@@ -88,6 +92,24 @@ interface SampleArchetype {
 }
 
 const SAMPLES: Readonly<Record<BotArchetype, SampleArchetype>> = {
+  pair_reversion: {
+    names: ["Catamaran", "Twin Hulls", "Outrigger", "Tandem"],
+    tagline: "Sails two hulls lashed together, leaning on whichever one has drifted too far ahead.",
+    rationale:
+      "Coins that share a story usually move together, so a stretched gap between them tends to close while the market's own swings cancel out. It fails when the gap opens for a reason, such as news on one coin, and keeps widening.",
+    lookback: 72,
+    fast: 24,
+    threshold: 2
+  },
+  pair_momentum: {
+    names: ["Slipstream", "Wake Rider", "Tow Line", "Drafting"],
+    tagline: "Tucks in behind the faster of two boats and rides its wake until it slows.",
+    rationale:
+      "Relative strength between related coins tends to persist for days as money rotates from one to the other, and holding both sides takes most of the market's swing out. It suffers when leadership flips back and forth.",
+    lookback: 96,
+    fast: 24,
+    threshold: 1.5
+  },
   breakout: {
     names: ["Breakwater", "Squall Line", "Bow Wave", "Harbour Gate"],
     tagline: "Waits behind the harbour wall, then charges through when price breaks the channel.",
@@ -210,6 +232,7 @@ const SAMPLES: Readonly<Record<BotArchetype, SampleArchetype>> = {
 /** "Surprise me" deals archetypes across families, the less common ideas first. */
 const SURPRISE_ORDER: readonly BotArchetype[] = [
   "squeeze_breakout",
+  "pair_reversion",
   "regime_momentum",
   "failed_breakout",
   "keltner_ride",
@@ -221,7 +244,8 @@ const SURPRISE_ORDER: readonly BotArchetype[] = [
   "breakout",
   "mean_reversion",
   "momentum",
-  "ma_crossover"
+  "ma_crossover",
+  "pair_momentum"
 ];
 
 interface RiskShape {
@@ -262,7 +286,13 @@ export function withUniqueNames(
 
 /** Drafts propositions without a model: varied, deterministic, shaped by the brief. */
 export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraftInput[] {
-  const styles = brief.styles.length > 0 ? brief.styles : SURPRISE_ORDER;
+  // A surprise pair needs two of the brief's coins; asked for by name, it borrows a sibling
+  const styles =
+    brief.styles.length > 0
+      ? brief.styles
+      : SURPRISE_ORDER.filter(
+          (a) => brief.instruments.length >= 2 || ARCHETYPE_FAMILY[a] !== "pairs"
+        );
   const shape = RISK_SHAPES[brief.riskAppetite];
   const drafts: BotBlueprintDraftInput[] = [];
   for (let i = 0; i < brief.count; i++) {
@@ -278,6 +308,15 @@ export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraftInput[] {
           })
         : [];
     const sample = SAMPLES[archetype];
+    // A pair holds its coin against the brief's next coin
+    const pairWith =
+      ARCHETYPE_FAMILY[archetype] === "pairs"
+        ? (brief.instruments.find(
+            (m, k) => m !== instrumentId && k > i % brief.instruments.length
+          ) ??
+          brief.instruments.find((m) => m !== instrumentId) ??
+          null)
+        : null;
     // Later rounds of the same archetype sail a slower horizon so they are not duplicates
     const stretch = 1 + round * 0.75;
     drafts.push({
@@ -292,7 +331,8 @@ export function sampleBlueprints(brief: DesignBrief): BotBlueprintDraftInput[] {
       stopAtrMultiple: shape.stopAtrMultiple,
       rewardMultiple: shape.rewardMultiple,
       rationale: `${sample.rationale} (${ARCHETYPE_LABELS[archetype]}, ${brief.riskAppetite} sizing.)`,
-      basket,
+      basket: pairWith ? [] : basket,
+      pairWith,
       // Trend followers let winners run on a trailing stop; reversion trades are given a day
       trailingAtrMultiple: ARCHETYPE_FAMILY[archetype] === "trend" ? 3 : null,
       maxBarsHeld: ARCHETYPE_FAMILY[archetype] === "reversion" ? 24 : null
@@ -463,7 +503,12 @@ export class BotDesigner {
           : (brief.instruments[0] ?? draft.instrumentId),
         direction: brief.direction === "any" ? draft.direction : brief.direction,
         // A basket only holds coins the brief allows
-        basket: (draft.basket ?? []).filter((m) => brief.instruments.includes(m))
+        basket: (draft.basket ?? []).filter((m) => brief.instruments.includes(m)),
+        // So does a pair, when the brief has a second coin to offer
+        pairWith:
+          draft.pairWith && brief.instruments.includes(draft.pairWith)
+            ? draft.pairWith
+            : (brief.instruments.find((m) => m !== draft.instrumentId) ?? null)
       });
       const name = uniqueName(blueprint.name, taken);
       taken.add(name.toLowerCase());

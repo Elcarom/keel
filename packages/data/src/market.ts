@@ -24,6 +24,7 @@ import {
   type RawOkxCandlePayload,
   type SettledFundingRate
 } from "@keel/core";
+import { fetchOkxFundingArchive, plainDecimal } from "./okx-archive.js";
 
 export const MARKET_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS confirmed_bars (
@@ -247,8 +248,8 @@ export function createMarketDataRepository(db: DatabaseSync): MarketDataReposito
       db.exec("BEGIN TRANSACTION");
       try {
         for (const r of rates) {
-          const fundingRate = ScaledDecimal.fromString(r.fundingRate).toString();
-          const realizedRate = ScaledDecimal.fromString(r.realizedRate).toString();
+          const fundingRate = ScaledDecimal.fromStringRounded(r.fundingRate).toString();
+          const realizedRate = ScaledDecimal.fromStringRounded(r.realizedRate).toString();
           insertFundingStmt.run(r.instrumentId, r.fundingTs, fundingRate, realizedRate);
           count += 1;
         }
@@ -786,6 +787,8 @@ export interface OkxPublicIngestorOptions {
   readonly marketDataRepo: MarketDataRepository;
   readonly fetchHistoryCandles?: FetchOkxHistoryCandlesFn | undefined;
   readonly fetchHistoryFunding?: FetchOkxHistoryFundingFn | undefined;
+  /** Settled rates older than the funding-rate-history endpoint reaches (OKX monthly archive). */
+  readonly fetchArchivedFunding?: FetchOkxHistoryFundingFn | undefined;
   readonly fetchFn?: typeof fetch | undefined;
   readonly requestDelayMs?: number | undefined;
 }
@@ -797,6 +800,7 @@ export class OkxPublicIngestor {
   private readonly marketDataRepo: MarketDataRepository;
   private readonly fetchHistoryCandles: FetchOkxHistoryCandlesFn;
   private readonly fetchHistoryFunding: FetchOkxHistoryFundingFn;
+  private readonly fetchArchivedFunding: FetchOkxHistoryFundingFn;
 
   public constructor(options: OkxPublicIngestorOptions) {
     this.marketDataRepo = options.marketDataRepo;
@@ -844,6 +848,16 @@ export class OkxPublicIngestor {
         return collected;
       });
 
+    this.fetchArchivedFunding =
+      options.fetchArchivedFunding ??
+      (({ instrumentId, fromFundingTs, toFundingTs }) =>
+        fetchOkxFundingArchive({
+          instrumentId,
+          fromTs: fromFundingTs,
+          toTs: toFundingTs,
+          fetchFn: fetchFunc
+        }));
+
     this.fetchHistoryFunding =
       options.fetchHistoryFunding ??
       (async ({ instrumentId, fromFundingTs, toFundingTs }) => {
@@ -874,8 +888,8 @@ export class OkxPublicIngestor {
               collected.push({
                 instrumentId: row.instId,
                 fundingTs,
-                fundingRate: row.fundingRate,
-                realizedRate: row.realizedRate ?? row.fundingRate
+                fundingRate: plainDecimal(row.fundingRate),
+                realizedRate: plainDecimal(row.realizedRate ?? row.fundingRate)
               });
             }
           }
@@ -930,13 +944,37 @@ export class OkxPublicIngestor {
     };
   }
 
+  /** Stores the settled funding rates in a recent window, from funding-rate-history only. */
+  public async ingestRecentFundingRates(input: {
+    instrumentId: string;
+    fromFundingTs: number;
+    toFundingTs: number;
+  }): Promise<number> {
+    return this.marketDataRepo.ingestSettledFunding(await this.fetchHistoryFunding(input));
+  }
+
+  /**
+   * Stores the settled funding rates in a window: the recent ones from funding-rate-history,
+   * then whatever is still missing from OKX's monthly archive.
+   */
   public async ingestFundingRates(input: {
     instrumentId: string;
     fromFundingTs: number;
     toFundingTs: number;
   }): Promise<number> {
-    const rates = await this.fetchHistoryFunding(input);
-    return this.marketDataRepo.ingestSettledFunding(rates);
+    let inserted = this.marketDataRepo.ingestSettledFunding(await this.fetchHistoryFunding(input));
+    const gaps = this.marketDataRepo.detectFundingGaps(input);
+    const first = gaps[0];
+    const last = gaps[gaps.length - 1];
+    if (first && last) {
+      const archived = await this.fetchArchivedFunding({
+        instrumentId: input.instrumentId,
+        fromFundingTs: first.missingFromTs,
+        toFundingTs: last.missingToTs
+      });
+      inserted += this.marketDataRepo.ingestSettledFunding(archived);
+    }
+    return inserted;
   }
 }
 

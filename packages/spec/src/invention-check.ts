@@ -44,7 +44,9 @@ export const InventionDraftSchema = z.object({
   shortExit: z.unknown().optional(),
   trailingAtrMultiple: z.number().nullable().optional(),
   maxBarsHeld: z.number().nullable().optional(),
-  basket: z.array(z.string()).max(20).optional()
+  basket: z.array(z.string()).max(20).optional(),
+  /** The second coin of a pair, held against instrumentId (ADR-0032). */
+  pairWith: z.string().nullable().optional()
 });
 
 export type InventionCheck =
@@ -168,9 +170,15 @@ export function checkInvention(
       `indicator "${tooLong.id}": a ${tooLong.timeframe} period may cover at most ${MAX_HIGHER_TIMEFRAME_HOURS / TIMEFRAME_HOURS[tooLong.timeframe]} bars`
     );
   }
-  const unpaired = d.indicators.find((i) => i.kind === "correlation" && i.market === undefined);
+  const unpaired = d.indicators.find(
+    (i) => (i.kind === "correlation" || i.kind === "spread") && i.market === undefined
+  );
   if (unpaired) {
-    return fail(`indicator "${unpaired.id}": correlation needs the "market" to correlate with`);
+    return fail(
+      unpaired.kind === "correlation"
+        ? `indicator "${unpaired.id}": correlation needs the "market" to correlate with`
+        : `indicator "${unpaired.id}": spread needs the "market" to measure the traded coin against`
+    );
   }
   const foreign = d.indicators.find((i) => i.market !== undefined && !isFleetInstrument(i.market));
   if (foreign) {
@@ -207,11 +215,30 @@ export function checkInvention(
   const instrumentId: FleetInstrument = instruments.includes(d.instrumentId)
     ? (d.instrumentId as FleetInstrument)
     : (brief.instruments[0] ?? FLEET_INSTRUMENTS[0]);
+  // A pair holds its second coin against the first and trades nothing else
+  let pairWith: FleetInstrument | null = null;
+  if (d.pairWith !== undefined && d.pairWith !== null) {
+    if (!isFleetInstrument(d.pairWith) || !instruments.includes(d.pairWith)) {
+      return fail(`pairWith: "${d.pairWith}" must be one of ${brief.instruments.join(", ")}`);
+    }
+    if (d.pairWith === instrumentId)
+      return fail("pairWith must be a different coin from instrumentId");
+    if ((d.basket ?? []).length > 0)
+      return fail("a pair trades its two coins only: leave basket empty");
+    if (!JSON.stringify([d.indicators, d.longEntry, d.shortEntry]).includes(`"${d.pairWith}"`)) {
+      return fail(
+        `a pair's entry rules must read its other coin: give an indicator "market": "${d.pairWith}" (a spread, say)`
+      );
+    }
+    pairWith = d.pairWith as FleetInstrument;
+  }
   // The basket keeps only coins the brief allows, after the boat's own market
-  const basket = blueprintMarkets({
-    instrumentId,
-    basket: (d.basket ?? []).filter((m): m is FleetInstrument => instruments.includes(m))
-  }).slice(1);
+  const basket = pairWith
+    ? []
+    : blueprintMarkets({
+        instrumentId,
+        basket: (d.basket ?? []).filter((m): m is FleetInstrument => instruments.includes(m))
+      }).slice(1);
   const direction = brief.direction === "any" ? d.direction : brief.direction;
   const indicators = d.indicators.map((i) => ({
     id: i.id,
@@ -226,12 +253,15 @@ export function checkInvention(
   const stopAtrMultiple = clamp(d.stopAtrMultiple, 0.5, 6);
   const rewardMultiple = clamp(d.rewardMultiple, 0.8, 6);
   const trailingAtrMultiple =
-    d.trailingAtrMultiple === null || d.trailingAtrMultiple === undefined
+    pairWith || d.trailingAtrMultiple === null || d.trailingAtrMultiple === undefined
       ? null
       : clamp(d.trailingAtrMultiple, 0.5, 6);
+  // A pair always has a time limit, as a pair blueprint does
   const maxBarsHeld =
     d.maxBarsHeld === null || d.maxBarsHeld === undefined
-      ? null
+      ? pairWith
+        ? Math.min(240, lookbackPeriod * 3)
+        : null
       : clamp(d.maxBarsHeld, 2, 240, true);
 
   const invention: Invention = {
@@ -257,6 +287,7 @@ export function checkInvention(
     basket,
     trailingAtrMultiple,
     maxBarsHeld,
+    pairWith,
     invention: {
       ...invention,
       rules: describeInvention(
@@ -267,7 +298,8 @@ export function checkInvention(
           instrumentId,
           basket,
           trailingAtrMultiple,
-          maxBarsHeld
+          maxBarsHeld,
+          pairWith
         },
         invention
       )
@@ -276,6 +308,7 @@ export function checkInvention(
 
   try {
     compileBlueprint(blueprint, "invention_check");
+    if (pairWith) compileBlueprint(blueprint, "invention_check", 1);
   } catch (err) {
     if (err instanceof z.ZodError) return fail(zodMessage(err));
     return fail(err instanceof Error ? err.message : String(err));

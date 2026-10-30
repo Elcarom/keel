@@ -82,8 +82,11 @@ export function exitsLabel(b: Pick<BotBlueprint, "trailingAtrMultiple" | "maxBar
   );
 }
 
-/** The coins a boat trades: "BTC perp" for one, "SOL + AVAX + LINK" for a basket. */
-export function marketsLabel(b: Pick<BotBlueprint, "instrumentId" | "basket">): string {
+/** The coins a boat trades: "BTC perp" for one, "SOL + AVAX + LINK" for a basket, "ETH vs BTC" for a pair. */
+export function marketsLabel(
+  b: Pick<BotBlueprint, "instrumentId" | "basket"> & Partial<Pick<BotBlueprint, "pairWith">>
+): string {
+  if (b.pairWith) return `${coin(b.instrumentId)} vs ${coin(b.pairWith)}`;
   const markets = blueprintMarkets(b);
   return markets.length === 1 ? pair(b.instrumentId) : markets.map(coin).join(" + ");
 }
@@ -216,6 +219,22 @@ export function ArchetypeIcon({
           <circle cx="12" cy="12" r="8" />
           <circle cx="12" cy="12" r="3.5" />
           <path d="m6.3 6.3 3.2 3.2M14.5 14.5l3.2 3.2M17.7 6.3l-3.2 3.2M9.5 14.5l-3.2 3.2" />
+        </svg>
+      );
+    case "pair_reversion":
+      return (
+        <svg {...common}>
+          <path d="M3 8c3-3 6 3 9 0s6 3 9 0" />
+          <path d="M3 16c3 3 6-3 9 0s6-3 9 0" />
+          <path d="M12 9.5v5" />
+        </svg>
+      );
+    case "pair_momentum":
+      return (
+        <svg {...common}>
+          <path d="M3 17 10 10l3 3 8-8" />
+          <path d="M3 20h18" />
+          <path d="M16 5h5v5" />
         </svg>
       );
   }

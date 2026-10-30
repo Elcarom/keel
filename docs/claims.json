@@ -754,5 +754,35 @@
     "claim": "ADR-0031: Funding is read as of each bar; a rate settled later is not visible.",
     "testFile": "packages/spec/test/exits-and-indicators.test.ts",
     "testName": "reads the traded coin's settled funding as of each bar, in basis points"
+  },
+  {
+    "id": "CLAIM-PAIR-LEGS-TOGETHER",
+    "claim": "ADR-0032: A pair's legs enter on the same bar, on opposite sides, at the same notional.",
+    "testFile": "packages/replay/test/pairs.test.ts",
+    "testName": "buys the lagging coin and sells the other, both legs together and the same size"
+  },
+  {
+    "id": "CLAIM-PAIR-NO-LONE-LEG",
+    "claim": "ADR-0032: When one leg is stopped out, the other closes at that bar's close.",
+    "testFile": "packages/replay/test/pairs.test.ts",
+    "testName": "never leaves one leg at sea: when a leg is stopped out, the other closes on that bar"
+  },
+  {
+    "id": "CLAIM-PAIR-MIRRORED",
+    "claim": "ADR-0032: A pair's legs run mirrored rules, so one buys exactly when the other sells.",
+    "testFile": "packages/spec/test/pairs.test.ts",
+    "testName": "compile into mirrored legs: one buys exactly when the other sells"
+  },
+  {
+    "id": "CLAIM-PAIR-LIVE",
+    "claim": "ADR-0032: A live pair boat never holds one leg without the other.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "sea-trials a pair on both legs together, then trades the legs as one"
+  },
+  {
+    "id": "CLAIM-FUNDING-ARCHIVE",
+    "claim": "ADR-0031: Funding older than the endpoint reaches is backfilled from OKX's monthly archive.",
+    "testFile": "packages/data/test/funding-archive.test.ts",
+    "testName": "fills funding older than the history endpoint from the archive, once"
   }
 ]

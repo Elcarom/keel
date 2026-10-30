@@ -28,7 +28,8 @@ export const INDICATOR_OUTPUTS: Readonly<Record<IndicatorKind, readonly string[]
   adx: ["adx", "plus_di", "minus_di"],
   bollinger: ["percent_b", "upper", "lower", "bandwidth"],
   percentile: ["percentile"],
-  correlation: ["correlation", "beta"]
+  correlation: ["correlation", "beta"],
+  spread: ["zscore", "momentum"]
 };
 
 /** The furthest an invention may look back with `shift`, in bars. */
@@ -47,7 +48,8 @@ const KIND_NAMES: Readonly<Record<IndicatorKind, string>> = {
   adx: "ADX",
   bollinger: "Bollinger %B",
   percentile: "percentile rank",
-  correlation: "correlation"
+  correlation: "correlation",
+  spread: "spread"
 };
 
 const OUTPUT_NAMES: Readonly<Record<string, string>> = {
@@ -116,6 +118,11 @@ function describeExpr(expr: NumExpr, defs: ReadonlyMap<string, IndicatorDef>): s
       if (!def) return expr.id;
       const coin = def.market ? `${coinOf(def.market)} ` : "";
       const tf = def.timeframe ? `${TIMEFRAME_WORDS[def.timeframe]} ` : "";
+      // A spread is the traded coin measured against its market, not the market itself
+      if (def.kind === "spread") {
+        const what = expr.output === "momentum" ? "drift" : "z-score";
+        return `${what} of the ${tf}spread to ${coinOf(def.market ?? "")} (${def.period})${ago(expr.shift)}`;
+      }
       const base = `${coin}${tf}${KIND_NAMES[def.kind]}(${def.period})`;
       // A kind's main output reads as the indicator itself; secondary outputs are named
       const main = INDICATOR_OUTPUTS[def.kind][0];
@@ -218,6 +225,7 @@ export function describeInvention(
     readonly instrumentId?: string | undefined;
     readonly trailingAtrMultiple?: number | null | undefined;
     readonly maxBarsHeld?: number | null | undefined;
+    readonly pairWith?: string | null | undefined;
   },
   invention: Invention
 ): string[] {
@@ -229,6 +237,27 @@ export function describeInvention(
           `Trades ${[b.instrumentId, ...b.basket].map(coinOf).join(", ")} with the same rules, one position per coin`
         ]
       : [];
+  if (b.pairWith && b.instrumentId) {
+    const own = coinOf(b.instrumentId);
+    const other = coinOf(b.pairWith);
+    return [
+      `A pair: ${own} against ${other}, one long and one short, entering and leaving together`,
+      b.direction === "short_only"
+        ? `Never buys ${own} against ${other}`
+        : `Buys ${own} and sells ${other} when ${describeCondition(rules.longEntry, defs)}`,
+      b.direction === "long_only"
+        ? `Never sells ${own} against ${other}`
+        : `Sells ${own} and buys ${other} when ${describeCondition(rules.shortEntry, defs)}`,
+      `Each leg's stop ${b.stopAtrMultiple}× the wider ATR(14) of the two coins away`,
+      ...(rules.longExit
+        ? [`Closes a bought pair when ${describeCondition(rules.longExit, defs)}`]
+        : []),
+      ...(rules.shortExit
+        ? [`Closes a sold pair when ${describeCondition(rules.shortExit, defs)}`]
+        : []),
+      ...(b.maxBarsHeld ? [`Closes both legs after ${b.maxBarsHeld} hours`] : [])
+    ];
+  }
   return [
     b.direction === "short_only"
       ? "Never goes long"

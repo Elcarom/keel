@@ -721,6 +721,19 @@ export class PaperBroker implements Broker {
   }
 
   /**
+   * Closes one open position at a bar's close, as an EXIT order with adverse slippage. The pair
+   * rule uses it to close a leg left on its own (ADR-0032).
+   */
+  public closePosition(
+    pos: PaperPositionRecord,
+    mark: ScaledDecimal,
+    reason: string,
+    asOfMs: number
+  ): PaperPositionRecord {
+    return this.closeAtMarket(pos, mark, reason, "EXIT", asOfMs);
+  }
+
+  /**
    * Closes one position at a market price with adverse exit slippage (ADR-0014). Without a price
    * it exits at the entry price and books fees only.
    */

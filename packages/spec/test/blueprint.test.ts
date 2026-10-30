@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BOT_ARCHETYPES,
+  PAIR_ARCHETYPES,
   TIMEFRAME_DURATION_MS,
   normalizeBlueprint,
   type BotBlueprintDraft,
@@ -88,7 +89,10 @@ describe("Bot blueprints", () => {
     for (const archetype of BOT_ARCHETYPES) {
       const spec = compileBlueprint(normalizeBlueprint({ ...DRAFT, archetype }), "bot_abc");
       expect(spec.name).toBe("bot_abc");
-      expect(spec.risk.stopModel.kind).toBe("atr_multiple");
+      // A pair's legs share one percentage stop (ADR-0032)
+      expect(spec.risk.stopModel.kind).toBe(
+        PAIR_ARCHETYPES.has(archetype) ? "pair_atr" : "atr_multiple"
+      );
       expect(new SpecStrategy(spec).strategyId).toBe("bot_abc");
     }
   });
@@ -168,17 +172,35 @@ function bar(i: number, o: number, h: number, l: number, c: number, volume = 10)
   };
 }
 
-function propose(strategy: SpecStrategy, bars: readonly ConfirmedBar[]) {
+function propose(
+  strategy: SpecStrategy,
+  bars: readonly ConfirmedBar[],
+  referenceBars?: Readonly<Record<string, readonly ConfirmedBar[]>>
+) {
   return strategy.evaluate({
     instrumentId: "BTC-USDT-SWAP",
     asOfMs: bars[bars.length - 1]?.closeTs ?? 0,
     barsByTimeframe: { "1H": bars },
-    recentFundingRates: []
+    recentFundingRates: [],
+    ...(referenceBars ? { referenceBars } : {})
   }).proposals;
 }
 
 describe("Boat archetypes on a changing sea", () => {
   const market = regimeBars(2400);
+  // A pair's other coin: the same sea, drifting ahead of and behind the first in slow swells
+  const partner = market.map((b, i) => {
+    const f = 1 + 0.04 * Math.sin(i / 30);
+    const at = (v: string) => (Number(v) * f).toFixed(6);
+    return {
+      ...b,
+      instrumentId: "ETH-USDT-SWAP",
+      open: at(b.open),
+      high: at(b.high),
+      low: at(b.low),
+      close: at(b.close)
+    };
+  });
 
   it.each(BOT_ARCHETYPES)(
     "%s trades both sides, always with the protective stop on the losing side",
@@ -192,8 +214,10 @@ describe("Boat archetypes on a changing sea", () => {
       const window = strategy.lookbacks["1H"] ?? 50;
       let longs = 0;
       let shorts = 0;
+      const reads = strategy.referenceMarkets.length > 0;
       for (let end = window; end <= market.length; end++) {
-        for (const p of propose(strategy, market.slice(end - window, end))) {
+        const refs = reads ? { "ETH-USDT-SWAP": partner.slice(end - window, end) } : undefined;
+        for (const p of propose(strategy, market.slice(end - window, end), refs)) {
           const entry = Number(p.entryPrice);
           const stop = Number(p.protectiveStopPrice);
           if (p.side === "long") {

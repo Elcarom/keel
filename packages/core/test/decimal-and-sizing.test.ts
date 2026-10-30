@@ -43,6 +43,15 @@ describe("@keel/core — ScaledDecimal fixed-point arithmetic", () => {
     expect(rawQty.roundDownToLot(lot).toString()).toBe("14");
   });
 
+  it("rounds venue rates with more than 8 decimals half away from zero", () => {
+    expect(ScaledDecimal.fromStringRounded("0.0000892989172342").toString()).toBe("0.0000893");
+    expect(ScaledDecimal.fromStringRounded("0.0000892949999999").toString()).toBe("0.00008929");
+    expect(ScaledDecimal.fromStringRounded("-0.0000123450000001").toString()).toBe("-0.00001235");
+    expect(ScaledDecimal.fromStringRounded("-0.000000004").toString()).toBe("0");
+    expect(ScaledDecimal.fromStringRounded("0.0001").toString()).toBe("0.0001");
+    expect(() => ScaledDecimal.fromStringRounded("1e-5")).toThrow(/Invalid/);
+  });
+
   it("satisfies exact string round-trip, additive associativity, mul/divFloor, and tick/lot rounding invariants (fast-check)", () => {
     const arbCents = fc.bigInt({ min: -1_000_000_000_000n, max: 1_000_000_000_000n });
     const arbPos = fc.bigInt({ min: 1n, max: 1_000_000_000_000n });

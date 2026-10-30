@@ -14,5 +14,5 @@ Many ideas mix horizons, such as trading the hour in the direction of the day. O
 
 ## Consequences
 
-- OKX's public funding history reaches back only a few months. Across most of the two-year sea-trial window `funding` reads 0, so a strategy built only on funding rarely trades in its trial. The prompts tell Claude this, and the trial's funding label says when funding was assumed.
+- OKX's funding-rate endpoint reaches back only about three months. Keel therefore backfills the sea-trial window from OKX's monthly funding archive, once per coin, and the scheduler keeps funding current from the endpoint. When neither can be reached, the trial assumes funding and its funding label says so.
 - No new data is ingested: higher-timeframe bars come from the hourly bars Keel already holds.

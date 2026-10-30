@@ -44,13 +44,16 @@ export const ARCHETYPE_HINTS: Record<BotArchetype, string> = {
   regime_momentum: "Momentum, but only with the big current",
   rsi_reversal: "Catches the turn out of an overstretched sea",
   failed_breakout: "Bets on breakouts that bounce off the wall",
-  capitulation_fade: "Buys what a panic bar left behind"
+  capitulation_fade: "Buys what a panic bar left behind",
+  pair_reversion: "Two coins lashed together: leans on the one that drifted too far",
+  pair_momentum: "Holds the faster of two coins against the slower"
 };
 
 export const FAMILY_LABELS: Record<ArchetypeFamily, string> = {
   trend: "Trend followers",
   breakout: "Breakouts",
-  reversion: "Reversion"
+  reversion: "Reversion",
+  pairs: "Pairs: one coin against another"
 };
 
 export const MAJORS: readonly FleetInstrument[] = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];

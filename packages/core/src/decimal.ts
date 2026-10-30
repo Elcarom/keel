@@ -38,6 +38,23 @@ export class ScaledDecimal {
     return new ScaledDecimal(isNegative ? -combined : combined);
   }
 
+  /**
+   * Parses a venue-published rate that may carry more than 8 decimals (OKX funding rates have
+   * 16), rounding half away from zero to the 8 this type holds.
+   */
+  public static fromStringRounded(input: string): ScaledDecimal {
+    const trimmed = input.trim();
+    if (!/^[+-]?\d+(\.\d+)?$/.test(trimmed)) {
+      throw new Error(`Invalid ScaledDecimal string: "${input}"`);
+    }
+    const [whole = "0", frac = ""] = trimmed.split(".");
+    if (frac.length <= SCALE_DECIMALS) return ScaledDecimal.fromString(trimmed);
+    const kept = ScaledDecimal.fromString(`${whole}.${frac.slice(0, SCALE_DECIMALS)}`);
+    if (Number(frac.charAt(SCALE_DECIMALS)) < 5) return kept;
+    const ulp = whole.startsWith("-") ? -1n : 1n;
+    return new ScaledDecimal(kept.raw + ulp);
+  }
+
   public toScaledBigInt(): bigint {
     return this.raw;
   }

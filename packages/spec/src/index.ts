@@ -303,6 +303,16 @@ export const RiskRulesSchema = z.object({
     z.object({
       kind: z.literal("fixed_points"),
       points: z.number().positive().max(1_000_000)
+    }),
+    /**
+     * A pair leg's stop: the same percentage away on both legs, the wider of the two coins' ATRs
+     * as a share of price, so stop-risk sizing gives both legs the same notional (ADR-0032).
+     */
+    z.object({
+      kind: z.literal("pair_atr"),
+      multiplier: z.number().min(0.1).max(10),
+      atrPeriod: z.number().int().min(2).max(500),
+      market: MarketIdSchema
     })
   ]),
   takeProfit: z.object({
@@ -452,6 +462,10 @@ export function describeSpec(spec: StrategySpecV1): string {
     );
   } else if (spec.risk.stopModel.kind === "channel_bound") {
     lines.push(`  - Stop Model:  Channel Bound (${spec.risk.stopModel.period}p)`);
+  } else if (spec.risk.stopModel.kind === "pair_atr") {
+    lines.push(
+      `  - Stop Model:  ${spec.risk.stopModel.multiplier}x the wider ATR% of this coin and ${spec.risk.stopModel.market}`
+    );
   } else {
     lines.push(`  - Stop Model:  Fixed Points (${spec.risk.stopModel.points})`);
   }
@@ -850,6 +864,32 @@ function computeIndicators(defs: readonly IndicatorDef[], frame: Frame): Evaluat
         res["beta"] = vy > 0 ? cov / vy : 0;
         break;
       }
+      case "spread": {
+        // The traded coin's log price against the indicator's market (ADR-0032)
+        const own = seriesOf(frame, undefined, def.timeframe);
+        const n = Math.min(own.length, bars.length, def.period + 1);
+        const spread: number[] = [];
+        for (let i = n; i >= 1; i--) {
+          const a = Number(own[own.length - i]?.close ?? 0);
+          const b = Number(bars[bars.length - i]?.close ?? 0);
+          spread.push(a > 0 && b > 0 ? Math.log(a / b) : 0);
+        }
+        const window = spread.slice(-def.period);
+        const mean = window.reduce((acc, v) => acc + v, 0) / (window.length || 1);
+        const sd = Math.sqrt(
+          window.reduce((acc, v) => acc + (v - mean) ** 2, 0) / (window.length || 1)
+        );
+        const last = spread[spread.length - 1] ?? 0;
+        res["zscore"] = sd > 1e-12 ? (last - mean) / sd : 0;
+        const steps = spread.slice(1).map((v, i) => v - (spread[i] ?? v));
+        const stepMean = steps.reduce((acc, v) => acc + v, 0) / (steps.length || 1);
+        const stepSd = Math.sqrt(
+          steps.reduce((acc, v) => acc + (v - stepMean) ** 2, 0) / (steps.length || 1)
+        );
+        const drift = last - (spread[0] ?? last);
+        res["momentum"] = stepSd > 1e-12 ? drift / (stepSd * Math.sqrt(steps.length || 1)) : 0;
+        break;
+      }
       case "momentum": {
         const anchor = bars[bars.length - 1 - def.period];
         const anchorClose = anchor ? Number(anchor.close) : closeNum;
@@ -1035,6 +1075,7 @@ function conditionMarkets(cond: Condition): string[] {
 export function specReferenceMarkets(spec: StrategySpecV1): string[] {
   const markets = [
     ...spec.indicators.flatMap((i) => (i.market ? [i.market] : [])),
+    ...(spec.risk.stopModel.kind === "pair_atr" ? [spec.risk.stopModel.market] : []),
     ...conditionMarkets(spec.rules.longEntry),
     ...conditionMarkets(spec.rules.shortEntry),
     ...(spec.rules.longExit ? conditionMarkets(spec.rules.longExit) : []),
@@ -1183,6 +1224,15 @@ export class SpecStrategy implements Strategy {
       }
       if (this.spec.risk.stopModel.kind === "fixed_points") {
         return Math.max(minVol, this.spec.risk.stopModel.points);
+      }
+      if (this.spec.risk.stopModel.kind === "pair_atr") {
+        const model = this.spec.risk.stopModel;
+        const partner = frame.refs[model.market] ?? [];
+        const partnerClose = Number(partner[partner.length - 1]?.close ?? 0);
+        const ownPct = closeNum > 0 ? computeAtr(bars, model.atrPeriod) / closeNum : 0;
+        const partnerPct =
+          partnerClose > 0 ? computeAtr(partner, model.atrPeriod) / partnerClose : 0;
+        return Math.max(minVol, Math.max(ownPct, partnerPct) * model.multiplier * closeNum);
       }
       if (this.spec.risk.stopModel.kind === "channel_bound") {
         const period = this.spec.risk.stopModel.period;

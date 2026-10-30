@@ -60,6 +60,7 @@ import {
   createPromotionRepository,
   createShadowRepository
 } from "./paper.js";
+import { readOkxFundingArchive } from "./okx-archive.js";
 import { SPEC_SCHEMA_SQL, createStrategySpecRepository } from "./spec-repository.js";
 
 export {
@@ -75,6 +76,7 @@ export {
   createStrategySpecRepository,
   SPEC_SCHEMA_SQL,
   seedSyntheticMarketSeries,
+  readOkxFundingArchive,
   type FetchOkxHistoryCandlesFn,
   type FetchOkxHistoryFundingFn,
   type OkxPublicIngestorOptions

@@ -7,6 +7,7 @@ import {
   ScaledDecimal,
   blueprintMarkets,
   overlapsSealed2026Holdout,
+  pairLegs,
   type Assessment,
   type BatchBrief,
   type Bot,
@@ -14,6 +15,7 @@ import {
   type BotRecord,
   type BotTrade,
   type CircuitBreakerRecord,
+  type ConfirmedBar,
   type Clock,
   type DesignBatch,
   type DesignBrief,
@@ -49,7 +51,14 @@ import {
   type OkxPublicIngestor,
   type SqliteDataStore
 } from "@keel/data";
-import { seedFromString, type ReplayEngine, type ReplayRunResult } from "@keel/replay";
+import {
+  runPairReplay,
+  seedFromString,
+  type PairReplayResult,
+  type ReplayEngine,
+  type ReplayRunResult
+} from "@keel/replay";
+import { reconcilePairLegs } from "@keel/strategy";
 import {
   SpecStrategy,
   checkImportedInvention,
@@ -94,6 +103,34 @@ function siblingFor(
   const preferred = SIBLING_INSTRUMENTS[lead];
   if (!used(preferred)) return preferred;
   return FLEET_INSTRUMENTS.find((m) => !used(m)) ?? preferred;
+}
+
+/** A pair's cross-check: two other coins, each its own leg's sibling where it can be. */
+function siblingPairFor(
+  legs: readonly [FleetInstrument, FleetInstrument],
+  references: readonly FleetInstrument[]
+): readonly [FleetInstrument, FleetInstrument] {
+  const first = siblingFor(legs, references);
+  const used = (m: FleetInstrument) => legs.includes(m) || references.includes(m) || m === first;
+  const preferred = SIBLING_INSTRUMENTS[legs[1]];
+  const second = used(preferred)
+    ? (FLEET_INSTRUMENTS.find((m) => !used(m)) ?? preferred)
+    : preferred;
+  return [first, second];
+}
+
+/** A pair's market for the seasons: the first coin priced in the second, starting at 100. */
+function pairRatioBars(
+  first: readonly ConfirmedBar[],
+  second: readonly ConfirmedBar[]
+): { closeTs: number; close: string }[] {
+  const other = new Map(second.map((b) => [b.closeTs, Number(b.close)]));
+  const rows = first.flatMap((b) => {
+    const o = other.get(b.closeTs);
+    return o && o > 0 ? [{ closeTs: b.closeTs, ratio: Number(b.close) / o }] : [];
+  });
+  const base = rows[0]?.ratio ?? 1;
+  return rows.map((r) => ({ closeTs: r.closeTs, close: ((r.ratio / base) * 100).toFixed(8) }));
 }
 
 const DAY_MS = 24 * HOUR_MS;
@@ -153,7 +190,10 @@ interface BotEngine {
   readonly broker: PaperBroker;
   readonly ledgerRepo: LedgerRepository;
   readonly accountRepo: PaperAccountRepository;
+  /** The boat's own market's strategy: its lookbacks serve every coin it trades. */
   readonly strategy: SpecStrategy;
+  /** A pair compiles once per leg (ADR-0032); every other boat runs one strategy everywhere. */
+  readonly strategyOn: (instrumentId: string) => SpecStrategy;
 }
 
 export interface FleetServiceOptions {
@@ -197,6 +237,8 @@ export class FleetService {
   private readonly engines = new Map<string, BotEngine>();
   private assessQueue: Promise<void> = Promise.resolve();
   private readonly dataFills = new Map<string, Promise<"okx" | "synthetic">>();
+  /** One settled-funding backfill attempt per instrument per process. */
+  private readonly fundingFills = new Map<string, Promise<void>>();
   private readonly seaTrialSettings: SeaTrialSettings;
   /** What each assessing batch's sea trial is doing right now, for the Shipyard. */
   private readonly progress = new Map<string, string>();
@@ -551,6 +593,56 @@ export class FleetService {
     });
   }
 
+  /** Both legs of a pair replayed together on one equity, the pair rule applied (ADR-0032). */
+  private replayPair(
+    blueprint: BotBlueprint,
+    legs: readonly [FleetInstrument, FleetInstrument],
+    strategyId: string,
+    trials: number,
+    full: boolean
+  ): PairReplayResult {
+    const config = this.getConfig();
+    return runPairReplay(this.dataStore.marketDataRepo, {
+      legs: [
+        {
+          instrumentId: legs[0],
+          strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId, 0))
+        },
+        {
+          instrumentId: legs[1],
+          strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId, 1))
+        }
+      ],
+      fromTs: BACKTEST_FROM_TS,
+      toTs: BACKTEST_TO_TS,
+      initialEquityUsdt: ScaledDecimal.fromString(BACKTEST_EQUITY_USDT),
+      riskFractionPerTrade: config.risk.strategy.riskPerTradePct / 100,
+      maxGrossLeverage: config.risk.strategy.maxGrossLeverage,
+      costStressMultiplier: config.promotionLadder.replayCostStressMultiplier,
+      assumedFundingBpsPer8h: ASSUMED_FUNDING_BPS_PER_8H,
+      walkForwardFolds: full ? config.promotionLadder.replayMinWalkForwardFolds : 0,
+      numTrials: Math.max(1, trials),
+      randomEntryPaths: full ? this.seaTrialSettings.randomEntryPaths : 0,
+      seed: seedFromString(strategyId),
+      replayMinTrades: config.promotionLadder.replayMinTrades,
+      replayMinSharpe: config.promotionLadder.replayMinSharpe,
+      replayMinDeflatedSharpeConfidence: config.promotionLadder.replayMinDeflatedSharpeConfidence
+    });
+  }
+
+  /** A boat's backtest: a pair's joint replay, or one replay per coin it trades. */
+  private async replayBoat(
+    blueprint: BotBlueprint,
+    strategyId: string,
+    trials: number,
+    full: boolean
+  ): Promise<TrialRun> {
+    const legs = pairLegs(blueprint);
+    if (!legs) return this.replayBasket(blueprint, strategyId, trials, full);
+    await this.breathe();
+    return this.replayPair(blueprint, legs, strategyId, trials, full);
+  }
+
   /**
    * The full sea trial: the backtest itself, the same idea with each parameter nudged, the same
    * idea on a sibling market, then trade statistics. See ADR-0025.
@@ -573,12 +665,15 @@ export class FleetService {
       await this.breathe();
     }
 
+    const legs = pairLegs(b);
     say(
-      markets.length > 1
-        ? `full backtest on ${markets.map(coin).join(", ")}, cost stress and walk-forward`
-        : "full backtest, cost stress and walk-forward"
+      legs
+        ? `full backtest of ${coin(legs[0])} against ${coin(legs[1])}, cost stress and walk-forward`
+        : markets.length > 1
+          ? `full backtest on ${markets.map(coin).join(", ")}, cost stress and walk-forward`
+          : "full backtest, cost stress and walk-forward"
     );
-    const main = await this.replayBasket(b, proposition.propositionId, trials, true);
+    const main = await this.replayBoat(b, proposition.propositionId, trials, true);
 
     const neighbours: SeaTrialVariant[] = [];
     for (const [i, n] of neighbourBlueprints(b).entries()) {
@@ -586,42 +681,64 @@ export class FleetService {
       neighbours.push(
         variantOf(
           n.label,
-          await this.replayBasket(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
+          await this.replayBoat(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
           initial
         )
       );
     }
 
-    const siblingId = siblingFor(markets, references);
-    say(`sailing the same course on ${coin(siblingId)}`);
     let sibling: (SeaTrialVariant & { instrumentId: string }) | null = null;
-    try {
-      await this.ensureBacktestData(siblingId);
-      await this.breathe();
-      const run = this.replay(
-        { ...b, instrumentId: siblingId, basket: [] },
-        `${proposition.propositionId}_sib`,
-        trials,
-        false
-      );
-      sibling = { ...variantOf(siblingId, run, initial), instrumentId: siblingId };
-    } catch {
-      // No sibling data: the check fails rather than the whole trial
+    if (legs) {
+      // A pair travels well if the same rules work on another pair of coins
+      const pair = siblingPairFor(legs, references);
+      const label = `${coin(pair[0])}/${coin(pair[1])}`;
+      say(`sailing the same course on ${label}`);
+      try {
+        for (const m of pair) await this.ensureBacktestData(m);
+        await this.breathe();
+        const run = this.replayPair(
+          { ...b, instrumentId: pair[0], pairWith: pair[1] },
+          pair,
+          `${proposition.propositionId}_sib`,
+          trials,
+          false
+        );
+        sibling = { ...variantOf(label, run, initial), instrumentId: label };
+      } catch {
+        // No sibling data: the check fails rather than the whole trial
+      }
+    } else {
+      const siblingId = siblingFor(markets, references);
+      say(`sailing the same course on ${coin(siblingId)}`);
+      try {
+        await this.ensureBacktestData(siblingId);
+        await this.breathe();
+        const run = this.replay(
+          { ...b, instrumentId: siblingId, basket: [] },
+          `${proposition.propositionId}_sib`,
+          trials,
+          false
+        );
+        sibling = { ...variantOf(siblingId, run, initial), instrumentId: siblingId };
+      } catch {
+        // No sibling data: the check fails rather than the whole trial
+      }
     }
 
     say("reshuffling trades and scoring");
     await this.breathe();
     const repo = this.dataStore.marketDataRepo;
-    const bars = basketIndexBars(
-      markets.map((instrumentId) =>
-        repo.getConfirmedBarsInRange({
-          instrumentId,
-          timeframe: "1H",
-          fromOpenTs: BACKTEST_FROM_TS,
-          toCloseTs: BACKTEST_TO_TS
-        })
-      )
+    const marketBars = markets.map((instrumentId) =>
+      repo.getConfirmedBarsInRange({
+        instrumentId,
+        timeframe: "1H",
+        fromOpenTs: BACKTEST_FROM_TS,
+        toCloseTs: BACKTEST_TO_TS
+      })
     );
+    const bars = legs
+      ? pairRatioBars(marketBars[0] ?? [], marketBars[1] ?? [])
+      : basketIndexBars(marketBars);
     const settled = markets.every(
       (instrumentId) =>
         repo.getSettledFundingInRange({
@@ -660,11 +777,44 @@ export class FleetService {
     return combineRuns(runs, Number(BACKTEST_EQUITY_USDT), trials);
   }
 
+  /** The backtest window's bars and, for real OKX history, its settled funding. */
+  private async ensureBacktestData(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
+    const source = await this.ensureBacktestBars(instrumentId);
+    if (source === "okx") await this.ensureBacktestFunding(instrumentId);
+    return source;
+  }
+
   /**
-   * Fills the backtest window once per instrument: OKX history when reachable, otherwise a
-   * synthetic series that every assessment then labels as synthetic.
+   * Backfills the window's settled funding from OKX (recent endpoint, then the monthly archive).
+   * A failed attempt leaves the window unsettled, and the sea trial then says funding was assumed.
    */
-  private ensureBacktestData(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
+  private ensureBacktestFunding(instrumentId: FleetInstrument): Promise<void> {
+    const known = this.fundingFills.get(instrumentId);
+    if (known) return known;
+    const fill = (async (): Promise<void> => {
+      const window = { instrumentId, fromTs: BACKTEST_FROM_TS, toTs: BACKTEST_TO_TS };
+      const expected = (BACKTEST_DAYS * 24) / 8;
+      const stored = this.dataStore.marketDataRepo.getSettledFundingInRange(window).length;
+      if (!this.ingestor || stored >= expected * 0.95) return;
+      try {
+        await this.ingestor.ingestFundingRates({
+          instrumentId,
+          fromFundingTs: BACKTEST_FROM_TS,
+          toFundingTs: BACKTEST_TO_TS
+        });
+      } catch {
+        // Unreachable archive: the trial runs on assumed funding
+      }
+    })();
+    this.fundingFills.set(instrumentId, fill);
+    return fill;
+  }
+
+  /**
+   * Fills the backtest window's bars once per instrument: OKX history when reachable, otherwise
+   * a synthetic series that every assessment then labels as synthetic.
+   */
+  private ensureBacktestBars(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
     const known = this.repo.getBacktestDataSource(instrumentId, BACKTEST_FROM_TS);
     if (known) return Promise.resolve(known);
     const inFlight = this.dataFills.get(instrumentId);
@@ -818,7 +968,9 @@ export class FleetService {
     return [
       ...new Set<string>([
         ...blueprintMarkets(bot.blueprint),
-        ...(this.engineFor(bot).strategy.referenceMarkets ?? [])
+        ...blueprintMarkets(bot.blueprint).flatMap(
+          (m) => this.engineFor(bot).strategyOn(m).referenceMarkets ?? []
+        )
       ])
     ];
   }
@@ -989,11 +1141,15 @@ export class FleetService {
         void Promise.resolve().then(() => this.onBotLimit(bot.botId, record));
       }
     });
+    const strategy = new SpecStrategy(compileBlueprint(bot.blueprint, bot.botId));
+    const legs = pairLegs(bot.blueprint);
+    const second = legs ? new SpecStrategy(compileBlueprint(bot.blueprint, bot.botId, 1)) : null;
     const engine: BotEngine = {
       broker,
       ledgerRepo,
       accountRepo,
-      strategy: new SpecStrategy(compileBlueprint(bot.blueprint, bot.botId))
+      strategy,
+      strategyOn: (instrumentId) => (second && instrumentId === legs?.[1] ? second : strategy)
     };
     this.engines.set(bot.botId, engine);
     return engine;
@@ -1033,6 +1189,8 @@ export class FleetService {
   }
 
   private stepBot(bot: BotRecord, nowMs: number): number {
+    const legs = pairLegs(bot.blueprint);
+    if (legs) return this.stepPair(bot, legs, nowMs);
     let ticks = 0;
     for (const instrumentId of blueprintMarkets(bot.blueprint)) {
       ticks += this.stepBotOn(bot, instrumentId, nowMs);
@@ -1040,18 +1198,14 @@ export class FleetService {
     return ticks;
   }
 
-  /** Steps one of a boat's coins through its unprocessed confirmed bars. */
-  private stepBotOn(bot: BotRecord, instrumentId: string, nowMs: number): number {
+  /** A coin's confirmed bars the boat has not processed yet, oldest first (at most 500). */
+  private unprocessedBars(bot: BotRecord, instrumentId: string, nowMs: number): ConfirmedBar[] {
     const engine = this.engineFor(bot);
-    const repo = this.dataStore.marketDataRepo;
     const key = { instrumentId, strategyId: bot.botId };
     const anchor = engine.accountRepo.getSchedulerAnchor(key) ?? 0;
     const last = engine.accountRepo.getLastProcessedBarCloseTs(key) ?? 0;
     const minCloseTs = Math.max(anchor, last);
-    const lookbackBars = (engine.strategy.lookbacks["1H"] ?? 50) + 5;
-    const references = engine.strategy.referenceMarkets ?? [];
-
-    const bars = repo
+    return this.dataStore.marketDataRepo
       .getConfirmedBarsInRange({
         instrumentId,
         timeframe: "1H",
@@ -1060,52 +1214,144 @@ export class FleetService {
       })
       .filter((b) => b.closeTs > minCloseTs)
       .slice(0, 500);
+  }
 
+  /** Steps one of a boat's coins through its unprocessed confirmed bars. */
+  private stepBotOn(bot: BotRecord, instrumentId: string, nowMs: number): number {
     let ticks = 0;
-    for (const bar of bars) {
-      if (overlapsSealed2026Holdout(bar.openTs, bar.closeTs) && nowMs - bar.closeTs > 2 * HOUR_MS) {
-        engine.accountRepo.recordProcessedBar({ ...key, closeTs: bar.closeTs });
-        continue;
-      }
-      const fromOpenTs = bar.openTs - lookbackBars * HOUR_MS;
-      const referenceBars = Object.fromEntries(
-        references.map((market) => [
-          market,
-          repo.getConfirmedBarsInRange({
-            instrumentId: market,
-            timeframe: "1H",
-            fromOpenTs,
-            toCloseTs: bar.closeTs
-          })
-        ])
-      );
-      // A market the rules read has not posted this hour yet: wait for it, within reason
-      const waiting = references.some(
-        (m) => referenceBars[m]?.[referenceBars[m].length - 1]?.closeTs !== bar.closeTs
-      );
-      if (waiting && nowMs - bar.closeTs < REFERENCE_GRACE_MS) break;
-
-      const result = engine.broker.executeConfirmedBarTick({
-        bar,
-        strategy: engine.strategy,
-        featureBars: {
-          "1H": repo.getConfirmedBarsInRange({
-            instrumentId,
-            timeframe: "1H",
-            fromOpenTs,
-            toCloseTs: bar.closeTs
-          })
-        },
-        ...(references.length > 0 ? { referenceBars } : {}),
-        settledFundingRates: repo.getSettledFundingInRange({
-          instrumentId,
-          fromTs: bar.openTs - 9 * HOUR_MS,
-          toTs: bar.closeTs
-        })
-      });
-      if (result.barEvaluated !== null) ticks++;
+    for (const bar of this.unprocessedBars(bot, instrumentId, nowMs)) {
+      const ticked = this.tickBar(bot, instrumentId, bar, nowMs);
+      if (ticked === "wait") break;
+      ticks += ticked;
     }
     return ticks;
+  }
+
+  /**
+   * Steps a pair's two legs hour by hour, both legs on each hour, then keeps them together: a leg
+   * left on its own closes at that hour's close, and entries go ahead only as a matched pair.
+   */
+  private stepPair(
+    bot: BotRecord,
+    legs: readonly [FleetInstrument, FleetInstrument],
+    nowMs: number
+  ): number {
+    const queues = legs.map((m) => this.unprocessedBars(bot, m, nowMs));
+    const hours = [...new Set(queues.flat().map((b) => b.closeTs))].sort((a, b) => a - b);
+    let ticks = 0;
+    for (const closeTs of hours) {
+      for (const [i, instrumentId] of legs.entries()) {
+        const bar = queues[i]?.find((b) => b.closeTs === closeTs);
+        if (!bar) continue;
+        const ticked = this.tickBar(bot, instrumentId, bar, nowMs);
+        if (ticked === "wait") return ticks;
+        ticks += ticked;
+      }
+      this.keepPairTogether(bot, legs, closeTs);
+    }
+    return ticks;
+  }
+
+  /** The pair rule after an hour (ADR-0032), applied to the boat's own paper book. */
+  private keepPairTogether(
+    bot: BotRecord,
+    legs: readonly [FleetInstrument, FleetInstrument],
+    closeTs: number
+  ): void {
+    const engine = this.engineFor(bot);
+    const open = engine.accountRepo.listOpenPositions().filter((p) => p.strategyId === bot.botId);
+    const stateOf = (instrumentId: FleetInstrument) => ({
+      open: open.find((p) => p.instrumentId === instrumentId)?.side ?? null,
+      pending:
+        engine.accountRepo.getPendingProposal({ strategyId: bot.botId, instrumentId })?.side ?? null
+    });
+    const rule = reconcilePairLegs(stateOf(legs[0]), stateOf(legs[1]));
+    for (const i of rule.closeLegs) {
+      const instrumentId = legs[i];
+      const position = open.find((p) => p.instrumentId === instrumentId);
+      const mark = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
+        instrumentId,
+        timeframe: "1H",
+        asOfMs: closeTs,
+        limit: 1
+      })[0];
+      if (position && mark) {
+        engine.broker.closePosition(
+          position,
+          ScaledDecimal.fromString(mark.close),
+          "pair_leg",
+          closeTs
+        );
+      }
+    }
+    if (rule.cancelPending) {
+      for (const instrumentId of legs) {
+        engine.accountRepo.savePendingProposal({
+          strategyId: bot.botId,
+          instrumentId,
+          proposal: null
+        });
+      }
+    }
+  }
+
+  /**
+   * Steps one coin through one confirmed bar. "wait" means a market its rules read has not
+   * posted this hour yet, and the boat waits for it, within reason.
+   */
+  private tickBar(
+    bot: BotRecord,
+    instrumentId: string,
+    bar: ConfirmedBar,
+    nowMs: number
+  ): number | "wait" {
+    const engine = this.engineFor(bot);
+    const repo = this.dataStore.marketDataRepo;
+    const strategy = engine.strategyOn(instrumentId);
+    const key = { instrumentId, strategyId: bot.botId };
+    const lookbackBars = (strategy.lookbacks["1H"] ?? 50) + 5;
+    const references = strategy.referenceMarkets ?? [];
+    if (overlapsSealed2026Holdout(bar.openTs, bar.closeTs) && nowMs - bar.closeTs > 2 * HOUR_MS) {
+      engine.accountRepo.recordProcessedBar({ ...key, closeTs: bar.closeTs });
+      return 0;
+    }
+    const fromOpenTs = bar.openTs - lookbackBars * HOUR_MS;
+    const referenceBars = Object.fromEntries(
+      references.map((market) => [
+        market,
+        repo.getConfirmedBarsInRange({
+          instrumentId: market,
+          timeframe: "1H",
+          fromOpenTs,
+          toCloseTs: bar.closeTs
+        })
+      ])
+    );
+    // A market the rules read has not posted this hour yet: wait for it, within reason
+    const waiting = references.some(
+      (m) => referenceBars[m]?.[referenceBars[m].length - 1]?.closeTs !== bar.closeTs
+    );
+    if (waiting && nowMs - bar.closeTs < REFERENCE_GRACE_MS) return "wait";
+
+    const result = engine.broker.executeConfirmedBarTick({
+      bar,
+      strategy,
+      featureBars: {
+        "1H": repo.getConfirmedBarsInRange({
+          instrumentId,
+          timeframe: "1H",
+          fromOpenTs,
+          toCloseTs: bar.closeTs
+        })
+      },
+      ...(references.length > 0 ? { referenceBars } : {}),
+      settledFundingRates: repo.getSettledFundingInRange({
+        instrumentId,
+        fromTs: bar.openTs - 9 * HOUR_MS,
+        toTs: bar.closeTs
+      })
+    });
+    return result.barEvaluated !== null ? 1 : 0;
   }
 
   // ------------------------------------------------------------------------

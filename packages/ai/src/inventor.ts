@@ -18,9 +18,11 @@ const INVENTOR_LANGUAGE = `Each invention trades USDT perpetuals on confirmed 1-
 
 EXITS (all optional): "longExit" / "shortExit" close an open position at the bar's close when the condition turns true. "trailingAtrMultiple" (0.5-6) ratchets the stop that many ATR(14) behind each close, so winners can run; it never loosens. "maxBarsHeld" (2-240) closes any position after that many hours. Exits are how an idea says when it is over: a reversion trade that has reverted, a trend that has turned, a session that has ended.
 
-Rules may read higher timeframes: "timeframe": "4H" or "1D" builds 4-hour and daily bars from complete hourly ones, so you can trade the hour in the direction of the day. Funding history only reaches back a few months, so across most of the two-year trial "funding" reads 0: use it as a refinement, not the whole idea.
+Rules may read higher timeframes: "timeframe": "4H" or "1D" builds 4-hour and daily bars from complete hourly ones, so you can trade the hour in the direction of the day. Keel holds OKX's settled funding for the whole two-year trial, so "funding" is a real signal: crowded longs pay, crowded shorts are paid.
 
 Rules may also read other markets. Without "market", prices and indicators read the coin being traded (in a basket, each coin in turn). With "market", they read that market's bar for the same hour, e.g. BTC's, whichever coin is traded. Keel only trades once every market the rules read has posted that hour, so nothing reads the future.
+
+PAIRS: set "pairWith" to a second coin and the boat holds "instrumentId" against it, close to market-neutral. When longEntry fires it buys instrumentId and sells pairWith; when shortEntry fires, the reverse. Keel runs the same rules mirrored on the second leg (every "market": pairWith reads instrumentId there), so the legs always take opposite sides, enter together and leave together: if one leg is stopped out, Keel closes the other at that hour's close. The entry rules must read pairWith, usually through a "spread" indicator. Each leg's stop is stopAtrMultiple × the wider ATR(14) of the two coins as a share of price, so both legs carry the same notional; a pair has no basket, no trailing stop and no real target (it leaves on its exit rules), and maxBarsHeld defaults to three times its longest window.
 
 THE LANGUAGE
 Numbers (NumExpr):
@@ -40,6 +42,7 @@ Indicators you declare (1-6), each {"id","kind","period"} with period 2-200, plu
 - adx: adx (trend strength 0-100), plus_di, minus_di · bollinger (2 standard deviations): percent_b (0 at the lower band, 1 at the upper), upper, lower, bandwidth (band width ÷ mean)
 - percentile: percentile (share of the previous period closes below this one, 0-100)
 - correlation (needs "market"): correlation (-1..1) and beta of the traded coin's hourly returns against that market's
+- spread (needs "market"): zscore (of the log price ratio of the traded coin to that market, over period) and momentum (the ratio's drift over period, divided by its own hourly noise)
 
 HARD LIMITS (Keel rejects anything beyond them)
 - longEntry and shortEntry together use at most 32 nodes (every condition and every number counts as one node); longExit and shortExit share a separate 16.
@@ -49,11 +52,11 @@ HARD LIMITS (Keel rejects anything beyond them)
 
 OUTPUT SHAPE
 {"propositions":[ ... ]}, each item:
-{"name","tagline" (one playful sentence),"rationale" (why it should work and when it should fail, 2-3 sentences),"instrumentId","basket" ([] or up to 4 more coins),"direction" ("both"|"long_only"|"short_only"),"indicators":[...],"longEntry":Condition,"shortEntry":Condition,"stopAtrMultiple" (0.5-6),"rewardMultiple" (0.8-6),"longExit" (Condition or null),"shortExit" (Condition or null),"trailingAtrMultiple" (number or null),"maxBarsHeld" (number or null)}
+{"name","tagline" (one playful sentence),"rationale" (why it should work and when it should fail, 2-3 sentences),"instrumentId","basket" ([] or up to 4 more coins),"pairWith" (null, or the second coin of a pair),"direction" ("both"|"long_only"|"short_only"),"indicators":[...],"longEntry":Condition,"shortEntry":Condition,"stopAtrMultiple" (0.5-6),"rewardMultiple" (0.8-6),"longExit" (Condition or null),"shortExit" (Condition or null),"trailingAtrMultiple" (number or null),"maxBarsHeld" (number or null)}
 Markets are written in full, e.g. "SOL-USDT-SWAP". Keel trades and reads: ${FLEET_INSTRUMENTS.join(", ")}.
 
 THE SEA TRIAL
-Keel measures every invention itself: a two-year backtest with doubled costs and funding (a basket is judged as one portfolio across all its coins), walk-forward folds, a random-entry baseline, every window and threshold nudged (windows -25% and +33%, thresholds ±10%), and the same rules on a sibling market outside the basket. Fragile curve-fits sink. Trades should happen often enough to judge: roughly 30-300 over two years.`;
+Keel measures every invention itself: a two-year backtest with doubled costs and funding (a basket is judged as one portfolio across all its coins, a pair on both legs together), walk-forward folds, a random-entry baseline, every window and threshold nudged (windows -25% and +33%, thresholds ±10%), and the same rules on a sibling market outside the basket (for a pair, another pair of coins). Fragile curve-fits sink. Trades should happen often enough to judge: roughly 30-300 over two years.`;
 
 export const INVENTOR_SYSTEM_PROMPT = `You invent trading strategies for Keel, a self-hosted crypto perpetual-futures lab, and you are expected to be original. Keel's theme is the sea: every strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
 
@@ -63,7 +66,7 @@ HOW TO INVENT WELL
 - Start from a mechanism: who is forced to trade, when, and why price should respond. Examples: session opens and closes, weekend illiquidity, volatility regimes, crowded breakouts, exhaustion after a run of bars, volume shocks.
 - Combine signals into ideas a textbook would not list; each proposition must be genuinely different from the others.
 - Design the exit as carefully as the entry: trailing stops for trends, time limits for session and calendar effects, exit rules for reversion that has run its course.
-- Think across markets: BTC leading the alts, one coin's strength against another, a basket of coins that should share an edge. Use a basket when the idea should hold across similar coins; keep one coin when it is specific to one market.
+- Think across markets: BTC leading the alts, one coin's strength against another, a basket of coins that should share an edge, a pair that trades the gap between two coins rather than the market. Use a basket when the idea should hold across similar coins, a pair when the idea is about two coins relative to each other, and one coin when it is specific to one market.
 - Prefer few, structural conditions over finely tuned thresholds.
 - Never claim performance; Keel measures it.
 
@@ -128,7 +131,7 @@ Think it through before you write any JSON. Go wide first: sketch two or three t
   - trend strength (ADX), Bollinger bands, percentile ranks, and correlation or beta against another market
   Long and short rules need not mirror each other.
 - Design the exits, not just the entries. A trailing stop lets a trend run; a time limit ends a session or calendar trade; an exit rule closes a reversion trade once it has reverted. Many ideas are defined more by how they leave than how they arrive.
-- Use baskets. When an idea should hold across similar coins, trade it on a basket of them: it diversifies the boat and gives the sea trial far more evidence. Keep a single coin when the idea is specific to one market. Aim for a real mix of single-coin boats, basket boats and cross-market rules across your ${n}.
+- Use baskets and pairs. When an idea should hold across similar coins, trade it on a basket of them: it diversifies the boat and gives the sea trial far more evidence. When an idea is about two coins relative to each other (a stretched gap, a rotation, a laggard catching up), make it a pair: it holds one against the other and takes most of the market's swing out. Keep a single coin when the idea is specific to one market. Aim for a real mix of single-coin boats, basket boats, pairs and cross-market rules across your ${n}.
 - Make the ideas genuinely different from each other: different mechanisms, horizons and families (trend, breakout, reversion, calendar, volatility, volume, pattern), never two variations of one theme. Skip what a textbook lists first, such as plain moving-average crosses or plain RSI 30/70, unless you give it a real twist.
 - Be bold in the idea and humble in the parameters. Use a few structural conditions and round numbers rather than finely tuned thresholds, because the sea trial nudges every one.
 - Fit the stop and target to each idea's horizon: tight and quick for snapbacks, wide and patient for trends.

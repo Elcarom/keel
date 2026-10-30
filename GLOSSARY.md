@@ -172,6 +172,14 @@ _Avoid_: Bot (in operator-facing text), Strategy, agent, bee
 The further coins a Boat trades with the same rules as its own market: at most five coins in all, one position per coin, all inside the one Boat Book and paid for from its one stake. A Basket Boat's Sea Trial judges every coin together, as one portfolio.
 _Avoid_: Portfolio (a Basket is one Boat), multi-bot
 
+**Pair Boat**:
+A Boat that holds one Instrument against another: one Pair Leg long and the other short, entering and leaving together, so most of the market's own swing cancels out. Both Legs run the same rules mirrored, carry the same percentage Protective Stop and share one stake. A Pair Boat's Sea Trial replays both Legs together.
+_Avoid_: Pair (on its own it reads as an Instrument), spread trade, hedge
+
+**Pair Leg**:
+One of a Pair Boat's two positions. A Leg is never held without its partner: when one is stopped out or never fills, Keel closes the other at that hour's close.
+_Avoid_: Side, half
+
 **Exit Rule**:
 A condition that closes an open position at a confirmed bar's close when it turns true, as opposed to the Protective Stop or the take-profit. A Boat may also have a time stop (close after so many hours) and a trailing stop (a Protective Stop ratcheted behind each close that only ever tightens).
 _Avoid_: Exit signal (it is part of the rules, not a separate signal)
@@ -237,7 +245,7 @@ A Sea Trial's one-word conclusion: seaworthy, promising, choppy or sinks.
 _Avoid_: Grade, rating
 
 **Sibling Market**:
-The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original and is neither in its Basket nor one of its Reference Markets. An edge that only exists on one market is more likely luck.
+The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original and is neither in its Basket nor one of its Reference Markets. A Pair Boat is re-tested on another pair of Instruments. An edge that only exists on one market is more likely luck.
 _Avoid_: Control market, benchmark
 
 **Paper-only Instrument**:

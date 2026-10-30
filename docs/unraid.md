@@ -34,7 +34,7 @@ chown -R 99:100 /mnt/user/appdata/keel
 
 ### Moving from the old image name
 
-The repository was renamed from `psychic-octo-funicular` to `keel`, so the image is now `ghcr.io/elcarom/keel:latest`. For now the old name is still published, so an existing install keeps updating. To switch:
+The repository was renamed from `psychic-octo-funicular` to `keel`, and the image is now only published as `ghcr.io/elcarom/keel:latest`. An install still on the old name stops receiving updates until you switch it:
 
 1. In **Docker**, click the Keel icon and choose **Edit**.
 2. Change **Repository** to `ghcr.io/elcarom/keel:latest`.

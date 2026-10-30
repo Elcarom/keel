@@ -30,11 +30,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # The repo was renamed from psychic-octo-funicular to keel. The old image name is still
-          # published so existing Unraid installs keep updating until they switch templates.
-          images: |
-            ghcr.io/elcarom/keel
-            ghcr.io/elcarom/psychic-octo-funicular
+          images: ghcr.io/elcarom/keel
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-

@@ -424,6 +424,103 @@ describe("Fleet API", () => {
     expect(coins.every((id) => id === "SOL-USDT-SWAP" || id === "AVAX-USDT-SWAP")).toBe(true);
   }, 240_000);
 
+  it("sea-trials a pair on both legs together, then trades the legs as one", async () => {
+    const { call, clock, dataStore, overview } = await setup();
+    // SOL wanders; AVAX tracks it at a fifth, except that every 60 hours it lags 5% for six.
+    // One lag starts two hours after launch, inside the session the test signs in with.
+    const hour = (ts: number) => Math.floor(ts / 3_600_000);
+    const lagPhase = hour(clock.nowMs()) + 2;
+    const lagging = (h: number) => (((h - lagPhase) % 60) + 60) % 60 < 6;
+    const solAt = (h: number) => 150 * (1 + 0.05 * Math.sin(h / 200) + 0.004 * Math.sin(h * 1.7));
+    const avaxAt = (h: number) => (solAt(h) / 5) * (lagging(h) ? 0.95 : 1 + 0.003 * Math.cos(h));
+    const seed = (fromTs: number, toTs: number) => {
+      for (const [instrumentId, at] of [
+        ["SOL-USDT-SWAP", solAt],
+        ["AVAX-USDT-SWAP", avaxAt]
+      ] as const) {
+        const candles = [];
+        for (let h = hour(fromTs); h < hour(toTs); h++) {
+          const open = at(h - 1);
+          const close = at(h);
+          candles.push({
+            openTs: h * 3_600_000,
+            open: open.toFixed(4),
+            high: (Math.max(open, close) * 1.003).toFixed(4),
+            low: (Math.min(open, close) * 0.997).toFixed(4),
+            close: close.toFixed(4),
+            volumeContracts: "100",
+            volumeQuote: (100 * close).toFixed(2),
+            confirm: "1"
+          });
+        }
+        dataStore.marketDataRepo.ingestOkxCandles({ instrumentId, timeframe: "1H", candles });
+      }
+    };
+    // The two-year sea-trial window, warm-up included (it ends 2024-12-01)
+    seed(1_733_011_200_000 - 732 * 24 * 3_600_000, 1_733_011_200_000);
+
+    const res = await call("POST", "/api/v1/fleet/designs", {
+      instruments: ["SOL-USDT-SWAP", "AVAX-USDT-SWAP"],
+      styles: ["pair_reversion"],
+      riskAppetite: "balanced",
+      direction: "any",
+      count: 2,
+      notes: ""
+    });
+    expect(res.status).toBe(200);
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    let batch: DesignBatch | undefined;
+    for (let i = 0; i < 4800 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
+      batch = list.find((b) => b.batchId === batchId);
+    }
+    const [p] = batch?.propositions ?? [];
+    expect(p?.status).toBe("ranked");
+    expect(p?.blueprint.archetype).toBe("pair_reversion");
+    expect(p?.blueprint.instrumentId).toBe("SOL-USDT-SWAP");
+    expect(p?.blueprint.pairWith).toBe("AVAX-USDT-SWAP");
+    expect(p?.assessment?.totalTrades).toBeGreaterThan(30);
+    // Market-neutral, so judged against cash; cross-checked on another pair of coins
+    expect(p?.assessment?.buyAndHoldReturnPct).toBe(0);
+    const sibling = p?.assessment?.seaTrial?.sibling?.instrumentId ?? "";
+    expect(sibling).toMatch(/^[A-Z]+\/[A-Z]+$/);
+    expect(sibling).not.toMatch(/SOL|AVAX/);
+
+    const wallet = (await overview()).wallets[0] as Wallet;
+    const launched = await call("POST", `/api/v1/fleet/propositions/${p?.propositionId}/launch`, {
+      name: "Catamaran",
+      walletId: wallet.walletId,
+      allocationUsdt: "1000",
+      mode: "paper"
+    });
+    expect(launched.status).toBe(200);
+
+    // Eleven fresh hours across the lag, stepped one at a time as the scheduler would
+    const launchedAt = clock.nowMs();
+    seed(launchedAt - 200 * 3_600_000, launchedAt + 12 * 3_600_000);
+    for (let h = 0; h < 11; h++) {
+      clock.advanceMs(3_600_000);
+      expect((await call("POST", "/api/v1/system/scheduler/step")).status).toBe(200);
+      // Never one leg at sea without the other, and never both on the same side
+      const open = (await overview()).bots[0]?.openPositions ?? [];
+      expect([0, 2]).toContain(open.length);
+      if (open.length === 2) expect(open[0]?.side).not.toBe(open[1]?.side);
+    }
+
+    const bot = (await overview()).bots[0];
+    const trades = bot?.recentTrades ?? [];
+    expect(trades.length).toBeGreaterThan(0);
+    const rounds = new Map<number, typeof trades>();
+    for (const t of trades) rounds.set(t.openedAtMs, [...(rounds.get(t.openedAtMs) ?? []), t]);
+    for (const legs of rounds.values()) {
+      if (legs.length < 2) continue; // a round cut off by the recent-trades window
+      expect(legs.map((l) => l.instrumentId).sort()).toEqual(["AVAX-USDT-SWAP", "SOL-USDT-SWAP"]);
+      expect(legs[0]?.side).not.toBe(legs[1]?.side);
+      expect(legs[0]?.closedAtMs).toBe(legs[1]?.closedAtMs);
+    }
+  }, 600_000);
+
   it("sea-trials inventions with nudged windows and thresholds, and launches one as a boat", async () => {
     const { call, clock, dataStore, overview } = await setup();
     const res = await call("POST", "/api/v1/fleet/designs", {

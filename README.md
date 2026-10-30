@@ -3,7 +3,7 @@
 **Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on your own server: Unraid, or any Docker host. A keel keeps a ship steady, and the whole product follows the sea:
 
 - **The Shipyard** drafts strategy **Propositions**. Claude can fill one of 13 reviewed **Blueprints**, invent brand-new entry rules in **Inventor Mode**, or you can import inventions from your own Claude chat with no API fees. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
-- **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin or a **Basket** of up to five, from its own **Boat Book** and stake.
+- **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin, a **Basket** of up to five, or a **Pair Boat** that holds one coin against another, from its own **Boat Book** and stake.
 - **The Treasury** holds the paper **Wallets** that fund the Fleet.
 - **The Engine Room** holds configuration, the secret vault, the Kill Switch, the research tools and the budget-capped Gemini advisory layer.
 
@@ -55,6 +55,7 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
   - [ADR-0029: Exit Rules, Time Stops and Trailing Stops](./docs/adr/0029-exits-and-position-management.md)
   - [ADR-0030: Unattended Fleet Duties and the Diversity Guard](./docs/adr/0030-fleet-duties-and-diversity.md)
   - [ADR-0031: Higher-Timeframe Bars and Funding in the Rule Language](./docs/adr/0031-higher-timeframes-and-funding.md)
+  - [ADR-0032: Pair Boats Hold One Coin Against Another](./docs/adr/0032-pair-boats.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)
@@ -158,7 +159,7 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 
 ## A tour of the ship
 
-- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial** and is ranked: seaworthy, promising, choppy or sinks. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
+- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial**, on real OKX prices and settled funding, and is ranked: seaworthy, promising, choppy or sinks. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
 - **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
 - **Treasury:** the paper wallets that fund the boats.
 - **Logbook:** recent trades across the Fleet, and what the unattended duties have done.
@@ -192,7 +193,7 @@ Fixed rules run after every scheduler step, on paper only. A model never decides
 | `DATA_DIR` or `KEEL_DB_PATH`                      | in-memory                                                | Where SQLite lives. Without either, everything is lost on restart               |
 | `BACKUPS_DIR` or `KEEL_BACKUPS_DIR`               | unset                                                    | Where backups go                                                                |
 | `LOG_LEVEL`                                       | `info`                                                   | Pino log level                                                                  |
-| `KEEL_ALLOW_INSECURE_HTTP`                        | `false` (`true` in the compose file)                     | Sign-in over plain HTTP on a trusted LAN                                        |
+| `KEEL_ALLOW_INSECURE_HTTP`                        | `false` (`true` in the compose file and Unraid template) | Sign-in over plain HTTP on a trusted LAN                                        |
 | `KEEL_ENABLE_SCHEDULER`                           | `false` (`true` in the compose file and Unraid template) | Hourly bars and Fleet steps                                                     |
 | `KEEL_BOOTSTRAP_TOKEN`                            | generated                                                | Sets the one-time first-admin token instead of generating one                   |
 | `KEEL_CF_ACCESS_SECRET`                           | unset                                                    | Cloudflare Access JWT signing secret                                            |

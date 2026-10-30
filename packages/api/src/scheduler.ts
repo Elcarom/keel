@@ -187,10 +187,37 @@ export class UnattendedScheduler {
         fromOpenTs,
         toOpenTs
       });
+      await this.ingestLatestFunding(instId, nowMs, errors);
       return res.insertedCount;
     } catch (err) {
       errors.push(`Failed ingesting ${instId}: ${String(err)}`);
       return 0;
+    }
+  }
+
+  /** Stores the funding settlements since the latest stored one, so paper books pay or receive it. */
+  private async ingestLatestFunding(
+    instId: string,
+    nowMs: number,
+    errors: string[]
+  ): Promise<void> {
+    if (!this.ingestor) return;
+    const latest =
+      this.dataStore.marketDataRepo.getSettledFundingAsOf({
+        instrumentId: instId,
+        asOfMs: nowMs,
+        limit: 1
+      })[0] ?? null;
+    // Checked every step: some swaps settle every 4 hours or every hour, not only every 8
+    const fromFundingTs = latest ? latest.fundingTs + 1 : nowMs - 48 * 3600_000;
+    try {
+      await this.ingestor.ingestRecentFundingRates({
+        instrumentId: instId,
+        fromFundingTs,
+        toFundingTs: nowMs
+      });
+    } catch (err) {
+      errors.push(`Failed ingesting funding for ${instId}: ${String(err)}`);
     }
   }
 

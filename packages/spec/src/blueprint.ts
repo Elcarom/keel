@@ -1,4 +1,4 @@
-import { ARCHETYPE_LABELS, type BotBlueprint } from "@keel/core";
+import { ARCHETYPE_LABELS, pairLegs, type BotBlueprint } from "@keel/core";
 import {
   StrategySpecV1Schema,
   type Condition,
@@ -245,6 +245,30 @@ function rulesFor(b: BotBlueprint): ArchetypeRules {
         ),
         extraBars: 1
       };
+    case "pair_reversion": {
+      // The spread between the two coins stretched T deviations from its mean: bet on it closing
+      const partner = b.pairWith ?? b.instrumentId;
+      return {
+        indicators: [{ id: "spread", kind: "spread", period: L, market: partner }],
+        longEntry: cmp(ind("spread", "zscore"), "<=", k(-T)),
+        shortEntry: cmp(ind("spread", "zscore"), ">=", k(T)),
+        longExit: cmp(ind("spread", "zscore"), ">=", k(0)),
+        shortExit: cmp(ind("spread", "zscore"), "<=", k(0)),
+        extraBars: 1
+      };
+    }
+    case "pair_momentum": {
+      // One coin has been steadily outrunning the other: ride the gap until the drift fades
+      const partner = b.pairWith ?? b.instrumentId;
+      return {
+        indicators: [{ id: "spread", kind: "spread", period: L, market: partner }],
+        longEntry: cmp(ind("spread", "momentum"), ">=", k(T)),
+        shortEntry: cmp(ind("spread", "momentum"), "<=", k(-T)),
+        longExit: cmp(ind("spread", "momentum"), "<=", k(0)),
+        shortExit: cmp(ind("spread", "momentum"), ">=", k(0)),
+        extraBars: 1
+      };
+    }
     case "capitulation_fade": {
       // An outsized bar against the trend that still closes up (or down): the panic was absorbed
       const outsized = cmp(
@@ -282,43 +306,84 @@ function warmupBars(def: IndicatorDef): number {
   if (def.kind === "ema" || def.kind === "rsi" || def.kind === "adx") return def.period * 3 * hours;
   // These read the bar before their window too; a higher timeframe also needs its first bucket
   const bars =
-    def.kind === "percentile" || def.kind === "correlation" ? def.period + 1 : def.period;
+    def.kind === "percentile" || def.kind === "correlation" || def.kind === "spread"
+      ? def.period + 1
+      : def.period;
   return hours > 1 ? (bars + 1) * hours : bars;
+}
+
+/** Which leg of a pair a spec trades: 0 is the blueprint's own market, 1 its `pairWith`. */
+export type PairLeg = 0 | 1;
+
+/** Swaps two market ids everywhere they appear as a `market`, so a pair's rules mirror. */
+function swapMarkets<T>(value: T, a: string, b: string): T {
+  return JSON.parse(JSON.stringify(value), (key: string, v: unknown) =>
+    key === "market" ? (v === a ? b : v === b ? a : v) : v
+  ) as T;
 }
 
 /**
  * Compiles a blueprint into a validated Strategy Spec. `specName` becomes the strategy id, so
  * each boat (and each proposition) trades and backtests under an id of its own.
+ *
+ * A pair compiles once per leg (ADR-0032). Each leg runs the same rules with the other coin as
+ * its reference market, so a spread stretched one way for the first leg is stretched the other
+ * way for the second: one leg buys exactly when the other sells. Both legs carry the same
+ * percentage stop, and exits come from the rules and the time limit rather than a target.
  */
-export function compileBlueprint(blueprint: BotBlueprint, specName: string): StrategySpecV1 {
-  const rules = rulesFor(blueprint);
+export function compileBlueprint(
+  blueprint: BotBlueprint,
+  specName: string,
+  leg: PairLeg = 0
+): StrategySpecV1 {
+  const legs = pairLegs(blueprint);
+  const base = rulesFor(blueprint);
+  const rules = legs && leg === 1 ? swapMarkets(base, legs[0], legs[1]) : base;
   const longest = Math.max(ATR_PERIOD, ...rules.indicators.map(warmupBars));
+  // The second leg trades the mirror image, so "long only" (buy the first coin) means it sells
+  const direction =
+    legs && leg === 1
+      ? blueprint.direction === "long_only"
+        ? "short_only"
+        : blueprint.direction === "short_only"
+          ? "long_only"
+          : "both"
+      : blueprint.direction;
+  const traded = legs ? legs[leg] : blueprint.instrumentId;
+  const partner = legs ? legs[leg === 0 ? 1 : 0] : null;
   return StrategySpecV1Schema.parse({
     name: specName,
     version: 1,
-    description:
-      `${ARCHETYPE_LABELS[blueprint.archetype]} on ${blueprint.instrumentId}: ${blueprint.tagline}`.slice(
-        0,
-        2000
-      ),
+    description: (partner
+      ? `${ARCHETYPE_LABELS[blueprint.archetype]}, ${traded} leg against ${partner}: ${blueprint.tagline}`
+      : `${ARCHETYPE_LABELS[blueprint.archetype]} on ${traded}: ${blueprint.tagline}`
+    ).slice(0, 2000),
     timeframe: "1H",
     lookbacks: { "1H": Math.min(MAX_LOOKBACK_BARS, longest + rules.extraBars + 2) },
     indicators: rules.indicators,
     rules: {
-      longEntry: blueprint.direction === "short_only" ? NEVER : rules.longEntry,
-      shortEntry: blueprint.direction === "long_only" ? NEVER : rules.shortEntry,
+      longEntry: direction === "short_only" ? NEVER : rules.longEntry,
+      shortEntry: direction === "long_only" ? NEVER : rules.shortEntry,
       ...(rules.longExit ? { longExit: rules.longExit } : {}),
       ...(rules.shortExit ? { shortExit: rules.shortExit } : {})
     },
     risk: {
-      stopModel: {
-        kind: "atr_multiple",
-        multiplier: blueprint.stopAtrMultiple,
-        atrPeriod: ATR_PERIOD
-      },
-      takeProfit: { rewardMultiple: blueprint.rewardMultiple },
+      stopModel: partner
+        ? {
+            kind: "pair_atr",
+            multiplier: blueprint.stopAtrMultiple,
+            atrPeriod: ATR_PERIOD,
+            market: partner
+          }
+        : {
+            kind: "atr_multiple",
+            multiplier: blueprint.stopAtrMultiple,
+            atrPeriod: ATR_PERIOD
+          },
+      // A pair leaves on its rules or its time limit; the far target only guards a runaway leg
+      takeProfit: { rewardMultiple: partner ? 10 : blueprint.rewardMultiple },
       ...(blueprint.maxBarsHeld ? { timeStopBars: blueprint.maxBarsHeld } : {}),
-      ...(blueprint.trailingAtrMultiple
+      ...(blueprint.trailingAtrMultiple && !partner
         ? { trailingStop: { atrMultiple: blueprint.trailingAtrMultiple, atrPeriod: ATR_PERIOD } }
         : {})
     },

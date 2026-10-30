@@ -19,7 +19,9 @@ export const BOT_ARCHETYPES = [
   "regime_momentum",
   "rsi_reversal",
   "failed_breakout",
-  "capitulation_fade"
+  "capitulation_fade",
+  "pair_reversion",
+  "pair_momentum"
 ] as const;
 export const BotArchetypeSchema = z.enum(BOT_ARCHETYPES);
 export type BotArchetype = z.infer<typeof BotArchetypeSchema>;
@@ -42,7 +44,8 @@ export const INDICATOR_KINDS = [
   "adx",
   "bollinger",
   "percentile",
-  "correlation"
+  "correlation",
+  "spread"
 ] as const;
 export type IndicatorKind = (typeof INDICATOR_KINDS)[number];
 
@@ -63,6 +66,9 @@ export type FleetInstrument = z.infer<typeof FleetInstrumentSchema>;
 
 /** The most coins one boat may trade: its own market plus up to four more in its basket. */
 export const MAX_BOAT_MARKETS = 5;
+
+/** Pair archetypes trade two coins against each other: long one leg, short the other (ADR-0032). */
+export const PAIR_ARCHETYPES: ReadonlySet<string> = new Set(["pair_reversion", "pair_momentum"]);
 
 /**
  * Rules Claude wrote itself, in the Strategy Spec condition language. Stored as data and
@@ -127,10 +133,12 @@ export const ARCHETYPE_LABELS: Readonly<Record<BlueprintArchetype, string>> = {
   regime_momentum: "Regime-filtered momentum",
   rsi_reversal: "RSI reversal",
   failed_breakout: "Failed-breakout fade",
-  capitulation_fade: "Capitulation fade"
+  capitulation_fade: "Capitulation fade",
+  pair_reversion: "Pair reversion",
+  pair_momentum: "Pair momentum"
 };
 
-export const ARCHETYPE_FAMILIES = ["trend", "breakout", "reversion"] as const;
+export const ARCHETYPE_FAMILIES = ["trend", "breakout", "reversion", "pairs"] as const;
 export type ArchetypeFamily = (typeof ARCHETYPE_FAMILIES)[number];
 
 export const ARCHETYPE_FAMILY: Readonly<Record<BotArchetype, ArchetypeFamily>> = {
@@ -146,7 +154,9 @@ export const ARCHETYPE_FAMILY: Readonly<Record<BotArchetype, ArchetypeFamily>> =
   mean_reversion: "reversion",
   rsi_reversal: "reversion",
   failed_breakout: "reversion",
-  capitulation_fade: "reversion"
+  capitulation_fade: "reversion",
+  pair_reversion: "pairs",
+  pair_momentum: "pairs"
 };
 
 /** What a model returns: numbers are unbounded here and clamped when normalized. */
@@ -170,7 +180,12 @@ export const BotBlueprintDraftSchema = z.object({
   /** Ratchet the stop this many ATRs behind each close; null keeps the stop fixed (ADR-0029). */
   trailingAtrMultiple: z.number().nullable().default(null),
   /** Close a position after this many hourly bars; null holds until stop or target. */
-  maxBarsHeld: z.number().nullable().default(null)
+  maxBarsHeld: z.number().nullable().default(null),
+  /**
+   * The second coin of a pair: the boat holds this coin against its own market, one long and one
+   * short, entering and leaving together (ADR-0032). Null for every other boat.
+   */
+  pairWith: FleetInstrumentSchema.nullable().default(null)
 });
 export type BotBlueprintDraft = z.infer<typeof BotBlueprintDraftSchema>;
 /** A draft as a model may write it: newer fields may be missing and take their defaults. */
@@ -193,12 +208,22 @@ export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
 });
 export type BotBlueprint = z.infer<typeof BotBlueprintSchema>;
 
-/** Every coin a boat trades: its own market first, then its basket. */
+/** Every coin a boat trades: its own market first, then its pair leg or its basket. */
 export function blueprintMarkets(b: {
   readonly instrumentId: FleetInstrument;
   readonly basket?: readonly FleetInstrument[] | undefined;
+  readonly pairWith?: FleetInstrument | null | undefined;
 }): FleetInstrument[] {
+  if (b.pairWith && b.pairWith !== b.instrumentId) return [b.instrumentId, b.pairWith];
   return [...new Set([b.instrumentId, ...(b.basket ?? [])])].slice(0, MAX_BOAT_MARKETS);
+}
+
+/** A pair boat's two legs, its own market first; null for a boat that is not a pair. */
+export function pairLegs(b: {
+  readonly instrumentId: FleetInstrument;
+  readonly pairWith?: FleetInstrument | null | undefined;
+}): readonly [FleetInstrument, FleetInstrument] | null {
+  return b.pairWith && b.pairWith !== b.instrumentId ? [b.instrumentId, b.pairWith] : null;
 }
 
 /** JSON Schema of one draft, for providers that constrain decoding (no numeric bounds allowed). */
@@ -219,7 +244,8 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     "rationale",
     "basket",
     "trailingAtrMultiple",
-    "maxBarsHeld"
+    "maxBarsHeld",
+    "pairWith"
   ],
   properties: {
     name: { type: "string", description: "Nautical bot name, 1-3 words, e.g. 'Trade Wind'" },
@@ -258,6 +284,12 @@ export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> 
     maxBarsHeld: {
       type: ["integer", "null"],
       description: "2-240: close any position after this many hourly bars; null for no time limit"
+    },
+    pairWith: {
+      type: ["string", "null"],
+      enum: [...FLEET_INSTRUMENTS, null],
+      description:
+        "Pair archetypes only: the second coin, held against instrumentId (one long, one short); null otherwise"
     }
   }
 };
@@ -277,6 +309,13 @@ export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint 
   const lookbackPeriod = clampInt(draft.lookbackPeriod, 5, 200);
   // A fast average must stay faster than the slow one, or the crossover never fires
   const fastPeriod = clampInt(draft.fastPeriod, 3, Math.max(3, Math.min(100, lookbackPeriod - 2)));
+  // A pair needs a second, different coin and nothing else: no basket, no per-leg trailing stop
+  const isPair = PAIR_ARCHETYPES.has(draft.archetype);
+  const pairWith = isPair
+    ? draft.pairWith && draft.pairWith !== draft.instrumentId
+      ? draft.pairWith
+      : SIBLING_INSTRUMENTS[draft.instrumentId]
+    : null;
   return BotBlueprintSchema.parse({
     name: draft.name.trim().slice(0, 40),
     tagline: draft.tagline.trim().slice(0, 160),
@@ -289,15 +328,19 @@ export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint 
     stopAtrMultiple: clampNum(draft.stopAtrMultiple, 0.5, 6),
     rewardMultiple: clampNum(draft.rewardMultiple, 0.8, 6),
     rationale: draft.rationale.trim().slice(0, 600),
-    basket: blueprintMarkets(draft).slice(1),
+    basket: isPair ? [] : blueprintMarkets({ ...draft, pairWith: null }).slice(1),
     trailingAtrMultiple:
-      draft.trailingAtrMultiple === null || draft.trailingAtrMultiple === undefined
+      isPair || draft.trailingAtrMultiple === null || draft.trailingAtrMultiple === undefined
         ? null
         : clampNum(draft.trailingAtrMultiple, 0.5, 6),
+    // A pair always has a time limit: a spread that never comes back is a broken pair
     maxBarsHeld:
       draft.maxBarsHeld === null || draft.maxBarsHeld === undefined
-        ? null
+        ? isPair
+          ? Math.min(240, lookbackPeriod * 3)
+          : null
         : clampInt(draft.maxBarsHeld, 2, 240),
+    pairWith,
     invention: null
   });
 }
