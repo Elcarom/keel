@@ -26,9 +26,9 @@ export const BOT_ARCHETYPES = [
 export const BotArchetypeSchema = z.enum(BOT_ARCHETYPES);
 export type BotArchetype = z.infer<typeof BotArchetypeSchema>;
 
-/** A blueprint is one of the reviewed archetypes, or rules Claude invented (see Invention). */
-export const BlueprintArchetypeSchema = z.enum([...BOT_ARCHETYPES, "invented"]);
-export type BlueprintArchetype = z.infer<typeof BlueprintArchetypeSchema>;
+/** A rig is one of the reviewed archetypes, or rules Claude invented (see Invention). */
+export const RigArchetypeSchema = z.enum([...BOT_ARCHETYPES, "invented"]);
+export type RigArchetype = z.infer<typeof RigArchetypeSchema>;
 
 /** Indicator kinds the Strategy Spec language can compute; the single source for every layer. */
 export const INDICATOR_KINDS = [
@@ -119,7 +119,7 @@ export const BOT_DIRECTIONS = ["both", "long_only", "short_only"] as const;
 export const BotDirectionSchema = z.enum(BOT_DIRECTIONS);
 export type BotDirection = z.infer<typeof BotDirectionSchema>;
 
-export const ARCHETYPE_LABELS: Readonly<Record<BlueprintArchetype, string>> = {
+export const ARCHETYPE_LABELS: Readonly<Record<RigArchetype, string>> = {
   invented: "Invented rules",
   breakout: "Channel breakout",
   mean_reversion: "Mean reversion",
@@ -160,7 +160,7 @@ export const ARCHETYPE_FAMILY: Readonly<Record<BotArchetype, ArchetypeFamily>> =
 };
 
 /** What a model returns: numbers are unbounded here and clamped when normalized. */
-export const BotBlueprintDraftSchema = z.object({
+export const RigDraftSchema = z.object({
   name: z.string().min(1).max(80),
   tagline: z.string().min(1).max(300),
   archetype: BotArchetypeSchema,
@@ -187,12 +187,12 @@ export const BotBlueprintDraftSchema = z.object({
    */
   pairWith: FleetInstrumentSchema.nullable().default(null)
 });
-export type BotBlueprintDraft = z.infer<typeof BotBlueprintDraftSchema>;
+export type RigDraft = z.infer<typeof RigDraftSchema>;
 /** A draft as a model may write it: newer fields may be missing and take their defaults. */
-export type BotBlueprintDraftInput = z.input<typeof BotBlueprintDraftSchema>;
+export type RigDraftInput = z.input<typeof RigDraftSchema>;
 
-export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
-  archetype: BlueprintArchetypeSchema,
+export const RigSchema = RigDraftSchema.extend({
+  archetype: RigArchetypeSchema,
   /** Present exactly when archetype is "invented". */
   invention: InventionSchema.nullable().default(null),
   name: z.string().min(1).max(40),
@@ -206,10 +206,10 @@ export const BotBlueprintSchema = BotBlueprintDraftSchema.extend({
   trailingAtrMultiple: z.number().min(0.5).max(6).nullable().default(null),
   maxBarsHeld: z.number().int().min(2).max(240).nullable().default(null)
 });
-export type BotBlueprint = z.infer<typeof BotBlueprintSchema>;
+export type Rig = z.infer<typeof RigSchema>;
 
 /** Every coin a boat trades: its own market first, then its pair leg or its basket. */
-export function blueprintMarkets(b: {
+export function rigMarkets(b: {
   readonly instrumentId: FleetInstrument;
   readonly basket?: readonly FleetInstrument[] | undefined;
   readonly pairWith?: FleetInstrument | null | undefined;
@@ -227,7 +227,7 @@ export function pairLegs(b: {
 }
 
 /** JSON Schema of one draft, for providers that constrain decoding (no numeric bounds allowed). */
-export const BOT_BLUEPRINT_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> = {
+export const RIG_DRAFT_JSON_SCHEMA: Readonly<Record<string, unknown>> = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -305,7 +305,7 @@ function clampNum(value: number, min: number, max: number): number {
 }
 
 /** Clamps every parameter into its reviewed range and trims text; never fails on numbers. */
-export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint {
+export function normalizeRig(draft: RigDraftInput): Rig {
   const lookbackPeriod = clampInt(draft.lookbackPeriod, 5, 200);
   // A fast average must stay faster than the slow one, or the crossover never fires
   const fastPeriod = clampInt(draft.fastPeriod, 3, Math.max(3, Math.min(100, lookbackPeriod - 2)));
@@ -316,7 +316,7 @@ export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint 
       ? draft.pairWith
       : SIBLING_INSTRUMENTS[draft.instrumentId]
     : null;
-  return BotBlueprintSchema.parse({
+  return RigSchema.parse({
     name: draft.name.trim().slice(0, 40),
     tagline: draft.tagline.trim().slice(0, 160),
     archetype: draft.archetype,
@@ -328,7 +328,7 @@ export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint 
     stopAtrMultiple: clampNum(draft.stopAtrMultiple, 0.5, 6),
     rewardMultiple: clampNum(draft.rewardMultiple, 0.8, 6),
     rationale: draft.rationale.trim().slice(0, 600),
-    basket: isPair ? [] : blueprintMarkets({ ...draft, pairWith: null }).slice(1),
+    basket: isPair ? [] : rigMarkets({ ...draft, pairWith: null }).slice(1),
     trailingAtrMultiple:
       isPair || draft.trailingAtrMultiple === null || draft.trailingAtrMultiple === undefined
         ? null
@@ -345,23 +345,9 @@ export function normalizeBlueprint(draft: BotBlueprintDraftInput): BotBlueprint 
   });
 }
 
-export const RiskAppetiteSchema = z.enum(["cautious", "balanced", "bold"]);
-export type RiskAppetite = z.infer<typeof RiskAppetiteSchema>;
-
-/**
- * Blueprint mode fills one of the reviewed archetypes; Inventor mode lets Claude write new rules
- * in the Strategy Spec language.
- */
-export const DesignModeSchema = z.enum(["blueprint", "inventor"]);
-export type DesignMode = z.infer<typeof DesignModeSchema>;
-
-/** The operator's guided request to the Shipyard. */
+/** The operator's request to the Shipyard: Claude invents rules for these waters (ADR-0034). */
 export const DesignBriefSchema = z.object({
-  mode: DesignModeSchema.default("blueprint"),
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
-  /** Empty means "surprise me": any archetype. */
-  styles: z.array(BotArchetypeSchema).max(BOT_ARCHETYPES.length),
-  riskAppetite: RiskAppetiteSchema,
   direction: z.enum(["any", "long_only", "short_only"]),
   count: z.number().int().min(2).max(6),
   notes: z.string().max(1000)
@@ -379,7 +365,7 @@ export const BatchBriefSchema = DesignBriefSchema.extend({
 });
 export type BatchBrief = z.infer<typeof BatchBriefSchema>;
 
-/** What the operator wants a Claude chat to invent, for the copy-and-paste Inventor prompt. */
+/** What the operator wants a chat to invent, for the copy-and-paste Inventor prompt. */
 export const InventorPromptRequestSchema = z.object({
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
   direction: z.enum(["any", "long_only", "short_only"]),
@@ -531,7 +517,7 @@ export const PropositionSchema = z.object({
   batchId: z.string(),
   createdAtMs: z.number().int(),
   source: DesignSourceSchema,
-  blueprint: BotBlueprintSchema,
+  rig: RigSchema,
   status: PropositionStatusSchema,
   assessment: AssessmentSchema.nullable(),
   rank: z.number().int().positive().nullable(),
@@ -603,7 +589,7 @@ export const BotSchema = z.object({
   botId: z.string(),
   name: z.string(),
   tagline: z.string(),
-  blueprint: BotBlueprintSchema,
+  rig: RigSchema,
   mode: BotModeSchema,
   status: BotStatusSchema,
   /** Why the bot last changed status, e.g. a loss limit that sent it back to harbour. */
@@ -711,7 +697,7 @@ export interface BotRecord {
   readonly botId: string;
   readonly name: string;
   readonly tagline: string;
-  readonly blueprint: BotBlueprint;
+  readonly rig: Rig;
   readonly walletId: string;
   readonly allocationUsdt: string;
   readonly status: BotStatus;

@@ -59,8 +59,6 @@ async function setup(configure: (config: KeelConfig) => KeelConfig = (c) => c) {
   const designAndWait = async (count = 3): Promise<DesignBatch> => {
     const res = await call("POST", "/api/v1/fleet/designs", {
       instruments: ["BTC-USDT-SWAP"],
-      styles: [],
-      riskAppetite: "balanced",
       direction: "any",
       count,
       notes: ""
@@ -106,11 +104,11 @@ describe("Fleet API", () => {
     expect(fleet.designer.source).toBe("sample");
   });
 
-  it("designs, backtests and ranks propositions without a Claude key", async () => {
+  it("invents, backtests and ranks propositions while Claude is not linked", async () => {
     const { designAndWait } = await setup();
     const batch = await designAndWait(3);
     expect(batch.source).toBe("sample");
-    expect(batch.note).toMatch(/Anthropic API key/);
+    expect(batch.note).toMatch(/Claude is not linked/);
     expect(batch.propositions).toHaveLength(3);
     const ranks = batch.propositions.map((p) => p.rank);
     expect(ranks).toEqual([1, 2, 3]);
@@ -135,15 +133,13 @@ describe("Fleet API", () => {
         expect(trial?.checks.filter((c) => c.critical).every((c) => c.passed)).toBe(true);
       }
     }
-    expect(new Set(batch.propositions.map((p) => p.blueprint.name)).size).toBe(3);
+    expect(new Set(batch.propositions.map((p) => p.rig.name)).size).toBe(3);
   }, 60_000);
 
   it("designs for any of the ten waters and cross-checks each idea on its sibling market", async () => {
     const { call } = await setup();
     const res = await call("POST", "/api/v1/fleet/designs", {
       instruments: ["SOL-USDT-SWAP"],
-      styles: ["squeeze_breakout", "capitulation_fade"],
-      riskAppetite: "cautious",
       direction: "any",
       count: 2,
       notes: ""
@@ -158,13 +154,10 @@ describe("Fleet API", () => {
       if (batch?.status === "assessing") expect(batch.progress).toMatch(/Sea trial \d of 2/);
     }
     expect(batch?.progress).toBeNull();
-    expect(batch?.propositions.map((p) => p.blueprint.archetype).sort()).toEqual([
-      "capitulation_fade",
-      "squeeze_breakout"
-    ]);
+    expect(batch?.propositions).toHaveLength(2);
     for (const p of batch?.propositions ?? []) {
       expect(p.status).toBe("ranked");
-      expect(p.blueprint.instrumentId).toBe("SOL-USDT-SWAP");
+      expect(p.rig.instrumentId).toBe("SOL-USDT-SWAP");
       expect(p.assessment?.seaTrial?.sibling?.instrumentId).toBe("AVAX-USDT-SWAP");
     }
   }, 60_000);
@@ -193,7 +186,7 @@ describe("Fleet API", () => {
     expect(prompt).toContain("Markets the rules may read as signals: any of Keel's ten");
   }, 60_000);
 
-  it("imports a Claude chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
+  it("imports a chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
     const { call } = await setup();
     const good = {
       name: "Morning Squall",
@@ -253,8 +246,8 @@ describe("Fleet API", () => {
     expect(batch?.propositions).toHaveLength(1);
     expect(p?.source).toBe("imported");
     expect(p?.status).toBe("ranked");
-    expect(p?.blueprint.instrumentId).toBe("ETH-USDT-SWAP");
-    expect(p?.blueprint.invention?.rules[0]).toBe("Long when momentum(6) ≥ 1");
+    expect(p?.rig.instrumentId).toBe("ETH-USDT-SWAP");
+    expect(p?.rig.invention?.rules[0]).toBe("Long when momentum(6) ≥ 1");
     expect(p?.assessment?.seaTrial?.neighbours).toHaveLength(4);
 
     // A file with nothing usable in it says so, and starts no batch
@@ -330,7 +323,7 @@ describe("Fleet API", () => {
       const list = (await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[];
       batch = list.find((b) => b.batchId === batchId);
     }
-    const byName = new Map(batch?.propositions.map((p) => [p.blueprint.name, p]));
+    const byName = new Map(batch?.propositions.map((p) => [p.rig.name, p]));
     expect(byName.get("Second Mate")?.assessment?.lookalike).toEqual({
       name: "First Mate",
       kind: "proposition",
@@ -386,8 +379,8 @@ describe("Fleet API", () => {
     }
     const [p] = batch?.propositions ?? [];
     expect(p?.status).toBe("ranked");
-    expect(p?.blueprint.basket).toEqual(["AVAX-USDT-SWAP"]);
-    expect(p?.blueprint.invention?.rules).toEqual([
+    expect(p?.rig.basket).toEqual(["AVAX-USDT-SWAP"]);
+    expect(p?.rig.invention?.rules).toEqual([
       "Long when BTC momentum(6) ≥ 0.5 and momentum(6) < 0.5",
       "Short when BTC momentum(6) ≤ -0.5 and momentum(6) > -0.5",
       "Stop 2× ATR(14) away, target 2× the risk",
@@ -459,13 +452,30 @@ describe("Fleet API", () => {
     // The two-year sea-trial window, warm-up included (it ends 2024-12-01)
     seed(1_733_011_200_000 - 732 * 24 * 3_600_000, 1_733_011_200_000);
 
-    const res = await call("POST", "/api/v1/fleet/designs", {
-      instruments: ["SOL-USDT-SWAP", "AVAX-USDT-SWAP"],
-      styles: ["pair_reversion"],
-      riskAppetite: "balanced",
-      direction: "any",
-      count: 2,
-      notes: ""
+    const z = (op: string, value: number) => ({
+      type: "comparison",
+      op,
+      left: { type: "indicator", id: "gap", output: "zscore" },
+      right: { type: "constant", value }
+    });
+    const res = await call("POST", "/api/v1/fleet/designs/import", {
+      text: JSON.stringify([
+        {
+          name: "Tow Line",
+          tagline: "Pulls the laggard back alongside.",
+          rationale: "AVAX tracks SOL. It fails when the gap opens on news.",
+          instrumentId: "SOL-USDT-SWAP",
+          pairWith: "AVAX-USDT-SWAP",
+          direction: "both",
+          indicators: [{ id: "gap", kind: "spread", period: 48, market: "AVAX-USDT-SWAP" }],
+          longEntry: z("<=", -2),
+          shortEntry: z(">=", 2),
+          longExit: z(">=", 0),
+          shortExit: z("<=", 0),
+          stopAtrMultiple: 3,
+          rewardMultiple: 2
+        }
+      ])
     });
     expect(res.status).toBe(200);
     const batchId = (res.body["batch"] as DesignBatch).batchId;
@@ -477,9 +487,9 @@ describe("Fleet API", () => {
     }
     const [p] = batch?.propositions ?? [];
     expect(p?.status).toBe("ranked");
-    expect(p?.blueprint.archetype).toBe("pair_reversion");
-    expect(p?.blueprint.instrumentId).toBe("SOL-USDT-SWAP");
-    expect(p?.blueprint.pairWith).toBe("AVAX-USDT-SWAP");
+    expect(p?.rig.archetype).toBe("invented");
+    expect(p?.rig.instrumentId).toBe("SOL-USDT-SWAP");
+    expect(p?.rig.pairWith).toBe("AVAX-USDT-SWAP");
     expect(p?.assessment?.totalTrades).toBeGreaterThan(30);
     // Market-neutral, so judged against cash; cross-checked on another pair of coins
     expect(p?.assessment?.buyAndHoldReturnPct).toBe(0);
@@ -524,10 +534,7 @@ describe("Fleet API", () => {
   it("sea-trials inventions with nudged windows and thresholds, and launches one as a boat", async () => {
     const { call, clock, dataStore, overview } = await setup();
     const res = await call("POST", "/api/v1/fleet/designs", {
-      mode: "inventor",
       instruments: ["BTC-USDT-SWAP"],
-      styles: [],
-      riskAppetite: "balanced",
       direction: "any",
       count: 2,
       notes: "session effects"
@@ -543,8 +550,8 @@ describe("Fleet API", () => {
     const propositions = batch?.propositions ?? [];
     expect(propositions).toHaveLength(2);
     for (const p of propositions) {
-      expect(p.blueprint.archetype).toBe("invented");
-      expect(p.blueprint.invention?.rules[0]).toMatch(/^Long when /);
+      expect(p.rig.archetype).toBe("invented");
+      expect(p.rig.invention?.rules[0]).toMatch(/^Long when /);
       expect(p.assessment?.seaTrial?.neighbours.map((n) => n.label)).toEqual([
         "Windows −25%",
         "Windows +33%",
@@ -561,7 +568,7 @@ describe("Fleet API", () => {
     );
     expect(launched.status).toBe(200);
     const bot = launched.body["bot"] as Bot;
-    expect(bot.blueprint.invention?.rules).toEqual(propositions[0]?.blueprint.invention?.rules);
+    expect(bot.rig.invention?.rules).toEqual(propositions[0]?.rig.invention?.rules);
 
     // The invented boat trades confirmed bars after launch like any other
     clock.advanceMs(10 * 3_600_000);

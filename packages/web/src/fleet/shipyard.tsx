@@ -42,7 +42,7 @@ function CompareTable({
   const rows: readonly [string, (p: Proposition) => string][] = [
     ["Verdict", (p) => p.assessment?.verdict ?? "—"],
     ["Score", (p) => String(p.assessment?.score ?? "—")],
-    ["Coins", (p) => marketsLabel(p.blueprint)],
+    ["Coins", (p) => marketsLabel(p.rig)],
     ["Return (2 years)", (p) => (p.assessment ? signedPct(p.assessment.returnPct) : "—")],
     ["Sharpe", (p) => String(p.assessment?.sharpeRatio ?? "—")],
     ["Worst dip", (p) => (p.assessment ? `${p.assessment.maxDrawdownPct}%` : "—")],
@@ -77,7 +77,7 @@ function CompareTable({
             <th className="py-1" />
             {propositions.map((p) => (
               <th key={p.propositionId} className="py-1 font-semibold text-slate-100">
-                {p.blueprint.name}
+                {p.rig.name}
               </th>
             ))}
           </tr>
@@ -117,7 +117,7 @@ export function PropositionCard({
   const [launching, setLaunching] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
   const [showTrial, setShowTrial] = useState(false);
-  const b = proposition.blueprint;
+  const b = proposition.rig;
   const a = proposition.assessment;
   const rankLabel =
     proposition.rank === 1
@@ -438,15 +438,12 @@ export function ShipyardView({
                 {batch.source === "claude"
                   ? "by Claude"
                   : batch.source === "imported"
-                    ? "imported from your Claude chat"
+                    ? "imported from a chat"
                     : "samples"}
               </span>
             </h2>
             <span className="text-xs text-slate-400">
-              {batch.brief.instruments.map(pair).join(", ")} · {batch.brief.riskAppetite}
-              {batch.brief.styles.length > 0
-                ? ` · ${batch.brief.styles.map((s) => ARCHETYPE_LABELS[s]).join(", ")}`
-                : ""}
+              {batch.brief.instruments.map(pair).join(", ")}
             </span>
           </div>
           {batch.note && <Banner kind="info">{batch.note}</Banner>}

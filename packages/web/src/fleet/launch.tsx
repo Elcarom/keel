@@ -14,7 +14,7 @@ export function LaunchForm({
   onCancel: () => void;
 }) {
   const firstFunded = wallets.find((w) => Number(w.availableUsdt) >= 100) ?? wallets[0];
-  const [name, setName] = useState(proposition.blueprint.name);
+  const [name, setName] = useState(proposition.rig.name);
   const [walletId, setWalletId] = useState(firstFunded?.walletId ?? "");
   const wallet = wallets.find((w) => w.walletId === walletId);
   const suggested = wallet

@@ -1,4 +1,4 @@
-import { ARCHETYPE_LABELS, pairLegs, type BotBlueprint } from "@keel/core";
+import { ARCHETYPE_LABELS, pairLegs, type Rig } from "@keel/core";
 import {
   StrategySpecV1Schema,
   type Condition,
@@ -10,8 +10,8 @@ import { TIMEFRAME_HOURS } from "./timeframes.js";
 import { conditionShift, parseInventionRules } from "./invention.js";
 
 // ============================================================================
-// Boat Blueprints: the flat, bounded shape an LLM fills in. Deterministic code (never the model)
-// compiles a blueprint into a Strategy Spec, so every rule a boat trades on is one of a few
+// Boat Rigs: the flat, bounded shape an LLM fills in. Deterministic code (never the model)
+// compiles a rig into a Strategy Spec, so every rule a boat trades on is one of a few
 // reviewed archetypes with clamped parameters.
 // ============================================================================
 
@@ -58,14 +58,14 @@ interface ArchetypeRules {
   readonly extraBars: number;
 }
 
-function rulesFor(b: BotBlueprint): ArchetypeRules {
+function rulesFor(b: Rig): ArchetypeRules {
   const close = bar("close");
   const L = b.lookbackPeriod;
   const F = b.fastPeriod;
   const T = b.entryThreshold;
   switch (b.archetype) {
     case "invented": {
-      if (!b.invention) throw new Error("An invented blueprint needs its invention");
+      if (!b.invention) throw new Error("An invented rig needs its invention");
       const rules = parseInventionRules(b.invention);
       return {
         ...rules,
@@ -312,7 +312,7 @@ function warmupBars(def: IndicatorDef): number {
   return hours > 1 ? (bars + 1) * hours : bars;
 }
 
-/** Which leg of a pair a spec trades: 0 is the blueprint's own market, 1 its `pairWith`. */
+/** Which leg of a pair a spec trades: 0 is the rig's own market, 1 its `pairWith`. */
 export type PairLeg = 0 | 1;
 
 /** Swaps two market ids everywhere they appear as a `market`, so a pair's rules mirror. */
@@ -323,7 +323,7 @@ function swapMarkets<T>(value: T, a: string, b: string): T {
 }
 
 /**
- * Compiles a blueprint into a validated Strategy Spec. `specName` becomes the strategy id, so
+ * Compiles a rig into a validated Strategy Spec. `specName` becomes the strategy id, so
  * each boat (and each proposition) trades and backtests under an id of its own.
  *
  * A pair compiles once per leg (ADR-0032). Each leg runs the same rules with the other coin as
@@ -331,32 +331,28 @@ function swapMarkets<T>(value: T, a: string, b: string): T {
  * way for the second: one leg buys exactly when the other sells. Both legs carry the same
  * percentage stop, and exits come from the rules and the time limit rather than a target.
  */
-export function compileBlueprint(
-  blueprint: BotBlueprint,
-  specName: string,
-  leg: PairLeg = 0
-): StrategySpecV1 {
-  const legs = pairLegs(blueprint);
-  const base = rulesFor(blueprint);
+export function compileRig(rig: Rig, specName: string, leg: PairLeg = 0): StrategySpecV1 {
+  const legs = pairLegs(rig);
+  const base = rulesFor(rig);
   const rules = legs && leg === 1 ? swapMarkets(base, legs[0], legs[1]) : base;
   const longest = Math.max(ATR_PERIOD, ...rules.indicators.map(warmupBars));
   // The second leg trades the mirror image, so "long only" (buy the first coin) means it sells
   const direction =
     legs && leg === 1
-      ? blueprint.direction === "long_only"
+      ? rig.direction === "long_only"
         ? "short_only"
-        : blueprint.direction === "short_only"
+        : rig.direction === "short_only"
           ? "long_only"
           : "both"
-      : blueprint.direction;
-  const traded = legs ? legs[leg] : blueprint.instrumentId;
+      : rig.direction;
+  const traded = legs ? legs[leg] : rig.instrumentId;
   const partner = legs ? legs[leg === 0 ? 1 : 0] : null;
   return StrategySpecV1Schema.parse({
     name: specName,
     version: 1,
     description: (partner
-      ? `${ARCHETYPE_LABELS[blueprint.archetype]}, ${traded} leg against ${partner}: ${blueprint.tagline}`
-      : `${ARCHETYPE_LABELS[blueprint.archetype]} on ${traded}: ${blueprint.tagline}`
+      ? `${ARCHETYPE_LABELS[rig.archetype]}, ${traded} leg against ${partner}: ${rig.tagline}`
+      : `${ARCHETYPE_LABELS[rig.archetype]} on ${traded}: ${rig.tagline}`
     ).slice(0, 2000),
     timeframe: "1H",
     lookbacks: { "1H": Math.min(MAX_LOOKBACK_BARS, longest + rules.extraBars + 2) },
@@ -371,20 +367,20 @@ export function compileBlueprint(
       stopModel: partner
         ? {
             kind: "pair_atr",
-            multiplier: blueprint.stopAtrMultiple,
+            multiplier: rig.stopAtrMultiple,
             atrPeriod: ATR_PERIOD,
             market: partner
           }
         : {
             kind: "atr_multiple",
-            multiplier: blueprint.stopAtrMultiple,
+            multiplier: rig.stopAtrMultiple,
             atrPeriod: ATR_PERIOD
           },
       // A pair leaves on its rules or its time limit; the far target only guards a runaway leg
-      takeProfit: { rewardMultiple: partner ? 10 : blueprint.rewardMultiple },
-      ...(blueprint.maxBarsHeld ? { timeStopBars: blueprint.maxBarsHeld } : {}),
-      ...(blueprint.trailingAtrMultiple && !partner
-        ? { trailingStop: { atrMultiple: blueprint.trailingAtrMultiple, atrPeriod: ATR_PERIOD } }
+      takeProfit: { rewardMultiple: partner ? 10 : rig.rewardMultiple },
+      ...(rig.maxBarsHeld ? { timeStopBars: rig.maxBarsHeld } : {}),
+      ...(rig.trailingAtrMultiple && !partner
+        ? { trailingStop: { atrMultiple: rig.trailingAtrMultiple, atrPeriod: ATR_PERIOD } }
         : {})
     },
     cooldownBars: 0

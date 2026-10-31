@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. This partly supersedes ADR-0024's "the model drafts Blueprints, never strategies".
+Accepted. This partly supersedes ADR-0024's "the model drafts Blueprints, never strategies". ADR-0034 makes the Inventor the Shipyard's only designer.
 
 ## Context and Decision
 

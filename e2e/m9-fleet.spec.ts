@@ -19,15 +19,12 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await page.getByTestId("bootstrap-submit-btn").click();
     await expect(page.getByTestId("fleet-app")).toBeVisible();
 
-    // Shipyard: a guided brief; simulated AI drafts sample propositions
+    // Shipyard: a guided brief; without Claude linked, the Inventor offers sample inventions
     await page.getByTestId("tab-shipyard").click();
-    // Without a key the Shipyard opens on Inventor via your chat; switch to Blueprints
-    await expect(page.getByTestId("designer-source")).toContainText("your own Claude chat");
-    await page.getByTestId("mode-blueprint").click();
-    await expect(page.getByTestId("designer-source")).toContainText("sample mode");
-    await page.getByTestId("brief-styles-toggle").click();
-    await page.getByTestId("style-breakout").click();
-    await page.getByTestId("style-mean_reversion").click();
+    // Without Claude the Shipyard opens on the Inventor via a chat; switch to the Inventor
+    await expect(page.getByTestId("designer-source")).toContainText("a chat of your choosing");
+    await page.getByTestId("mode-inventor").click();
+    await expect(page.getByTestId("designer-source")).toContainText("samples");
     await page.getByTestId("brief-notes").fill("something steady for the e2e run");
     await page.getByTestId("design-submit-btn").click();
 
@@ -98,9 +95,7 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(page.getByTestId("back-to-fleet")).toBeVisible();
   });
 
-  test("hands the Inventor prompt to the operator's own Claude chat and imports its answer", async ({
-    page
-  }) => {
+  test("hands the Inventor prompt to a chat and imports its answer", async ({ page }) => {
     test.setTimeout(480_000);
     await page.goto("/");
     const bootstrapPanel = page.getByTestId("bootstrap-panel");
@@ -114,8 +109,8 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await page.getByTestId("tab-shipyard").click();
 
     // Step 1: Keel writes the prompt for the brief
-    await page.getByTestId("mode-import").click();
-    await expect(page.getByTestId("designer-source")).toContainText("your own Claude chat");
+    await page.getByTestId("mode-chat").click();
+    await expect(page.getByTestId("designer-source")).toContainText("a chat of your choosing");
     await page.getByTestId("import-count-10").click();
     await page.getByTestId("brief-notes").fill("session handovers");
     await page.getByTestId("get-inventor-prompt-btn").click();
@@ -153,10 +148,11 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     // The first test's own batch is listed too, so find the import by its label
     const batch = page
       .getByTestId("design-batch")
-      .filter({ hasText: "imported from your Claude chat" })
+      .filter({ hasText: "imported from a chat" })
       .first();
-    await expect(batch).toBeVisible();
-    await expect(batch.getByText("✦ Invented in your Claude chat")).toBeVisible();
+    // A sea trial already under way can hold up the list for a few seconds
+    await expect(batch).toBeVisible({ timeout: 60_000 });
+    await expect(batch.getByText("✦ Invented in a chat")).toBeVisible();
     await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
     await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
   });

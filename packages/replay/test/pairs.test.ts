@@ -3,12 +3,12 @@ import {
   ManualClock,
   ScaledDecimal,
   defaultInstrumentSpec,
-  normalizeBlueprint,
-  type BotBlueprintDraftInput,
+  normalizeRig,
+  type RigDraftInput,
   type RawOkxCandlePayload
 } from "@keel/core";
 import { createSqliteDataStore, type SqliteDataStore } from "@keel/data";
-import { SpecStrategy, compileBlueprint } from "@keel/spec";
+import { SpecStrategy, compileRig } from "@keel/spec";
 import { runPairReplay } from "../src/index.js";
 
 const HOUR = 3_600_000;
@@ -57,8 +57,8 @@ function seedPair(store: SqliteDataStore): void {
   });
 }
 
-function pairBlueprint(changes: Partial<BotBlueprintDraftInput> = {}) {
-  return normalizeBlueprint({
+function pairRig(changes: Partial<RigDraftInput> = {}) {
+  return normalizeRig({
     name: "Catamaran",
     tagline: "Two hulls.",
     archetype: "pair_reversion",
@@ -75,14 +75,14 @@ function pairBlueprint(changes: Partial<BotBlueprintDraftInput> = {}) {
   });
 }
 
-function replayPair(changes: Partial<BotBlueprintDraftInput> = {}) {
+function replayPair(changes: Partial<RigDraftInput> = {}) {
   const store = createSqliteDataStore({ dbPath: ":memory:", clock: new ManualClock(END) });
   seedPair(store);
-  const b = pairBlueprint(changes);
+  const b = pairRig(changes);
   const result = runPairReplay(store.marketDataRepo, {
     legs: [
-      { instrumentId: "ETH-USDT-SWAP", strategy: new SpecStrategy(compileBlueprint(b, "pair", 0)) },
-      { instrumentId: "BTC-USDT-SWAP", strategy: new SpecStrategy(compileBlueprint(b, "pair", 1)) }
+      { instrumentId: "ETH-USDT-SWAP", strategy: new SpecStrategy(compileRig(b, "pair", 0)) },
+      { instrumentId: "BTC-USDT-SWAP", strategy: new SpecStrategy(compileRig(b, "pair", 1)) }
     ],
     fromTs: END - (BARS - 60) * HOUR,
     toTs: END,
@@ -159,15 +159,15 @@ describe("Pair replay", () => {
 
   it("refuses to read the sealed holdout", () => {
     const store = createSqliteDataStore({ dbPath: ":memory:", clock: new ManualClock(END) });
-    const b = pairBlueprint();
+    const b = pairRig();
     expect(() =>
       runPairReplay(store.marketDataRepo, {
         legs: [
           {
             instrumentId: "ETH-USDT-SWAP",
-            strategy: new SpecStrategy(compileBlueprint(b, "p", 0))
+            strategy: new SpecStrategy(compileRig(b, "p", 0))
           },
-          { instrumentId: "BTC-USDT-SWAP", strategy: new SpecStrategy(compileBlueprint(b, "p", 1)) }
+          { instrumentId: "BTC-USDT-SWAP", strategy: new SpecStrategy(compileRig(b, "p", 1)) }
         ],
         fromTs: 1_735_000_000_000,
         toTs: 1_740_000_000_000,

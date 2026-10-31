@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import {
-  blueprintMarkets,
+  rigMarkets,
   keelApiContract,
-  type BlueprintArchetype,
+  type RigArchetype,
   type Bot,
-  type BotBlueprint,
+  type Rig,
   type DesignSource,
   type Verdict
 } from "@keel/core";
@@ -74,8 +74,8 @@ export function coin(instrumentId: string): string {
   return instrumentId.replace("-USDT-SWAP", "");
 }
 
-/** A blueprint's optional exits, appended to its settings line. */
-export function exitsLabel(b: Pick<BotBlueprint, "trailingAtrMultiple" | "maxBarsHeld">): string {
+/** A rig's optional exits, appended to its settings line. */
+export function exitsLabel(b: Pick<Rig, "trailingAtrMultiple" | "maxBarsHeld">): string {
   return (
     (b.trailingAtrMultiple ? ` · trails ${b.trailingAtrMultiple}× ATR` : "") +
     (b.maxBarsHeld ? ` · out after ${b.maxBarsHeld}h` : "")
@@ -84,10 +84,10 @@ export function exitsLabel(b: Pick<BotBlueprint, "trailingAtrMultiple" | "maxBar
 
 /** The coins a boat trades: "BTC perp" for one, "SOL + AVAX + LINK" for a basket, "ETH vs BTC" for a pair. */
 export function marketsLabel(
-  b: Pick<BotBlueprint, "instrumentId" | "basket"> & Partial<Pick<BotBlueprint, "pairWith">>
+  b: Pick<Rig, "instrumentId" | "basket"> & Partial<Pick<Rig, "pairWith">>
 ): string {
   if (b.pairWith) return `${coin(b.instrumentId)} vs ${coin(b.pairWith)}`;
-  const markets = blueprintMarkets(b);
+  const markets = rigMarkets(b);
   return markets.length === 1 ? pair(b.instrumentId) : markets.map(coin).join(" + ");
 }
 
@@ -105,7 +105,7 @@ export function ArchetypeIcon({
   archetype,
   className = "h-5 w-5"
 }: {
-  archetype: BlueprintArchetype;
+  archetype: RigArchetype;
   className?: string;
 }) {
   const common = {
@@ -258,7 +258,7 @@ export function InventionRules({ rules }: { rules: readonly string[] }) {
 
 export const INVENTED_BADGES: Record<DesignSource, string> = {
   claude: "✦ Invented by Claude",
-  imported: "✦ Invented in your Claude chat",
+  imported: "✦ Invented in a chat",
   sample: "✦ Sample invention"
 };
 

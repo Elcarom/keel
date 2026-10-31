@@ -219,7 +219,8 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "The Inventor prompt to paste into a Claude chat, which answers with a JSON file"
+      summary:
+        "The Inventor prompt to paste into a chat with any model, which answers with a JSON file"
     },
     importInventions: {
       method: "POST",
@@ -230,7 +231,7 @@ export const keelApiContract = c.router({
           /** Null when no invention in the file passed Keel's checks. */
           batch: DesignBatchSchema.nullable(),
           rejected: z.array(InventionRejectionSchema),
-          /** A message to paste back into the same Claude chat to fix what was rejected. */
+          /** A message to paste back into the same chat to fix what was rejected. */
           repairPrompt: z.string().nullable()
         }),
         400: ApiErrorSchema,

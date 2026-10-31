@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   TIMEFRAME_DURATION_MS,
-  blueprintMarkets,
-  normalizeBlueprint,
+  rigMarkets,
+  normalizeRig,
   pairLegs,
-  type BotBlueprintDraftInput,
+  type RigDraftInput,
   type ConfirmedBar,
   type DesignBrief
 } from "@keel/core";
 import { reconcilePairLegs } from "@keel/strategy";
-import { SpecStrategy, checkInvention, compileBlueprint } from "../src/index.js";
+import { SpecStrategy, checkInvention, compileRig } from "../src/index.js";
 
 const HOUR = TIMEFRAME_DURATION_MS["1H"];
 const START = Date.UTC(2024, 5, 3);
@@ -33,8 +33,8 @@ function series(instrumentId: string, closes: readonly number[]): ConfirmedBar[]
   }));
 }
 
-function pair(changes: Partial<BotBlueprintDraftInput> = {}) {
-  return normalizeBlueprint({
+function pair(changes: Partial<RigDraftInput> = {}) {
+  return normalizeRig({
     name: "Catamaran",
     tagline: "Two hulls.",
     archetype: "pair_reversion",
@@ -58,11 +58,11 @@ const btcBars = series(BTC, btcCloses);
 const ethBars = series(ETH, ethCloses);
 const asOfMs = START + 60 * HOUR;
 
-describe("Pair blueprints", () => {
+describe("Pair rigs", () => {
   it("pair a coin with a different one, and nothing else", () => {
     const b = pair();
     expect(pairLegs(b)).toEqual([ETH, BTC]);
-    expect(blueprintMarkets(b)).toEqual([ETH, BTC]);
+    expect(rigMarkets(b)).toEqual([ETH, BTC]);
     expect(b.basket).toEqual([]);
     expect(b.trailingAtrMultiple).toBeNull();
     // A pair always has a time limit: three lookbacks unless told otherwise
@@ -77,8 +77,8 @@ describe("Pair blueprints", () => {
 
   it("compile into mirrored legs: one buys exactly when the other sells", () => {
     const b = pair();
-    const first = new SpecStrategy(compileBlueprint(b, "pair", 0));
-    const second = new SpecStrategy(compileBlueprint(b, "pair", 1));
+    const first = new SpecStrategy(compileRig(b, "pair", 0));
+    const second = new SpecStrategy(compileRig(b, "pair", 1));
     expect(first.referenceMarkets).toEqual([BTC]);
     expect(second.referenceMarkets).toEqual([ETH]);
 
@@ -111,8 +111,8 @@ describe("Pair blueprints", () => {
 
   it("mirror a one-way pair: long only buys the first coin, so the second leg only sells", () => {
     const b = pair({ direction: "long_only" });
-    const first = compileBlueprint(b, "pair", 0);
-    const second = compileBlueprint(b, "pair", 1);
+    const first = compileRig(b, "pair", 0);
+    const second = compileRig(b, "pair", 1);
     const never = { type: "comparison", op: "<" };
     expect(first.rules.shortEntry).toMatchObject(never);
     expect(second.rules.longEntry).toMatchObject(never);
@@ -179,16 +179,16 @@ describe("Pair inventions", () => {
     const check = checkInvention(invention, brief);
     expect(check.ok).toBe(true);
     if (!check.ok) return;
-    expect(check.blueprint.pairWith).toBe(BTC);
-    expect(check.blueprint.maxBarsHeld).toBe(144);
-    expect(check.blueprint.invention?.rules[0]).toBe(
+    expect(check.rig.pairWith).toBe(BTC);
+    expect(check.rig.maxBarsHeld).toBe(144);
+    expect(check.rig.invention?.rules[0]).toBe(
       "A pair: ETH against BTC, one long and one short, entering and leaving together"
     );
-    expect(check.blueprint.invention?.rules[1]).toBe(
+    expect(check.rig.invention?.rules[1]).toBe(
       "Buys ETH and sells BTC when z-score of the spread to BTC (48) ≤ -2"
     );
     // The second leg reads ETH where the first read BTC
-    const second = new SpecStrategy(compileBlueprint(check.blueprint, "inv", 1));
+    const second = new SpecStrategy(compileRig(check.rig, "inv", 1));
     expect(second.referenceMarkets).toEqual([ETH]);
   });
 

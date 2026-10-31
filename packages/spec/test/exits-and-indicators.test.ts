@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TIMEFRAME_DURATION_MS, type ConfirmedBar, type DesignBrief } from "@keel/core";
-import { SpecStrategy, aggregateBars, checkInvention, compileBlueprint } from "../src/index.js";
+import { SpecStrategy, aggregateBars, checkInvention, compileRig } from "../src/index.js";
 
 const BRIEF: Pick<DesignBrief, "instruments" | "direction"> = {
   instruments: ["SOL-USDT-SWAP"],
@@ -55,7 +55,7 @@ function strategyFor(raw: Record<string, unknown>): SpecStrategy {
     BRIEF
   );
   if (!check.ok) throw new Error(check.error);
-  return new SpecStrategy(compileBlueprint(check.blueprint, "exit_test"));
+  return new SpecStrategy(compileRig(check.rig, "exit_test"));
 }
 
 const snapshot = (
@@ -136,7 +136,7 @@ describe("Exits", () => {
       BRIEF
     );
     if (!check.ok) throw new Error(check.error);
-    expect(check.blueprint.invention?.rules.slice(3)).toEqual([
+    expect(check.rig.invention?.rules.slice(3)).toEqual([
       "Exit longs when close > SMA(3)",
       "Trail the stop 2.5× ATR(14) behind each close",
       "Close any position after 48 hours"
@@ -273,8 +273,8 @@ describe("Higher timeframes and funding", () => {
       BRIEF
     );
     if (!check.ok) throw new Error(check.error);
-    expect(check.blueprint.invention?.rules[0]).toBe("Long when close > daily close");
-    const strategy = new SpecStrategy(compileBlueprint(check.blueprint, "daily_test"));
+    expect(check.rig.invention?.rules[0]).toBe("Long when close > daily close");
+    const strategy = new SpecStrategy(compileRig(check.rig, "daily_test"));
     // Day one closes at 100; day two climbs to 120 by its 10th hour
     const twoDays = series([
       ...Array.from({ length: 24 }, () => 100),

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ARCHETYPE_LABELS, blueprintMarkets, type Bot, type FleetOverview } from "@keel/core";
+import { ARCHETYPE_LABELS, rigMarkets, type Bot, type FleetOverview } from "@keel/core";
 import {
   ArchetypeIcon,
   Banner,
@@ -47,7 +47,7 @@ export function BotCard({
   const [open, setOpen] = useState(false);
   const pnl = Number(bot.pnlUsdt);
   const positions = bot.openPositions;
-  const many = blueprintMarkets(bot.blueprint).length > 1;
+  const many = rigMarkets(bot.rig).length > 1;
   return (
     <article
       data-testid="bot-card"
@@ -56,7 +56,7 @@ export function BotCard({
       <header className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <div className="rounded-xl bg-teal-400/10 p-2 text-teal-200">
-            <ArchetypeIcon archetype={bot.blueprint.archetype} />
+            <ArchetypeIcon archetype={bot.rig.archetype} />
           </div>
           <div>
             <h3 data-testid="bot-name" className="text-lg leading-tight font-bold text-slate-50">
@@ -70,9 +70,9 @@ export function BotCard({
               </button>
             </h3>
             <p className="text-xs text-slate-400">
-              {ARCHETYPE_LABELS[bot.blueprint.archetype]} ·{" "}
-              <span data-testid="bot-markets">{marketsLabel(bot.blueprint)}</span> ·{" "}
-              {DIRECTION_LABELS[bot.blueprint.direction]}
+              {ARCHETYPE_LABELS[bot.rig.archetype]} ·{" "}
+              <span data-testid="bot-markets">{marketsLabel(bot.rig)}</span> ·{" "}
+              {DIRECTION_LABELS[bot.rig.direction]}
             </p>
           </div>
         </div>
@@ -217,7 +217,7 @@ export function BotCard({
 }
 
 export function BotLogbook({ bot }: { bot: Bot }) {
-  const b = bot.blueprint;
+  const b = bot.rig;
   return (
     <div className="space-y-4 border-t border-[#243140] pt-4 text-xs">
       <div>
@@ -328,7 +328,7 @@ function FleetTable({ bots, onOpen }: { bots: readonly Bot[]; onOpen: (bot: Bot)
                   {b.name}
                 </button>
               </td>
-              <td className="py-1.5 font-sans text-slate-300">{marketsLabel(b.blueprint)}</td>
+              <td className="py-1.5 font-sans text-slate-300">{marketsLabel(b.rig)}</td>
               <td className="py-1.5 font-sans">
                 <span className="flex gap-1.5">
                   <StatusChip status={b.status} />

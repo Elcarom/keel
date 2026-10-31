@@ -1,4 +1,4 @@
-import { type BotBlueprint, type IndicatorKind, type Invention } from "@keel/core";
+import { type Rig, type IndicatorKind, type Invention } from "@keel/core";
 import {
   ConditionSchema,
   IndicatorDefSchema,
@@ -218,9 +218,9 @@ export function conditionShift(cond: Condition, defs?: ReadonlyMap<string, Indic
   }
 }
 
-/** Plain-English rules for a blueprint's invention, honouring its direction and basket. */
+/** Plain-English rules for a rig's invention, honouring its direction and basket. */
 export function describeInvention(
-  b: Pick<BotBlueprint, "direction" | "stopAtrMultiple" | "rewardMultiple"> & {
+  b: Pick<Rig, "direction" | "stopAtrMultiple" | "rewardMultiple"> & {
     readonly basket?: readonly string[] | undefined;
     readonly instrumentId?: string | undefined;
     readonly trailingAtrMultiple?: number | null | undefined;
@@ -312,11 +312,7 @@ function scaleCondition(cond: Condition, factor: number): Condition {
  * The same invention with every indicator window scaled by `periodScale` and every number in its
  * rules by `constantScale`: the nudges a sea trial checks an invention survives.
  */
-export function nudgeInvention(
-  b: BotBlueprint,
-  periodScale: number,
-  constantScale: number
-): BotBlueprint {
+export function nudgeInvention(b: Rig, periodScale: number, constantScale: number): Rig {
   if (!b.invention) return b;
   const rules = parseInventionRules(b.invention);
   const invention: Invention = {

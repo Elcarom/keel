@@ -552,15 +552,15 @@
     "testName": "trades only confirmed bars that close after launch, and retiring returns equity to the wallet"
   },
   {
-    "id": "CLAIM-BLUEPRINT-CLAMP",
+    "id": "CLAIM-RIG-CLAMP",
     "claim": "Every model-chosen bot parameter is clamped into a reviewed range before compilation.",
-    "testFile": "packages/spec/test/blueprint.test.ts",
+    "testFile": "packages/spec/test/rig.test.ts",
     "testName": "clamps every model-chosen parameter into its reviewed range"
   },
   {
-    "id": "CLAIM-BLUEPRINT-STOP",
-    "claim": "Every proposal from a compiled bot blueprint carries a protective stop.",
-    "testFile": "packages/spec/test/blueprint.test.ts",
+    "id": "CLAIM-RIG-STOP",
+    "claim": "Every proposal from a compiled bot rig carries a protective stop.",
+    "testFile": "packages/spec/test/rig.test.ts",
     "testName": "attaches a protective stop to every proposal"
   },
   {
@@ -614,7 +614,7 @@
   {
     "id": "CLAIM-ARCHETYPE-FAILED-BREAKOUT",
     "claim": "A failed-breakout boat enters only once the close is back inside the channel.",
-    "testFile": "packages/spec/test/blueprint.test.ts",
+    "testFile": "packages/spec/test/rig.test.ts",
     "testName": "fades a failed breakout only once the close is back inside the channel"
   },
   {

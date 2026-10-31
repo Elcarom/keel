@@ -3,13 +3,13 @@ import {
   BOT_ARCHETYPES,
   PAIR_ARCHETYPES,
   TIMEFRAME_DURATION_MS,
-  normalizeBlueprint,
-  type BotBlueprintDraft,
+  normalizeRig,
+  type RigDraft,
   type ConfirmedBar
 } from "@keel/core";
-import { SpecStrategy, compileBlueprint } from "../src/index.js";
+import { SpecStrategy, compileRig } from "../src/index.js";
 
-const DRAFT: BotBlueprintDraft = {
+const DRAFT: RigDraft = {
   name: "Breakwater",
   tagline: "Charges through the harbour wall.",
   archetype: "breakout",
@@ -47,10 +47,8 @@ function breakoutBars(direction: "up" | "down"): ConfirmedBar[] {
   return bars;
 }
 
-function sidesProposed(direction: BotBlueprintDraft["direction"], move: "up" | "down") {
-  const strategy = new SpecStrategy(
-    compileBlueprint(normalizeBlueprint({ ...DRAFT, direction }), "bot_test")
-  );
+function sidesProposed(direction: RigDraft["direction"], move: "up" | "down") {
+  const strategy = new SpecStrategy(compileRig(normalizeRig({ ...DRAFT, direction }), "bot_test"));
   const bars = breakoutBars(move);
   const menu = strategy.evaluate({
     instrumentId: "BTC-USDT-SWAP",
@@ -61,9 +59,9 @@ function sidesProposed(direction: BotBlueprintDraft["direction"], move: "up" | "
   return menu.proposals.map((p) => p.side);
 }
 
-describe("Bot blueprints", () => {
+describe("Bot rigs", () => {
   it("clamps every model-chosen parameter into its reviewed range", () => {
-    const b = normalizeBlueprint({
+    const b = normalizeRig({
       ...DRAFT,
       name: "A name far longer than any vessel should ever carry on her bow",
       lookbackPeriod: 9000,
@@ -81,13 +79,13 @@ describe("Bot blueprints", () => {
   });
 
   it("keeps the fast average faster than the slow one", () => {
-    const b = normalizeBlueprint({ ...DRAFT, lookbackPeriod: 10, fastPeriod: 40 });
+    const b = normalizeRig({ ...DRAFT, lookbackPeriod: 10, fastPeriod: 40 });
     expect(b.fastPeriod).toBeLessThan(b.lookbackPeriod);
   });
 
   it("compiles every archetype into a valid spec named after the bot", () => {
     for (const archetype of BOT_ARCHETYPES) {
-      const spec = compileBlueprint(normalizeBlueprint({ ...DRAFT, archetype }), "bot_abc");
+      const spec = compileRig(normalizeRig({ ...DRAFT, archetype }), "bot_abc");
       expect(spec.name).toBe("bot_abc");
       // A pair's legs share one percentage stop (ADR-0032)
       expect(spec.risk.stopModel.kind).toBe(
@@ -105,7 +103,7 @@ describe("Bot blueprints", () => {
   });
 
   it("attaches a protective stop to every proposal", () => {
-    const strategy = new SpecStrategy(compileBlueprint(normalizeBlueprint(DRAFT), "bot_stop"));
+    const strategy = new SpecStrategy(compileRig(normalizeRig(DRAFT), "bot_stop"));
     const bars = breakoutBars("up");
     const menu = strategy.evaluate({
       instrumentId: "BTC-USDT-SWAP",
@@ -206,10 +204,7 @@ describe("Boat archetypes on a changing sea", () => {
     "%s trades both sides, always with the protective stop on the losing side",
     (archetype) => {
       const strategy = new SpecStrategy(
-        compileBlueprint(
-          normalizeBlueprint({ ...DRAFT, archetype, entryThreshold: 1 }),
-          `bot_${archetype}`
-        )
+        compileRig(normalizeRig({ ...DRAFT, archetype, entryThreshold: 1 }), `bot_${archetype}`)
       );
       const window = strategy.lookbacks["1H"] ?? 50;
       let longs = 0;
@@ -236,8 +231,8 @@ describe("Boat archetypes on a changing sea", () => {
 
   it("fades a failed breakout only once the close is back inside the channel", () => {
     const strategy = new SpecStrategy(
-      compileBlueprint(
-        normalizeBlueprint({ ...DRAFT, archetype: "failed_breakout", lookbackPeriod: 10 }),
+      compileRig(
+        normalizeRig({ ...DRAFT, archetype: "failed_breakout", lookbackPeriod: 10 }),
         "bot_fade"
       )
     );
@@ -252,8 +247,8 @@ describe("Boat archetypes on a changing sea", () => {
 
   it("only takes an inside-bar breakout in the direction of the trend", () => {
     const strategy = new SpecStrategy(
-      compileBlueprint(
-        normalizeBlueprint({ ...DRAFT, archetype: "inside_bar_breakout", lookbackPeriod: 20 }),
+      compileRig(
+        normalizeRig({ ...DRAFT, archetype: "inside_bar_breakout", lookbackPeriod: 20 }),
         "bot_inside"
       )
     );
@@ -269,8 +264,8 @@ describe("Boat archetypes on a changing sea", () => {
 
   it("only counts a breakout when volume surges past the average", () => {
     const strategy = new SpecStrategy(
-      compileBlueprint(
-        normalizeBlueprint({
+      compileRig(
+        normalizeRig({
           ...DRAFT,
           archetype: "volume_breakout",
           lookbackPeriod: 10,

@@ -63,7 +63,7 @@ function bot(overrides: Partial<Bot> = {}): Bot {
     botId: "b1",
     name: "Trade Wind",
     tagline: "Rides the wind.",
-    blueprint: {
+    rig: {
       name: "Trade Wind",
       tagline: "Rides the wind.",
       archetype: "momentum",
@@ -127,7 +127,7 @@ function proposition(id: string, overrides: Partial<Assessment> = {}): Propositi
     batchId: "d1",
     createdAtMs: 0,
     source: "claude",
-    blueprint: { ...bot().blueprint, name: `Idea ${id}` },
+    rig: { ...bot().rig, name: `Idea ${id}` },
     status: "ranked",
     assessment: { ...ASSESSMENT, ...overrides },
     rank: 1,

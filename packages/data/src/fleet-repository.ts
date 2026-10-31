@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   AssessmentSchema,
-  BotBlueprintSchema,
+  RigSchema,
   BotStatusSchema,
   BatchBriefSchema,
   DesignSourceSchema,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS fleet_bots (
   bot_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   tagline TEXT NOT NULL,
-  blueprint_json TEXT NOT NULL,
+  rig_json TEXT NOT NULL,
   wallet_id TEXT NOT NULL,
   allocation_usdt TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS fleet_propositions (
   batch_id TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL,
   source TEXT NOT NULL,
-  blueprint_json TEXT NOT NULL,
+  rig_json TEXT NOT NULL,
   status TEXT NOT NULL,
   assessment_json TEXT,
   rank INTEGER,
@@ -112,7 +112,7 @@ function mapBot(row: Row): BotRecord {
     botId: str(row, "bot_id"),
     name: str(row, "name"),
     tagline: str(row, "tagline"),
-    blueprint: BotBlueprintSchema.parse(JSON.parse(str(row, "blueprint_json"))),
+    rig: RigSchema.parse(JSON.parse(str(row, "rig_json"))),
     walletId: str(row, "wallet_id"),
     allocationUsdt: str(row, "allocation_usdt"),
     status: BotStatusSchema.parse(str(row, "status")),
@@ -141,7 +141,7 @@ function mapProposition(row: Row): PropositionRecord {
     batchId: str(row, "batch_id"),
     createdAtMs: Number(row["created_at_ms"]),
     source: DesignSourceSchema.parse(str(row, "source")),
-    blueprint: BotBlueprintSchema.parse(JSON.parse(str(row, "blueprint_json"))),
+    rig: RigSchema.parse(JSON.parse(str(row, "rig_json"))),
     status: PropositionStatusSchema.parse(str(row, "status")),
     assessment: assessment === null ? null : AssessmentSchema.parse(JSON.parse(assessment)),
     rank: nullableNum(row, "rank"),
@@ -199,7 +199,7 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
     saveBot(bot: BotRecord): BotRecord {
       db.prepare(
         `INSERT INTO fleet_bots (
-          bot_id, name, tagline, blueprint_json, wallet_id, allocation_usdt, status, status_reason,
+          bot_id, name, tagline, rig_json, wallet_id, allocation_usdt, status, status_reason,
           created_at_ms, retired_at_ms, proposition_id, backtest_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(bot_id) DO UPDATE SET
@@ -213,7 +213,7 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
         bot.botId,
         bot.name,
         bot.tagline,
-        JSON.stringify(bot.blueprint),
+        JSON.stringify(bot.rig),
         bot.walletId,
         bot.allocationUsdt,
         bot.status,
@@ -263,7 +263,7 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
     saveProposition(p: PropositionRecord): PropositionRecord {
       db.prepare(
         `INSERT INTO fleet_propositions (
-          proposition_id, batch_id, created_at_ms, source, blueprint_json, status,
+          proposition_id, batch_id, created_at_ms, source, rig_json, status,
           assessment_json, rank, error, bot_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(proposition_id) DO UPDATE SET
@@ -277,7 +277,7 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
         p.batchId,
         p.createdAtMs,
         p.source,
-        JSON.stringify(p.blueprint),
+        JSON.stringify(p.rig),
         p.status,
         p.assessment === null ? null : JSON.stringify(p.assessment),
         p.rank,

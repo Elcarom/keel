@@ -2,7 +2,7 @@
 
 **Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on your own server: Unraid, or any Docker host. A keel keeps a ship steady, and the whole product follows the sea:
 
-- **The Shipyard** drafts strategy **Propositions**. Claude can fill one of 13 reviewed **Blueprints**, invent brand-new entry rules in **Inventor Mode**, or you can import inventions from your own Claude chat with no API fees. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
+- **The Shipyard** drafts strategy **Propositions**. The **Inventor** has Claude, on your subscription, write brand-new entry rules; the **Inventor via a chat** does the same with any model you choose and brings its answer back as a file. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
 - **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin, a **Basket** of up to five, or a **Pair Boat** that holds one coin against another, from its own **Boat Book** and stake.
 - **The Treasury** holds the paper **Wallets** that fund the Fleet.
 - **The Engine Room** links Claude and Discord, switches on the Fleet's autonomy, and holds the Kill Switch, backups and the audit trail.
@@ -56,6 +56,8 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
   - [ADR-0030: Unattended Fleet Duties and the Diversity Guard](./docs/adr/0030-fleet-duties-and-diversity.md)
   - [ADR-0031: Higher-Timeframe Bars and Funding in the Rule Language](./docs/adr/0031-higher-timeframes-and-funding.md)
   - [ADR-0032: Pair Boats Hold One Coin Against Another](./docs/adr/0032-pair-boats.md)
+  - [ADR-0033: A Self-Managing Fleet, Researched by Claude on the Owner's Subscription](./docs/adr/0033-self-managing-fleet.md)
+  - [ADR-0034: The Shipyard Only Invents, and Blueprints Become Rigs](./docs/adr/0034-inventor-only-shipyard.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)

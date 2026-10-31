@@ -31,7 +31,7 @@ export {
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
-  neighbourBlueprints,
+  neighbourRigs,
   weeklyCorrelation,
   type SeaTrialInput,
   type SeaTrialSettings,

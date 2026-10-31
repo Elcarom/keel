@@ -1,18 +1,18 @@
 import {
   BOT_DIRECTIONS,
-  BotBlueprintSchema,
+  RigSchema,
   FLEET_INSTRUMENTS,
   INDICATOR_KINDS,
   MAX_BOAT_MARKETS,
   MAX_IMPORTED_INVENTIONS,
-  blueprintMarkets,
-  type BotBlueprint,
+  rigMarkets,
+  type Rig,
   type DesignBrief,
   type FleetInstrument,
   type Invention
 } from "@keel/core";
 import { z } from "zod";
-import { compileBlueprint } from "./blueprint.js";
+import { compileRig } from "./rig.js";
 import { ConditionSchema, type Condition, type NumExpr } from "./index.js";
 import { HigherTimeframeSchema, TIMEFRAME_HOURS } from "./timeframes.js";
 import { INDICATOR_OUTPUTS, MAX_INVENTION_SHIFT, describeInvention } from "./invention.js";
@@ -50,7 +50,7 @@ export const InventionDraftSchema = z.object({
 });
 
 export type InventionCheck =
-  | { readonly ok: true; readonly blueprint: BotBlueprint }
+  | { readonly ok: true; readonly rig: Rig }
   | { readonly ok: false; readonly name: string; readonly error: string };
 
 function zodMessage(error: z.ZodError, prefix = ""): string {
@@ -137,7 +137,7 @@ function conditionProblems(
 }
 
 /**
- * Checks one invention as Claude wrote it and turns it into a blueprint. The brief's instruments
+ * Checks one invention as Claude wrote it and turns it into a rig. The brief's instruments
  * and direction override the model's; numbers outside the reviewed ranges are clamped; anything
  * that would not compile is reported in words Claude can act on.
  */
@@ -235,7 +235,7 @@ export function checkInvention(
   // The basket keeps only coins the brief allows, after the boat's own market
   const basket = pairWith
     ? []
-    : blueprintMarkets({
+    : rigMarkets({
         instrumentId,
         basket: (d.basket ?? []).filter((m): m is FleetInstrument => instruments.includes(m))
       }).slice(1);
@@ -256,7 +256,7 @@ export function checkInvention(
     pairWith || d.trailingAtrMultiple === null || d.trailingAtrMultiple === undefined
       ? null
       : clamp(d.trailingAtrMultiple, 0.5, 6);
-  // A pair always has a time limit, as a pair blueprint does
+  // A pair always has a time limit, as a pair rig does
   const maxBarsHeld =
     d.maxBarsHeld === null || d.maxBarsHeld === undefined
       ? pairWith
@@ -272,7 +272,7 @@ export function checkInvention(
     ...(shortExit.data ? { shortExit: shortExit.data } : {}),
     rules: []
   };
-  const blueprint = BotBlueprintSchema.parse({
+  const rig = RigSchema.parse({
     name: d.name.trim().slice(0, 40),
     tagline: d.tagline.trim().slice(0, 160),
     archetype: "invented",
@@ -307,13 +307,13 @@ export function checkInvention(
   });
 
   try {
-    compileBlueprint(blueprint, "invention_check");
-    if (pairWith) compileBlueprint(blueprint, "invention_check", 1);
+    compileRig(rig, "invention_check");
+    if (pairWith) compileRig(rig, "invention_check", 1);
   } catch (err) {
     if (err instanceof z.ZodError) return fail(zodMessage(err));
     return fail(err instanceof Error ? err.message : String(err));
   }
-  return { ok: true, blueprint };
+  return { ok: true, rig };
 }
 
 /**
@@ -328,10 +328,10 @@ export function checkImportedInvention(raw: unknown): InventionCheck {
     typeof raw === "object" && raw !== null && "instrumentId" in raw
       ? (raw as { instrumentId: unknown }).instrumentId
       : undefined;
-  if (asked !== check.blueprint.instrumentId) {
+  if (asked !== check.rig.instrumentId) {
     return {
       ok: false,
-      name: check.blueprint.name,
+      name: check.rig.name,
       error: `instrumentId must be one of ${MARKET_LIST}`
     };
   }
@@ -344,14 +344,14 @@ export function checkImportedInvention(raw: unknown): InventionCheck {
     if (unknown !== undefined) {
       return {
         ok: false,
-        name: check.blueprint.name,
+        name: check.rig.name,
         error: `basket: "${String(unknown)}" must be one of ${MARKET_LIST}`
       };
     }
-    if (new Set([check.blueprint.instrumentId, ...basket]).size > MAX_BOAT_MARKETS) {
+    if (new Set([check.rig.instrumentId, ...basket]).size > MAX_BOAT_MARKETS) {
       return {
         ok: false,
-        name: check.blueprint.name,
+        name: check.rig.name,
         error: `a boat trades at most ${MAX_BOAT_MARKETS} coins: instrumentId plus up to ${MAX_BOAT_MARKETS - 1} in basket`
       };
     }

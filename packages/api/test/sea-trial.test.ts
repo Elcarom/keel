@@ -8,7 +8,7 @@ import {
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
-  neighbourBlueprints,
+  neighbourRigs,
   weeklyCorrelation,
   type SeaTrialInput
 } from "../src/index.js";
@@ -306,17 +306,17 @@ describe("Sea trial", () => {
       rewardMultiple: 2,
       rationale: ""
     };
-    const withTrigger = neighbourBlueprints({ ...base, archetype: "mean_reversion" });
+    const withTrigger = neighbourRigs({ ...base, archetype: "mean_reversion" });
     expect(withTrigger.map((n) => n.label)).toEqual([
       "Window −25%",
       "Window +33%",
       "Trigger −20%",
       "Trigger +25%"
     ]);
-    expect(withTrigger[2]?.blueprint.entryThreshold).toBe(1.6);
-    expect(withTrigger[0]?.blueprint.lookbackPeriod).toBe(30);
-    const noTrigger = neighbourBlueprints({ ...base, archetype: "breakout" });
+    expect(withTrigger[2]?.rig.entryThreshold).toBe(1.6);
+    expect(withTrigger[0]?.rig.lookbackPeriod).toBe(30);
+    const noTrigger = neighbourRigs({ ...base, archetype: "breakout" });
     expect(noTrigger[3]?.label).toBe("Stop +33%");
-    expect(noTrigger[3]?.blueprint.stopAtrMultiple).toBe(2.66);
+    expect(noTrigger[3]?.rig.stopAtrMultiple).toBe(2.66);
   });
 });

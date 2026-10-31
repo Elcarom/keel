@@ -165,7 +165,7 @@ Every Boat the operator has launched, with the Wallets that fund them.
 _Avoid_: Portfolio, swarm, hive
 
 **Boat**:
-A running instance of one Strategy compiled from a Blueprint, with a name, a stake drawn from a Wallet, and its own Boat Book. A Boat is running (at sea), paused (in harbour, flat and not trading) or retired (flat for good, its equity returned to the Wallet).
+A running instance of one Strategy compiled from a Rig, with a name, a stake drawn from a Wallet, and its own Boat Book. A Boat is running (at sea), paused (in harbour, flat and not trading) or retired (flat for good, its equity returned to the Wallet).
 _Avoid_: Bot (in operator-facing text), Strategy, agent, bee
 
 **Basket**:
@@ -224,24 +224,24 @@ _Avoid_: Account, sub-account, balance
 The cash a Boat is launched with, drawn from its Wallet; the Boat's starting equity.
 _Avoid_: Allocation (in operator-facing text), budget
 
-**Blueprint**:
-A bounded description of a Boat's trading idea: one of a fixed set of archetypes plus clamped parameters, compiled deterministically into a Strategy Spec.
-_Avoid_: Prompt, config, recipe
+**Rig**:
+How a Boat is set up to sail: its coins, its entry rules (an Invention, or one of the older reviewed archetypes), its stop, target and exits, compiled deterministically into a Strategy Spec.
+_Avoid_: Blueprint (its former name), prompt, config, recipe
 
 **Invention**:
-Entry rules Claude wrote itself in the Strategy Spec condition language, instead of tuning one of the reviewed archetypes. Keel checks every Invention against the language's limits, attaches the protective stop and take-profit itself, and renders the rules in plain English. A Blueprint holds at most one Invention.
+Entry rules a model wrote itself in the Strategy Spec condition language. Keel checks every Invention against the language's limits, attaches the protective stop and take-profit itself, and renders the rules in plain English. A Rig holds at most one Invention.
 _Avoid_: Custom strategy, AI strategy (the AI never trades it; the compiled rules do)
 
-**Inventor Mode**:
-The Shipyard mode in which Claude writes Inventions rather than filling Blueprints.
-_Avoid_: Free mode, creative mode
+**Inventor**:
+The Shipyard's only way to design: Claude, on the owner's subscription, writes Inventions for a brief. The **Inventor via a chat** does the same in a chat with any model the owner chooses.
+_Avoid_: Inventor Mode, Blueprint mode, free mode, creative mode
 
 **Imported Invention**:
-An Invention the operator brings in as a file, written by Claude in the operator's own chat rather than through Keel's API key. It keeps its own market and direction, and faces exactly the checks and Sea Trial any other Invention faces.
+An Invention the operator brings in as a file, written in a chat with a model of the operator's choosing rather than by Keel's own Inventor. It keeps its own market and direction, and faces exactly the checks and Sea Trial any other Invention faces.
 _Avoid_: Uploaded strategy, manual strategy
 
 **Proposition**:
-A Blueprint offered as a candidate Boat, with its Sea Trial Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
+A Rig offered as a candidate Boat, with its Sea Trial Assessment and rank within its design batch. Not to be confused with a **Proposal**, which is a single trade intent.
 _Avoid_: Proposal, idea, candidate strategy
 
 **Shipyard**:

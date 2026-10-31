@@ -1,9 +1,9 @@
 import {
   ScaledDecimal,
-  normalizeBlueprint,
+  normalizeRig,
   type Assessment,
   type BotArchetype,
-  type BotBlueprint,
+  type Rig,
   type ConfirmedBar,
   type SeaTrial,
   type SeaTrialCheck,
@@ -105,32 +105,29 @@ const IGNORES_THRESHOLD: ReadonlySet<BotArchetype> = new Set([
  * The parameter nudges a robust idea should survive: the main window shorter and longer, then
  * the trigger (or, where there is none, the stop) tighter and looser.
  */
-export function neighbourBlueprints(
-  b: BotBlueprint
-): readonly { readonly label: string; readonly blueprint: BotBlueprint }[] {
+export function neighbourRigs(b: Rig): readonly { readonly label: string; readonly rig: Rig }[] {
   // Inventions have no fixed parameters: nudge every window, then every threshold in the rules
   const archetype = b.archetype;
   if (archetype === "invented") {
     return [
-      { label: "Windows −25%", blueprint: nudgeInvention(b, 0.75, 1) },
-      { label: "Windows +33%", blueprint: nudgeInvention(b, 1.33, 1) },
-      { label: "Thresholds −10%", blueprint: nudgeInvention(b, 1, 0.9) },
-      { label: "Thresholds +10%", blueprint: nudgeInvention(b, 1, 1.1) }
+      { label: "Windows −25%", rig: nudgeInvention(b, 0.75, 1) },
+      { label: "Windows +33%", rig: nudgeInvention(b, 1.33, 1) },
+      { label: "Thresholds −10%", rig: nudgeInvention(b, 1, 0.9) },
+      { label: "Thresholds +10%", rig: nudgeInvention(b, 1, 1.1) }
     ];
   }
-  const nudge = (changes: Partial<BotBlueprint>) =>
-    normalizeBlueprint({ ...b, ...changes, archetype });
+  const nudge = (changes: Partial<Rig>) => normalizeRig({ ...b, ...changes, archetype });
   const windows = [
     {
       label: "Window −25%",
-      blueprint: nudge({
+      rig: nudge({
         lookbackPeriod: b.lookbackPeriod * 0.75,
         fastPeriod: b.fastPeriod * 0.75
       })
     },
     {
       label: "Window +33%",
-      blueprint: nudge({
+      rig: nudge({
         lookbackPeriod: b.lookbackPeriod * 1.33,
         fastPeriod: b.fastPeriod * 1.33
       })
@@ -139,14 +136,14 @@ export function neighbourBlueprints(
   if (IGNORES_THRESHOLD.has(archetype)) {
     return [
       ...windows,
-      { label: "Stop −25%", blueprint: nudge({ stopAtrMultiple: b.stopAtrMultiple * 0.75 }) },
-      { label: "Stop +33%", blueprint: nudge({ stopAtrMultiple: b.stopAtrMultiple * 1.33 }) }
+      { label: "Stop −25%", rig: nudge({ stopAtrMultiple: b.stopAtrMultiple * 0.75 }) },
+      { label: "Stop +33%", rig: nudge({ stopAtrMultiple: b.stopAtrMultiple * 1.33 }) }
     ];
   }
   return [
     ...windows,
-    { label: "Trigger −20%", blueprint: nudge({ entryThreshold: b.entryThreshold * 0.8 }) },
-    { label: "Trigger +25%", blueprint: nudge({ entryThreshold: b.entryThreshold * 1.25 }) }
+    { label: "Trigger −20%", rig: nudge({ entryThreshold: b.entryThreshold * 0.8 }) },
+    { label: "Trigger +25%", rig: nudge({ entryThreshold: b.entryThreshold * 1.25 }) }
   ];
 }
 

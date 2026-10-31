@@ -1,6 +1,6 @@
 import {
   FLEET_INSTRUMENTS,
-  blueprintMarkets,
+  rigMarkets,
   LOOKALIKE_CORRELATION,
   ScaledDecimal,
   type Bot,
@@ -52,10 +52,7 @@ export interface FleetDutiesPort {
   retire(botId: string, reason: string): Bot;
   design(
     brief: {
-      readonly mode: "blueprint" | "inventor";
       readonly instruments: (typeof FLEET_INSTRUMENTS)[number][];
-      readonly styles: [];
-      readonly riskAppetite: "balanced";
       readonly direction: "any";
       readonly count: number;
       readonly notes: string;
@@ -170,14 +167,14 @@ export function boatRecord(bot: Bot, nowMs: number, minLiveDays: number): string
   const trial = t
     ? `sea trial scored ${t.score} (${signedPct(t.returnPct)} over ${t.days} days, ${t.totalTrades} trades, ${Math.round(t.winRate * 100)}% won, worst dip ${t.maxDrawdownPct.toFixed(1)}%)`
     : "no sea trial";
-  const coins = blueprintMarkets(bot.blueprint)
+  const coins = rigMarkets(bot.rig)
     .map((m) => m.replace("-USDT-SWAP", ""))
     .join("/");
   const standingText = standing
     ? `, standing ${standing.score}${standing.proven ? "" : " (still proving itself)"}`
     : "";
   const drifting = bot.health === "drifting" ? ", drifting from its sea trial" : "";
-  return `${bot.name} (${bot.blueprint.archetype}, ${coins}, ${bot.status}): ${trial}; at sea ${days} days: ${signedPct(bot.returnPct)}, ${bot.tradesCount} trades, ${Math.round(bot.winRate * 100)}% won, worst dip ${bot.maxDrawdownPct.toFixed(1)}%${standingText}${drifting}.`;
+  return `${bot.name} (${bot.rig.archetype}, ${coins}, ${bot.status}): ${trial}; at sea ${days} days: ${signedPct(bot.returnPct)}, ${bot.tradesCount} trades, ${Math.round(bot.winRate * 100)}% won, worst dip ${bot.maxDrawdownPct.toFixed(1)}%${standingText}${drifting}.`;
 }
 
 /** A boat name no boat has taken yet, retired ones included. */
@@ -405,7 +402,7 @@ export class FleetDuties {
         return;
       }
       const bot = this.fleet.launch(candidate.proposition.propositionId, {
-        name: freeName(candidate.proposition.blueprint.name, overview.bots),
+        name: freeName(candidate.proposition.rig.name, overview.bots),
         walletId: wallet.walletId,
         allocationUsdt: stake.toFixed(2)
       });
@@ -441,7 +438,7 @@ export class FleetDuties {
       this.notes.set(
         "autopilot",
         challenger
-          ? `The fleet is full: the best proposition, ${challenger.proposition.blueprint.name} (${challenger.score}), needs ${needed} to replace ${weakest.bot.name} (standing ${weakest.st.score})`
+          ? `The fleet is full: the best proposition, ${challenger.proposition.rig.name} (${challenger.score}), needs ${needed} to replace ${weakest.bot.name} (standing ${weakest.st.score})`
           : `The fleet is full and no original proposition could replace ${weakest.bot.name} (standing ${weakest.st.score})`
       );
       return;
@@ -457,7 +454,7 @@ export class FleetDuties {
     c: Candidate,
     bots: readonly Bot[]
   ): void {
-    const name = freeName(c.proposition.blueprint.name, bots);
+    const name = freeName(c.proposition.rig.name, bots);
     const kind = c.upgradeOf === old.botId ? "its Upgrade" : "a better proposition";
     this.fleet.retire(
       old.botId,
@@ -503,7 +500,7 @@ export class FleetDuties {
     const fleetReport = bots
       .filter((b) => b.status !== "retired")
       .map((b) => boatRecord(b, now, cfg.autopilotMinLiveDays));
-    const coin = (p: Proposition) => p.blueprint.instrumentId.replace("-USDT-SWAP", "");
+    const coin = (p: Proposition) => p.rig.instrumentId.replace("-USDT-SWAP", "");
     const failed = this.fleet
       .listDesigns(30)
       .flatMap((batch) => batch.propositions)
@@ -512,19 +509,17 @@ export class FleetDuties {
         const a = p.assessment;
         if (p.status === "failed") {
           return [
-            `${p.blueprint.name} (${p.blueprint.archetype}, ${coin(p)}) could not be tested: ${p.error ?? "unknown error"}`
+            `${p.rig.name} (${p.rig.archetype}, ${coin(p)}) could not be tested: ${p.error ?? "unknown error"}`
           ];
         }
         if (!a || (a.verdict !== "sinks" && a.verdict !== "choppy")) return [];
         const missed = (a.seaTrial?.checks ?? []).filter((c) => !c.passed).map((c) => c.label);
         const why = missed.length > 0 ? `; failed ${missed.join(", ")}` : "";
-        return [
-          `${p.blueprint.name} (${p.blueprint.archetype}, ${coin(p)}) ${a.verdict}: ${a.headline}${why}`
-        ];
+        return [`${p.rig.name} (${p.rig.archetype}, ${coin(p)}) ${a.verdict}: ${a.headline}${why}`];
       });
     const left = bots
       .filter((b) => /^(Drift watch|Replaced by)/.test(b.statusReason ?? ""))
-      .map((b) => `${b.name} (${b.blueprint.archetype}) left the fleet: ${b.statusReason ?? ""}`);
+      .map((b) => `${b.name} (${b.rig.archetype}) left the fleet: ${b.statusReason ?? ""}`);
     return { fleetReport, lessons: [...left, ...failed].slice(0, 15), improve: null };
   }
 
@@ -573,10 +568,7 @@ export class FleetDuties {
     try {
       await this.fleet.design(
         {
-          mode: cfg.nightShiftMode,
           instruments: [...FLEET_INSTRUMENTS],
-          styles: [],
-          riskAppetite: "balanced",
           direction: "any",
           count: cfg.nightShiftCount,
           notes:
@@ -593,10 +585,7 @@ export class FleetDuties {
       try {
         await this.fleet.design(
           {
-            mode: boat.blueprint.archetype === "invented" ? "inventor" : "blueprint",
             instruments: [...FLEET_INSTRUMENTS],
-            styles: [],
-            riskAppetite: "balanced",
             direction: "any",
             count: 2,
             notes: `Night shift Upgrade: improve on ${boat.name}.`
@@ -605,7 +594,7 @@ export class FleetDuties {
             ...research,
             improve: {
               name: boat.name,
-              blueprint: boat.blueprint,
+              rig: boat.rig,
               record: boatRecord(boat, now, cfg.autopilotMinLiveDays)
             }
           },

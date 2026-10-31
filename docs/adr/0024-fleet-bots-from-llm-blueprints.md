@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Blueprint mode was retired, and Blueprints renamed Rigs, by ADR-0034.
 
 ## Context and Decision
 

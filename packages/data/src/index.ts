@@ -263,6 +263,14 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   db.exec(PAPER_SCHEMA_SQL);
   db.exec(SPEC_SCHEMA_SQL);
   db.exec(FLEET_SCHEMA_SQL);
+  for (const table of ["fleet_bots", "fleet_propositions"]) {
+    try {
+      // A boat's design was once called its Blueprint (ADR-0034)
+      db.exec(`ALTER TABLE ${table} RENAME COLUMN blueprint_json TO rig_json`);
+    } catch {
+      // Column already renamed
+    }
+  }
   try {
     db.exec("ALTER TABLE admin_users ADD COLUMN totp_last_step INTEGER");
   } catch {

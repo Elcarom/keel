@@ -1,60 +1,13 @@
 import { useRef, useState } from "react";
 import {
-  ARCHETYPE_FAMILIES,
-  ARCHETYPE_FAMILY,
-  ARCHETYPE_LABELS,
-  BOT_ARCHETYPES,
   FLEET_INSTRUMENTS,
-  type ArchetypeFamily,
-  type BotArchetype,
-  type DesignMode,
   type DesignBrief,
   type FleetInstrument,
   type FleetOverview,
   type InventionRejection,
   type InventorPromptRequest
 } from "@keel/core";
-import {
-  ArchetypeIcon,
-  Banner,
-  Chip,
-  api,
-  card,
-  coin,
-  errorOf,
-  ghostBtn,
-  input,
-  primaryBtn
-} from "./ui.js";
-
-// ---------------------------------------------------------------------------
-// Shipyard
-// ---------------------------------------------------------------------------
-
-export const ARCHETYPE_HINTS: Record<BotArchetype, string> = {
-  breakout: "Charges through when price escapes its range",
-  mean_reversion: "Fades stretched moves back to the mean",
-  momentum: "Rides strong impulses while they last",
-  ma_crossover: "Changes tack when averages cross",
-  trend_pullback: "Follows the trend, boards on the dips",
-  squeeze_breakout: "Waits out the calm, sails off when it breaks",
-  volume_breakout: "Only trusts breakouts with a crowd behind them",
-  inside_bar_breakout: "A quiet bar, then a push with the current",
-  keltner_ride: "Rides once price clears its volatility band",
-  regime_momentum: "Momentum, but only with the big current",
-  rsi_reversal: "Catches the turn out of an overstretched sea",
-  failed_breakout: "Bets on breakouts that bounce off the wall",
-  capitulation_fade: "Buys what a panic bar left behind",
-  pair_reversion: "Two coins lashed together: leans on the one that drifted too far",
-  pair_momentum: "Holds the faster of two coins against the slower"
-};
-
-export const FAMILY_LABELS: Record<ArchetypeFamily, string> = {
-  trend: "Trend followers",
-  breakout: "Breakouts",
-  reversion: "Reversion",
-  pairs: "Pairs: one coin against another"
-};
+import { Banner, Chip, api, card, coin, errorOf, ghostBtn, input, primaryBtn } from "./ui.js";
 
 export const MAJORS: readonly FleetInstrument[] = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"];
 
@@ -100,8 +53,8 @@ export function CopyBox({
 }
 
 /**
- * Inventor mode without the API: Keel writes the prompt, the operator runs it in their own Claude
- * chat, and the JSON that comes back is checked and sea-trialled like any other invention.
+ * The Inventor via a chat: Keel writes the prompt, the operator runs it in a chat with any model,
+ * and the JSON that comes back is checked and sea-trialled like any other invention.
  */
 export function ImportSteps({
   request,
@@ -156,11 +109,11 @@ export function ImportSteps({
   return (
     <div className="space-y-5" data-testid="import-steps">
       <div className="rounded-xl border border-[#2B3947] p-4">
-        <p className={step}>1 · Ask your own Claude</p>
+        <p className={step}>1 · Ask the model of your choice</p>
         <p className="mb-3 text-xs text-slate-400">
           Keel writes a prompt holding the whole rule language and your brief above. Paste it into a
-          new chat at claude.ai. That uses your subscription, so there are no API fees. Opus with
-          extended thinking gives the most inventive answers.
+          new chat with any model you like. The strongest reasoning models give the most inventive
+          answers.
         </p>
         {prompt === null ? (
           <button
@@ -188,8 +141,9 @@ export function ImportSteps({
       <div className="rounded-xl border border-[#2B3947] p-4">
         <p className={step}>2 · Bring the answer back</p>
         <p className="mb-3 text-xs text-slate-400">
-          Choose the .json file Claude made, or paste its whole reply. Keel finds the JSON, checks
-          every rule, attaches the stop and puts each invention that passes through a sea trial.
+          Choose the .json file the model made, or paste its whole reply. Keel finds the JSON,
+          checks every rule, attaches the stop and puts each invention that passes through a sea
+          trial.
         </p>
         <input
           type="file"
@@ -203,7 +157,7 @@ export function ImportSteps({
           value={text}
           data-testid="import-text"
           onChange={(e) => setText(e.target.value)}
-          placeholder={'…or paste Claude\'s reply here: {"propositions": [ … ]}'}
+          placeholder={'…or paste the reply here: {"propositions": [ … ]}'}
           className={`${input} font-mono-tabular text-xs`}
         />
         <div className="mt-3 flex justify-end">
@@ -244,8 +198,8 @@ export function ImportSteps({
           {result.repairPrompt && (
             <>
               <p className="text-xs text-slate-400">
-                Paste this into the same Claude chat to have the rejected ones fixed, then import
-                its answer:
+                Paste this into the same chat to have the rejected ones fixed, then import its
+                answer:
               </p>
               <CopyBox text={result.repairPrompt} testId="repair-prompt" rows={4} />
             </>
@@ -263,23 +217,18 @@ export function BriefForm({
   onDesigned: () => Promise<void>;
   designer: FleetOverview["designer"];
 }) {
-  // With Claude on hand, Inventor is the default; without a key, Inventor via your own chat
+  // With Claude linked the Inventor is the default; without it, the Inventor via a chat
   const claude = designer.source === "claude";
   const [brief, setBrief] = useState<DesignBrief>({
-    mode: claude ? "inventor" : "blueprint",
-    instruments: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
-    styles: [],
-    riskAppetite: "balanced",
+    instruments: [...MAJORS],
     direction: "any",
     count: 4,
     notes: ""
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Import is Inventor mode run in the operator's own Claude chat, so it is not a DesignMode
-  const [importing, setImporting] = useState(!claude);
-  const [importCount, setImportCount] = useState(6);
-  const inventing = importing || brief.mode === "inventor";
+  const [viaChat, setViaChat] = useState(!claude);
+  const [chatCount, setChatCount] = useState(6);
 
   const toggleInstrument = (id: FleetInstrument) =>
     setBrief((b) => {
@@ -287,11 +236,6 @@ export function BriefForm({
       const next = has ? b.instruments.filter((i) => i !== id) : [...b.instruments, id];
       return next.length === 0 ? b : { ...b, instruments: next };
     });
-  const toggleStyle = (s: BotArchetype) =>
-    setBrief((b) => ({
-      ...b,
-      styles: b.styles.includes(s) ? b.styles.filter((x) => x !== s) : [...b.styles, s]
-    }));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,6 +250,7 @@ export function BriefForm({
     }
   };
 
+  const legend = "mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase";
   return (
     <form
       onSubmit={(e) => void submit(e)}
@@ -316,78 +261,64 @@ export function BriefForm({
         <div>
           <h2 className="text-lg font-bold text-slate-50">Draw up a brief</h2>
           <p className="text-sm text-slate-400">
-            {inventing
-              ? "Claude invents brand-new entry rules. Keel checks every rule, attaches the stop and puts each invention through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged windows and thresholds, and a sibling market. Then it ranks them."
-              : "Claude drafts the propositions. Keel then puts every one through a sea trial: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market. Then it ranks them."}
+            A model invents brand-new entry rules. Keel checks every rule, attaches the stop and
+            puts each invention through a sea trial, then ranks them.
           </p>
         </div>
         <span
           data-testid="designer-source"
           className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-            designer.source === "claude"
+            viaChat || claude
               ? "border-teal-400/40 text-teal-200"
               : "border-amber-400/40 text-amber-200"
           }`}
         >
-          {importing
-            ? "Designer: your own Claude chat"
-            : designer.source === "claude"
-              ? `Designer: Claude (${designer.model})`
-              : "Designer: sample mode (no Anthropic key)"}
+          {viaChat
+            ? "Inventor: a chat of your choosing"
+            : claude
+              ? `Inventor: Claude (${designer.model})`
+              : "Inventor: samples (Claude not linked)"}
         </span>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Design mode">
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Inventor">
         {(
           [
             [
-              "blueprint",
-              "Blueprints",
-              "Claude picks and tunes one of 13 reviewed strategy shapes."
-            ],
-            [
+              false,
               "inventor",
               "✦ Inventor",
-              "Claude writes brand-new rules from indicators, price, volume and the clock. Thinks harder; costs a little more per brief."
+              "Claude, on your subscription, writes new rules from indicators, price, volume and the clock."
             ],
             [
-              "import",
-              "⇅ Inventor via your chat",
-              "Inventor mode with no API fees: copy Keel's prompt into claude.ai, then bring back the JSON file it writes."
+              true,
+              "chat",
+              "⇅ Inventor via a chat",
+              "Use any model you like: copy Keel's prompt into its chat, then bring back the JSON it writes."
             ]
           ] as const
-        ).map(([mode, label, hint]) => {
-          const selected = mode === "import" ? importing : !importing && brief.mode === mode;
-          return (
-            <button
-              key={mode}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              data-testid={`mode-${mode}`}
-              onClick={() => {
-                setImporting(mode === "import");
-                if (mode !== "import") setBrief((b) => ({ ...b, mode: mode as DesignMode }));
-              }}
-              className={`rounded-xl border p-3 text-left transition ${
-                selected
-                  ? mode !== "blueprint"
-                    ? "border-violet-400 bg-violet-400/10"
-                    : "border-teal-400 bg-teal-400/10"
-                  : "border-[#2B3947] hover:border-slate-400"
-              }`}
-            >
-              <span className="block text-sm font-semibold text-slate-100">{label}</span>
-              <span className="block text-xs text-slate-400">{hint}</span>
-            </button>
-          );
-        })}
+        ).map(([chat, id, label, hint]) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={viaChat === chat}
+            data-testid={`mode-${id}`}
+            onClick={() => setViaChat(chat)}
+            className={`rounded-xl border p-3 text-left transition ${
+              viaChat === chat
+                ? "border-violet-400 bg-violet-400/10"
+                : "border-[#2B3947] hover:border-slate-400"
+            }`}
+          >
+            <span className="block text-sm font-semibold text-slate-100">{label}</span>
+            <span className="block text-xs text-slate-400">{hint}</span>
+          </button>
+        ))}
       </div>
 
       <fieldset>
-        <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-          Waters
-        </legend>
+        <legend className={legend}>Waters</legend>
         <div className="flex flex-wrap items-center gap-2">
           {FLEET_INSTRUMENTS.map((id) => (
             <Chip
@@ -418,96 +349,9 @@ export function BriefForm({
         </div>
       </fieldset>
 
-      {!inventing && (
-        <details
-          className="group rounded-xl border border-[#2B3947] p-3"
-          data-testid="brief-styles"
-        >
-          <summary
-            className="cursor-pointer text-xs font-semibold tracking-wide text-slate-400 uppercase"
-            data-testid="brief-styles-toggle"
-          >
-            Styles{" "}
-            <span className="tracking-normal normal-case text-slate-500">
-              — optional; leave closed to let Claude surprise you
-              {brief.styles.length > 0 ? ` (${brief.styles.length} picked)` : ""}
-            </span>
-          </summary>
-          <fieldset className="mt-3">
-            <legend className="sr-only">Styles</legend>
-            <div className="space-y-3">
-              {ARCHETYPE_FAMILIES.map((family) => (
-                <div key={family}>
-                  <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
-                    {FAMILY_LABELS[family]}
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {BOT_ARCHETYPES.filter((a) => ARCHETYPE_FAMILY[a] === family).map((s) => {
-                      const selected = brief.styles.includes(s);
-                      return (
-                        <button
-                          key={s}
-                          type="button"
-                          aria-pressed={selected}
-                          data-testid={`style-${s}`}
-                          onClick={() => toggleStyle(s)}
-                          className={`flex items-start gap-3 rounded-xl border p-3 text-left transition ${
-                            selected
-                              ? "border-teal-400 bg-teal-400/10"
-                              : "border-[#2B3947] hover:border-slate-400"
-                          }`}
-                        >
-                          <span className={selected ? "text-teal-200" : "text-slate-400"}>
-                            <ArchetypeIcon archetype={s} />
-                          </span>
-                          <span>
-                            <span className="block text-sm font-semibold text-slate-100">
-                              {ARCHETYPE_LABELS[s]}
-                            </span>
-                            <span className="block text-xs text-slate-400">
-                              {ARCHETYPE_HINTS[s]}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </fieldset>
-        </details>
-      )}
-
-      <div className="grid gap-5 md:grid-cols-3">
-        {importing ? (
-          <p className="text-xs text-slate-400">
-            Claude sets each invention&apos;s stop and target to suit its idea; Keel attaches the
-            stop.
-          </p>
-        ) : (
-          <fieldset>
-            <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              Appetite for risk
-            </legend>
-            <div className="flex flex-wrap gap-2">
-              {(["cautious", "balanced", "bold"] as const).map((r) => (
-                <Chip
-                  key={r}
-                  selected={brief.riskAppetite === r}
-                  onClick={() => setBrief((b) => ({ ...b, riskAppetite: r }))}
-                >
-                  {r[0]?.toUpperCase()}
-                  {r.slice(1)}
-                </Chip>
-              ))}
-            </div>
-          </fieldset>
-        )}
+      <div className="grid gap-5 sm:grid-cols-2">
         <fieldset>
-          <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-            Direction
-          </legend>
+          <legend className={legend}>Direction</legend>
           <div className="flex flex-wrap gap-2">
             {(
               [
@@ -527,16 +371,14 @@ export function BriefForm({
           </div>
         </fieldset>
         <fieldset>
-          <legend className="mb-2 text-xs font-semibold tracking-wide text-slate-400 uppercase">
-            How many ideas
-          </legend>
+          <legend className={legend}>How many ideas</legend>
           <div className="flex flex-wrap gap-2">
-            {importing
+            {viaChat
               ? [3, 6, 10, 15, 20].map((n) => (
                   <Chip
                     key={n}
-                    selected={importCount === n}
-                    onClick={() => setImportCount(n)}
+                    selected={chatCount === n}
+                    onClick={() => setChatCount(n)}
                     testId={`import-count-${n}`}
                   >
                     {n}
@@ -556,11 +398,8 @@ export function BriefForm({
       </div>
 
       <div>
-        <label
-          htmlFor="brief-notes"
-          className="mb-2 block text-xs font-semibold tracking-wide text-slate-400 uppercase"
-        >
-          {inventing ? "What edge are you hunting?" : "Anything else for Claude?"}
+        <label htmlFor="brief-notes" className={`${legend} block`}>
+          What edge are you hunting?
         </label>
         <textarea
           id="brief-notes"
@@ -569,21 +408,17 @@ export function BriefForm({
           maxLength={1000}
           value={brief.notes}
           onChange={(e) => setBrief((b) => ({ ...b, notes: e.target.value }))}
-          placeholder={
-            inventing
-              ? "e.g. fade the moves thin weekend books leave behind, or catch breakouts when Europe wakes up"
-              : "e.g. something calm that holds trades for a day or two, or a quick boat that only trades ETH breakouts"
-          }
+          placeholder="e.g. fade the moves thin weekend books leave behind, or catch breakouts when Europe wakes up"
           className={input}
         />
       </div>
 
-      {importing ? (
+      {viaChat ? (
         <ImportSteps
           request={{
             instruments: brief.instruments,
             direction: brief.direction,
-            count: importCount,
+            count: chatCount,
             notes: brief.notes
           }}
           onImported={onDesigned}
@@ -591,7 +426,6 @@ export function BriefForm({
       ) : (
         <>
           {error && <Banner kind="danger">{error}</Banner>}
-
           <div className="flex justify-end">
             <button
               type="submit"
@@ -599,13 +433,7 @@ export function BriefForm({
               className={primaryBtn}
               disabled={submitting}
             >
-              {submitting
-                ? brief.mode === "inventor"
-                  ? "Claude is at the drawing table…"
-                  : "Claude is sketching hulls…"
-                : brief.mode === "inventor"
-                  ? "Commission inventions"
-                  : "Draft propositions"}
+              {submitting ? "Claude is at the drawing table…" : "Commission inventions"}
             </button>
           </div>
         </>

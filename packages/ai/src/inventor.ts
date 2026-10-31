@@ -1,13 +1,13 @@
-import { FLEET_INSTRUMENTS, type BotBlueprint, type DesignBrief } from "@keel/core";
+import { FLEET_INSTRUMENTS, type Rig, type DesignBrief } from "@keel/core";
 
 // ============================================================================
-// Inventor mode: Claude writes new entry rules in the Strategy Spec condition language. Keel
+// The Inventor: Claude writes new entry rules in the Strategy Spec condition language. Keel
 // checks every invention (an injected checker from @keel/spec), asks Claude once to repair the
 // ones that fail, and drops what still fails. The model never touches stops or sizing.
 // ============================================================================
 
 export type InventionCheckResult =
-  | { readonly ok: true; readonly blueprint: BotBlueprint }
+  | { readonly ok: true; readonly rig: Rig }
   | { readonly ok: false; readonly name: string; readonly error: string };
 
 /** Validates one raw invention against the brief; implemented by @keel/spec's checkInvention. */
@@ -87,9 +87,8 @@ export interface InventorChatPromptOptions {
 }
 
 /**
- * The Inventor prompt for a Claude chat (claude.ai or any Claude app), so a subscription can stand
- * in for the API. It hands Claude the whole language and asks for range, not caution: Keel's checks
- * and the sea trial do the doubting.
+ * The Inventor prompt for a chat with any model the operator chooses. It hands the model the whole
+ * language and asks for range, not caution: Keel's checks and the sea trial do the doubting.
  */
 export function inventorChatPrompt(options: InventorChatPromptOptions): string {
   const n = options.count;
@@ -148,7 +147,7 @@ YOUR ANSWER
 Write one short line per strategy saying what it hunts. Then put all ${n} in a single ${FENCE}json code block as {"propositions":[ ... ]}, with exactly the fields of the output shape. Use no comments and no trailing commas in the JSON. If you can create files, also offer the JSON as keel-inventions.json.`;
 }
 
-/** A message for the same Claude chat, asking it to fix what Keel rejected from its file. */
+/** A message for the same chat, asking it to fix what Keel rejected from its file. */
 export function inventorChatRepairPrompt(
   rejected: readonly { readonly name: string; readonly error: string }[]
 ): string {
@@ -157,13 +156,6 @@ export function inventorChatRepairPrompt(
 
 ${problems}`;
 }
-
-/** Starting stop and target for sample inventions, by the brief's risk appetite. */
-const SAMPLE_RISK: Readonly<Record<DesignBrief["riskAppetite"], readonly [number, number]>> = {
-  cautious: [2.5, 1.5],
-  balanced: [2, 2],
-  bold: [1.5, 3]
-};
 
 const close = { type: "bar_field", field: "close" } as const;
 const k = (value: number) => ({ type: "constant", value }) as const;
@@ -180,7 +172,7 @@ const cmp = (left: unknown, op: string, right: unknown) => ({
 const and = (...operands: unknown[]) => ({ type: "logical_op", op: "and", operands });
 const times = (left: unknown, right: unknown) => ({ type: "binary_op", op: "*", left, right });
 
-/** Hand-written inventions for when no Anthropic key is set: real ideas, checked like Claude's. */
+/** Hand-written inventions for when Claude is not linked: real ideas, checked like Claude's. */
 const SAMPLE_INVENTIONS: readonly Record<string, unknown>[] = [
   {
     name: "Night Watch",
@@ -315,11 +307,10 @@ const SAMPLE_INVENTIONS: readonly Record<string, unknown>[] = [
 ];
 
 /**
- * Sample inventions shaped by the brief: instruments in turn, stops by risk appetite. A sample
- * marked sailsBasket trades every other offered coin too, up to a five-coin boat.
+ * Sample inventions shaped by the brief: instruments in turn, a 2 ATR stop and a 2R target. A
+ * sample marked sailsBasket trades every other offered coin too, up to a five-coin boat.
  */
 export function sampleInventions(brief: DesignBrief): unknown[] {
-  const [stop, reward] = SAMPLE_RISK[brief.riskAppetite];
   return Array.from({ length: brief.count }, (_, i) => {
     const { sailsBasket, ...sample } = SAMPLE_INVENTIONS[i % SAMPLE_INVENTIONS.length] ?? {};
     const instrumentId = brief.instruments[i % brief.instruments.length];
@@ -328,8 +319,8 @@ export function sampleInventions(brief: DesignBrief): unknown[] {
       instrumentId,
       basket: sailsBasket ? brief.instruments.filter((m) => m !== instrumentId).slice(0, 4) : [],
       direction: "both",
-      stopAtrMultiple: stop,
-      rewardMultiple: reward
+      stopAtrMultiple: 2,
+      rewardMultiple: 2
     };
   });
 }

@@ -5,13 +5,13 @@ import {
   LOOKALIKE_CORRELATION,
   SIBLING_INSTRUMENTS,
   ScaledDecimal,
-  blueprintMarkets,
+  rigMarkets,
   overlapsSealed2026Holdout,
   pairLegs,
   type Assessment,
   type BatchBrief,
   type Bot,
-  type BotBlueprint,
+  type Rig,
   type BotRecord,
   type BotTrade,
   type CircuitBreakerRecord,
@@ -60,12 +60,7 @@ import {
   type ReplayRunResult
 } from "@keel/replay";
 import { reconcilePairLegs } from "@keel/strategy";
-import {
-  SpecStrategy,
-  checkImportedInvention,
-  compileBlueprint,
-  readInventionFile
-} from "@keel/spec";
+import { SpecStrategy, checkImportedInvention, compileRig, readInventionFile } from "@keel/spec";
 import { FleetDuties, driftOf, standingOf } from "./fleet-duties.js";
 import { PaperBroker } from "./paper-broker.js";
 import {
@@ -77,7 +72,7 @@ import {
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
-  neighbourBlueprints,
+  neighbourRigs,
   variantOf,
   weeklyCorrelation,
   type SeaTrialSettings,
@@ -154,10 +149,9 @@ function fleetEquityHistory(bots: readonly Bot[]): EquityPoint[] {
   });
 }
 
-/** Other markets a blueprint's rules read, besides the coins it trades. */
-function referenceMarketsOf(b: BotBlueprint): FleetInstrument[] {
-  const markets: readonly string[] = new SpecStrategy(compileBlueprint(b, "references"))
-    .referenceMarkets;
+/** Other markets a rig's rules read, besides the coins it trades. */
+function referenceMarketsOf(b: Rig): FleetInstrument[] {
+  const markets: readonly string[] = new SpecStrategy(compileRig(b, "references")).referenceMarkets;
   return FLEET_INSTRUMENTS.filter((m) => markets.includes(m));
 }
 
@@ -224,7 +218,7 @@ function round(value: number, places = 2): number {
 /**
  * The Fleet: designs bots with the Bot Designer, backtests and ranks the propositions, and runs
  * each launched bot on its own paper Trading Book funded from a wallet. Every order decision is
- * the deterministic strategy and Risk Engine; the model only drafts blueprints.
+ * the deterministic strategy and Risk Engine; the model only drafts rigs.
  */
 export class FleetService {
   private readonly clock: Clock;
@@ -354,10 +348,10 @@ export class FleetService {
   ): Promise<DesignBatch> {
     const taken = this.repo.listBots().map((b) => b.name);
     const result = await this.designer.design(brief, taken, this.fleetSummary(), research);
-    return this.launchBatch({ ...brief, upgradeOf }, result.source, result.note, result.blueprints);
+    return this.launchBatch({ ...brief, upgradeOf }, result.source, result.note, result.rigs);
   }
 
-  /** The Inventor prompt to paste into a Claude chat, briefed like the Shipyard's own. */
+  /** The Inventor prompt to paste into a chat, briefed like the Shipyard's own. */
   public inventorPrompt(request: InventorPromptRequest): string {
     return inventorChatPrompt({
       ...request,
@@ -367,7 +361,7 @@ export class FleetService {
   }
 
   /**
-   * Imports inventions from a file a Claude chat wrote (ADR-0027). Each one faces exactly the
+   * Imports inventions from a file a chat wrote (ADR-0027). Each one faces exactly the
    * checks an API invention faces; those that pass are sea-trialled and ranked as a new batch, and
    * the rest come back with a repair message for the same chat.
    */
@@ -381,17 +375,14 @@ export class FleetService {
     const checks = file.inventions.map(checkImportedInvention);
     const rejected = checks.flatMap((c) => (c.ok ? [] : [{ name: c.name, error: c.error }]));
     const accepted = withUniqueNames(
-      checks.flatMap((c) => (c.ok ? [c.blueprint] : [])),
+      checks.flatMap((c) => (c.ok ? [c.rig] : [])),
       this.repo.listBots().map((b) => b.name)
     );
     const repairPrompt = rejected.length > 0 ? inventorChatRepairPrompt(rejected) : null;
     if (accepted.length === 0) return { batch: null, rejected, repairPrompt };
 
     const brief: BatchBrief = {
-      mode: "inventor",
       instruments: [...new Set(accepted.map((b) => b.instrumentId))],
-      styles: [],
-      riskAppetite: "balanced",
       direction: "any",
       count: accepted.length,
       notes: "Imported from a JSON file",
@@ -409,7 +400,7 @@ export class FleetService {
     brief: BatchBrief,
     source: DesignSource,
     note: string | null,
-    blueprints: readonly BotBlueprint[]
+    rigs: readonly Rig[]
   ): DesignBatch {
     const nowMs = this.clock.nowMs();
     const batch = this.repo.saveBatch({
@@ -419,13 +410,13 @@ export class FleetService {
       source,
       note
     });
-    for (const blueprint of blueprints) {
+    for (const rig of rigs) {
       this.repo.saveProposition({
         propositionId: newId("p", nowMs),
         batchId: batch.batchId,
         createdAtMs: nowMs,
         source,
-        blueprint,
+        rig,
         status: "assessing",
         assessment: null,
         rank: null,
@@ -479,7 +470,7 @@ export class FleetService {
         const say = (stage: string) =>
           this.progress.set(
             batchId,
-            `Sea trial ${index + 1} of ${pending.length}: ${proposition.blueprint.name} — ${stage}`
+            `Sea trial ${index + 1} of ${pending.length}: ${proposition.rig.name} — ${stage}`
           );
         try {
           const trial = await this.seaTrial(proposition, trials, say);
@@ -519,7 +510,7 @@ export class FleetService {
         .flatMap((batch) => this.repo.listPropositions(batch.batchId))
         .filter((p) => p.status === "ranked" && p.propositionId !== proposition.propositionId)
         .map((p) => ({
-          name: p.blueprint.name,
+          name: p.rig.name,
           kind: "proposition" as const,
           curve: p.assessment?.seaTrial?.weeklyEquityPct ?? []
         }))
@@ -544,9 +535,9 @@ export class FleetService {
         .map(([v, n]) => `${v} ${n}`)
         .join(", ");
     const families = active.map((b) =>
-      b.blueprint.archetype === "invented" ? "invented" : ARCHETYPE_FAMILY[b.blueprint.archetype]
+      b.rig.archetype === "invented" ? "invented" : ARCHETYPE_FAMILY[b.rig.archetype]
     );
-    const coins = active.flatMap((b) => blueprintMarkets(b.blueprint).map(coin));
+    const coins = active.flatMap((b) => rigMarkets(b.rig).map(coin));
     const holds = active
       .map((b) => b.backtest?.seaTrial?.avgHoldHours ?? 0)
       .filter((h) => h > 0)
@@ -576,16 +567,16 @@ export class FleetService {
   }
 
   private replay(
-    blueprint: Proposition["blueprint"],
+    rig: Proposition["rig"],
     strategyId: string,
     trials: number,
     full: boolean
   ): ReplayRunResult {
     const config = this.getConfig();
     return this.replayEngine.run({
-      instrumentId: blueprint.instrumentId,
+      instrumentId: rig.instrumentId,
       timeframe: "1H",
-      strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId)),
+      strategy: new SpecStrategy(compileRig(rig, strategyId)),
       fromTs: BACKTEST_FROM_TS,
       toTs: BACKTEST_TO_TS,
       numTrials: Math.max(1, trials),
@@ -605,7 +596,7 @@ export class FleetService {
 
   /** Both legs of a pair replayed together on one equity, the pair rule applied (ADR-0032). */
   private replayPair(
-    blueprint: BotBlueprint,
+    rig: Rig,
     legs: readonly [FleetInstrument, FleetInstrument],
     strategyId: string,
     trials: number,
@@ -616,11 +607,11 @@ export class FleetService {
       legs: [
         {
           instrumentId: legs[0],
-          strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId, 0))
+          strategy: new SpecStrategy(compileRig(rig, strategyId, 0))
         },
         {
           instrumentId: legs[1],
-          strategy: new SpecStrategy(compileBlueprint(blueprint, strategyId, 1))
+          strategy: new SpecStrategy(compileRig(rig, strategyId, 1))
         }
       ],
       fromTs: BACKTEST_FROM_TS,
@@ -642,15 +633,15 @@ export class FleetService {
 
   /** A boat's backtest: a pair's joint replay, or one replay per coin it trades. */
   private async replayBoat(
-    blueprint: BotBlueprint,
+    rig: Rig,
     strategyId: string,
     trials: number,
     full: boolean
   ): Promise<TrialRun> {
-    const legs = pairLegs(blueprint);
-    if (!legs) return this.replayBasket(blueprint, strategyId, trials, full);
+    const legs = pairLegs(rig);
+    if (!legs) return this.replayBasket(rig, strategyId, trials, full);
     await this.breathe();
-    return this.replayPair(blueprint, legs, strategyId, trials, full);
+    return this.replayPair(rig, legs, strategyId, trials, full);
   }
 
   /**
@@ -662,9 +653,9 @@ export class FleetService {
     trials: number,
     say: (stage: string) => void
   ): Promise<Assessment> {
-    const b = proposition.blueprint;
+    const b = proposition.rig;
     const initial = Number(BACKTEST_EQUITY_USDT);
-    const markets = blueprintMarkets(b);
+    const markets = rigMarkets(b);
     const references = referenceMarketsOf(b);
     const needed = [...new Set([...markets, ...references])];
 
@@ -686,12 +677,12 @@ export class FleetService {
     const main = await this.replayBoat(b, proposition.propositionId, trials, true);
 
     const neighbours: SeaTrialVariant[] = [];
-    for (const [i, n] of neighbourBlueprints(b).entries()) {
+    for (const [i, n] of neighbourRigs(b).entries()) {
       say(`nudging settings (${i + 1} of 4): ${n.label}`);
       neighbours.push(
         variantOf(
           n.label,
-          await this.replayBoat(n.blueprint, `${proposition.propositionId}_n${i}`, trials, false),
+          await this.replayBoat(n.rig, `${proposition.propositionId}_n${i}`, trials, false),
           initial
         )
       );
@@ -774,15 +765,15 @@ export class FleetService {
 
   /** One backtest per coin a boat trades, combined into the boat's portfolio (ADR-0028). */
   private async replayBasket(
-    blueprint: BotBlueprint,
+    rig: Rig,
     strategyId: string,
     trials: number,
     full: boolean
   ): Promise<TrialRun> {
     const runs: TrialRun[] = [];
-    for (const instrumentId of blueprintMarkets(blueprint)) {
+    for (const instrumentId of rigMarkets(rig)) {
       await this.breathe();
-      runs.push(this.replay({ ...blueprint, instrumentId, basket: [] }, strategyId, trials, full));
+      runs.push(this.replay({ ...rig, instrumentId, basket: [] }, strategyId, trials, full));
     }
     return combineRuns(runs, Number(BACKTEST_EQUITY_USDT), trials);
   }
@@ -918,8 +909,8 @@ export class FleetService {
     const bot = this.repo.saveBot({
       botId,
       name,
-      tagline: p.blueprint.tagline,
-      blueprint: { ...p.blueprint, name },
+      tagline: p.rig.tagline,
+      rig: { ...p.rig, name },
       walletId: input.walletId,
       allocationUsdt: allocation.toFixed(8),
       status: "running",
@@ -934,7 +925,7 @@ export class FleetService {
     // The bot trades from the next confirmed bar on; history before launch is never traded
     const engine = this.engineFor(bot);
     const anchorCloseTs = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
-    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+    for (const instrumentId of rigMarkets(bot.rig)) {
       engine.accountRepo.setSchedulerAnchor({
         instrumentId,
         strategyId: botId,
@@ -977,8 +968,8 @@ export class FleetService {
   private marketsReadBy(bot: BotRecord): string[] {
     return [
       ...new Set<string>([
-        ...blueprintMarkets(bot.blueprint),
-        ...blueprintMarkets(bot.blueprint).flatMap(
+        ...rigMarkets(bot.rig),
+        ...rigMarkets(bot.rig).flatMap(
           (m) => this.engineFor(bot).strategyOn(m).referenceMarkets ?? []
         )
       ])
@@ -993,7 +984,7 @@ export class FleetService {
 
   private markPrices(bot: BotRecord): Record<string, ScaledDecimal> {
     const prices: Record<string, ScaledDecimal> = {};
-    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+    for (const instrumentId of rigMarkets(bot.rig)) {
       const latest = this.dataStore.marketDataRepo.getConfirmedBarsAsOf({
         instrumentId,
         timeframe: "1H",
@@ -1022,7 +1013,7 @@ export class FleetService {
     const engine = this.engineFor(bot);
     const nowMs = this.clock.nowMs();
     // Skip the bars that closed while docked, and forget any entry queued before the pause
-    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+    for (const instrumentId of rigMarkets(bot.rig)) {
       engine.accountRepo.recordProcessedBar({
         instrumentId,
         strategyId: botId,
@@ -1151,9 +1142,9 @@ export class FleetService {
         void Promise.resolve().then(() => this.onBotLimit(bot.botId, record));
       }
     });
-    const strategy = new SpecStrategy(compileBlueprint(bot.blueprint, bot.botId));
-    const legs = pairLegs(bot.blueprint);
-    const second = legs ? new SpecStrategy(compileBlueprint(bot.blueprint, bot.botId, 1)) : null;
+    const strategy = new SpecStrategy(compileRig(bot.rig, bot.botId));
+    const legs = pairLegs(bot.rig);
+    const second = legs ? new SpecStrategy(compileRig(bot.rig, bot.botId, 1)) : null;
     const engine: BotEngine = {
       broker,
       ledgerRepo,
@@ -1199,10 +1190,10 @@ export class FleetService {
   }
 
   private stepBot(bot: BotRecord, nowMs: number): number {
-    const legs = pairLegs(bot.blueprint);
+    const legs = pairLegs(bot.rig);
     if (legs) return this.stepPair(bot, legs, nowMs);
     let ticks = 0;
-    for (const instrumentId of blueprintMarkets(bot.blueprint)) {
+    for (const instrumentId of rigMarkets(bot.rig)) {
       ticks += this.stepBotOn(bot, instrumentId, nowMs);
     }
     return ticks;
@@ -1464,7 +1455,7 @@ export class FleetService {
     }
     equityHistory.push({ ts: nowMs, equityUsdt: equity.toFixed(2) });
 
-    const coins = blueprintMarkets(bot.blueprint).map((instrumentId) => {
+    const coins = rigMarkets(bot.rig).map((instrumentId) => {
       const mine = closed.filter((p) => p.instrumentId === instrumentId);
       return {
         instrumentId,
@@ -1477,7 +1468,7 @@ export class FleetService {
       botId: bot.botId,
       name: bot.name,
       tagline: bot.tagline,
-      blueprint: bot.blueprint,
+      rig: bot.rig,
       mode: "paper",
       status: bot.status,
       statusReason: bot.statusReason,
@@ -1496,7 +1487,7 @@ export class FleetService {
       openPosition: openPositions[0] ?? null,
       openPositions,
       lastBarAtMs: engine.accountRepo.getLastProcessedBarCloseTs({
-        instrumentId: bot.blueprint.instrumentId,
+        instrumentId: bot.rig.instrumentId,
         strategyId: bot.botId
       }),
       equityCurve: curve,

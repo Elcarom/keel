@@ -1,15 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  TIMEFRAME_DURATION_MS,
-  type BotBlueprint,
-  type ConfirmedBar,
-  type DesignBrief
-} from "@keel/core";
+import { TIMEFRAME_DURATION_MS, type Rig, type ConfirmedBar, type DesignBrief } from "@keel/core";
 import {
   SpecStrategy,
   checkImportedInvention,
   checkInvention,
-  compileBlueprint,
+  compileRig,
   nudgeInvention,
   readInventionFile
 } from "../src/index.js";
@@ -55,10 +50,10 @@ const SNAPBACK = {
   rewardMultiple: 2.5
 };
 
-function ok(raw: unknown, brief = BRIEF): BotBlueprint {
+function ok(raw: unknown, brief = BRIEF): Rig {
   const result = checkInvention(raw, brief);
   if (!result.ok) throw new Error(result.error);
-  return result.blueprint;
+  return result.rig;
 }
 
 function errorOf(raw: unknown): string {
@@ -68,7 +63,7 @@ function errorOf(raw: unknown): string {
 }
 
 describe("Inventions", () => {
-  it("turns a valid invention into a blueprint with its rules in plain English", () => {
+  it("turns a valid invention into a rig with its rules in plain English", () => {
     const b = ok(SNAPBACK);
     expect(b.archetype).toBe("invented");
     expect(b.instrumentId).toBe("SOL-USDT-SWAP");
@@ -77,7 +72,7 @@ describe("Inventions", () => {
       "Short when RSI(7) crosses below 75",
       "Stop 2× ATR(14) away, target 2.5× the risk"
     ]);
-    const spec = compileBlueprint(b, "inv_test");
+    const spec = compileRig(b, "inv_test");
     expect(spec.risk.stopModel).toEqual({ kind: "atr_multiple", multiplier: 2, atrPeriod: 14 });
     // EMA(160) needs three periods to settle, capped by the Spec's 500-bar lookback
     expect(spec.lookbacks["1H"]).toBe(483);
@@ -152,7 +147,7 @@ describe("Inventions", () => {
       }
     });
     expect(b.invention?.rules[0]).toBe("Long when the UTC hour ≤ 07:00");
-    const strategy = new SpecStrategy(compileBlueprint(b, "inv_clock"));
+    const strategy = new SpecStrategy(compileRig(b, "inv_clock"));
     const dt = TIMEFRAME_DURATION_MS["1H"];
     const day = Date.UTC(2024, 5, 3); // a Monday, 00:00 UTC
     const bars: ConfirmedBar[] = Array.from({ length: 24 }, (_, h) => ({
@@ -228,8 +223,8 @@ describe("Inventions", () => {
       direction: "short_only"
     });
     if (!own.ok) throw new Error(own.error);
-    expect(own.blueprint.instrumentId).toBe("LINK-USDT-SWAP");
-    expect(own.blueprint.direction).toBe("short_only");
+    expect(own.rig.instrumentId).toBe("LINK-USDT-SWAP");
+    expect(own.rig.direction).toBe("short_only");
 
     const pepe = checkImportedInvention({ ...SNAPBACK, instrumentId: "PEPE-USDT-SWAP" });
     expect(pepe).toMatchObject({ ok: false, name: "Tidal Snapback" });
@@ -255,7 +250,7 @@ describe("Inventions", () => {
       }
     });
     expect(b.invention?.rules[0]).toBe("Long when BTC close > BTC SMA(3)");
-    const strategy = new SpecStrategy(compileBlueprint(b, "inv_lead"));
+    const strategy = new SpecStrategy(compileRig(b, "inv_lead"));
     expect(strategy.referenceMarkets).toEqual(["BTC-USDT-SWAP"]);
 
     const dt = TIMEFRAME_DURATION_MS["1H"];

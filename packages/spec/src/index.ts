@@ -1503,6 +1503,6 @@ export const SYNTHETIC_DONCHIAN_FIXTURE_SPEC: StrategySpecV1 = {
   name: "synthetic-donchian-fixture",
   synthetic: true
 };
-export * from "./blueprint.js";
+export * from "./rig.js";
 export * from "./invention.js";
 export * from "./invention-check.js";

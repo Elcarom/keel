@@ -198,13 +198,13 @@ export function BoatPage({
       <header className={`${card} flex flex-wrap items-start justify-between gap-4`}>
         <div className="flex items-start gap-3">
           <div className="rounded-xl bg-teal-400/10 p-2 text-teal-200">
-            <ArchetypeIcon archetype={bot.blueprint.archetype} />
+            <ArchetypeIcon archetype={bot.rig.archetype} />
           </div>
           <div>
             <h2 className="text-2xl font-bold text-slate-50">{bot.name}</h2>
             <p className="text-sm text-slate-400">
-              {ARCHETYPE_LABELS[bot.blueprint.archetype]} · {marketsLabel(bot.blueprint)} ·{" "}
-              {DIRECTION_LABELS[bot.blueprint.direction]}
+              {ARCHETYPE_LABELS[bot.rig.archetype]} · {marketsLabel(bot.rig)} ·{" "}
+              {DIRECTION_LABELS[bot.rig.direction]}
             </p>
             <p className="mt-1 text-sm text-slate-300 italic">“{bot.tagline}”</p>
           </div>

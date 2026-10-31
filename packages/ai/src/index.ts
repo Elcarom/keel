@@ -771,7 +771,6 @@ export {
 } from "./claude-code.js";
 export {
   BotDesigner,
-  sampleBlueprints,
   withUniqueNames,
   type BotDesignResult,
   type BotDesignerOptions,

@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ManualClock, createDefaultConfig } from "@keel/core";
+import { DatabaseSync } from "node:sqlite";
+import { ManualClock, createDefaultConfig, normalizeRig } from "@keel/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSqliteDataStore } from "../src/index.js";
 
@@ -189,6 +190,52 @@ describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => 
     const walPath = `${dbPath}-wal`;
     if (existsSync(walPath)) {
       expect(statSync(walPath).size).toBe(0);
+    }
+  });
+
+  it("keeps a boat's Rig from a database written when it was called a Blueprint", () => {
+    const dbPath = join(tempDir, "keel.sqlite");
+    const clock = new ManualClock(1_730_000_000_000);
+    const rig = normalizeRig({
+      name: "Old Salt",
+      tagline: "Sailed before the rename.",
+      archetype: "momentum",
+      instrumentId: "BTC-USDT-SWAP",
+      direction: "both",
+      lookbackPeriod: 12,
+      fastPeriod: 6,
+      entryThreshold: 1,
+      stopAtrMultiple: 2,
+      rewardMultiple: 2,
+      rationale: "Impulses persist."
+    });
+    const first = createSqliteDataStore({ dbPath, clock });
+    first.fleetRepo.saveBot({
+      botId: "bot-1",
+      name: "Old Salt",
+      tagline: rig.tagline,
+      rig,
+      walletId: "wallet-1",
+      allocationUsdt: "1000.00000000",
+      status: "running",
+      statusReason: null,
+      createdAtMs: clock.nowMs(),
+      retiredAtMs: null,
+      propositionId: null,
+      backtest: null
+    });
+    first.close();
+    // The column as an older Keel wrote it
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("ALTER TABLE fleet_bots RENAME COLUMN rig_json TO blueprint_json");
+    raw.exec("ALTER TABLE fleet_propositions RENAME COLUMN rig_json TO blueprint_json");
+    raw.close();
+
+    const reopened = createSqliteDataStore({ dbPath, clock });
+    try {
+      expect(reopened.fleetRepo.getBot("bot-1")?.rig).toEqual(rig);
+    } finally {
+      reopened.close();
     }
   });
 });

@@ -146,7 +146,6 @@ export const FleetConfigSchema = z.object({
   nightShiftCadence: z.enum(["daily", "weekly"]).default("daily"),
   nightShiftHourUtc: z.number().int().min(0).max(23).default(2),
   nightShiftCount: z.number().int().min(2).max(6).default(4),
-  nightShiftMode: z.enum(["blueprint", "inventor"]).default("inventor"),
   /** How many proven boats the night shift asks Claude to improve each time it runs. */
   nightShiftUpgrades: z.number().int().min(0).max(3).default(1),
   rebalanceEnabled: z.boolean().default(false)
@@ -866,13 +865,6 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     min: 2,
     max: 6,
     defaultValue: 4,
-    riskClass: "safe"
-  },
-  {
-    path: "fleet.nightShiftMode",
-    label: "Night Shift Mode",
-    helpText: "Blueprints fill reviewed shapes; Inventor has Claude write new rules.",
-    defaultValue: "inventor",
     riskClass: "safe"
   },
   {

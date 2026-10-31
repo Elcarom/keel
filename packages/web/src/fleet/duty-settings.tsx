@@ -9,10 +9,6 @@ const CHOICES: Partial<Record<FleetKey, readonly (readonly [string, string])[]>>
   nightShiftCadence: [
     ["daily", "Every night"],
     ["weekly", "Mondays only"]
-  ],
-  nightShiftMode: [
-    ["inventor", "Inventor: Claude writes new rules"],
-    ["blueprint", "Blueprints: Claude tunes reviewed shapes"]
   ]
 };
 
