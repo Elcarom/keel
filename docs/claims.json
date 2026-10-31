@@ -529,9 +529,9 @@
   },
   {
     "id": "CLAIM-FLEET-RANK-INSAMPLE",
-    "claim": "Propositions are backtested on in-sample data that ends before the sealed holdout, scored and ranked; synthetic data is labelled.",
+    "claim": "Propositions are backtested on real OKX history that ends before the sealed holdout, scored and ranked.",
     "testFile": "packages/api/test/fleet.test.ts",
-    "testName": "designs, backtests and ranks propositions without a Claude key"
+    "testName": "invents, backtests and ranks propositions while Claude is not linked"
   },
   {
     "id": "CLAIM-FLEET-WALLET-ALLOCATION",
@@ -820,5 +820,41 @@
     "claim": "ADR-0033: The night shift shows Claude the fleet's record and failures and asks for an Upgrade of the weakest proven boat.",
     "testFile": "packages/api/test/fleet-duties.test.ts",
     "testName": "shows Claude the fleet's record and failures, then asks for an Upgrade of the weakest proven boat"
+  },
+  {
+    "id": "CLAIM-ADR-0035-REAL-HISTORY-ONLY",
+    "claim": "ADR-0035: A sea trial whose OKX history is unreachable waits and retries hourly; it is never run on a synthetic stand-in.",
+    "testFile": "packages/api/test/fleet.test.ts",
+    "testName": "waits for OKX history rather than trial a stand-in, and tries again every hour"
+  },
+  {
+    "id": "CLAIM-ADR-0035-SYNTHETIC-PURGE",
+    "claim": "ADR-0035: Synthetic series an older Keel wrote under real market ids are purged once on start-up.",
+    "testFile": "packages/data/test/sqlite-storage.test.ts",
+    "testName": "purges synthetic series an older Keel wrote under real market ids, once"
+  },
+  {
+    "id": "CLAIM-ADR-0035-BLIND-TRIAL",
+    "claim": "ADR-0035: A design is seaworthy only once it passes the Blind Trial it earned on the unseen year.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "calls a design seaworthy only once it passes the Blind Trial it earned"
+  },
+  {
+    "id": "CLAIM-ADR-0035-RESEARCH-GATE",
+    "claim": "ADR-0035: Every design is held to the research gate (Sharpe, holding, random entries, worst dip) as a critical check.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "holds every design to the research gate: Sharpe, holding, random entries and the worst dip"
+  },
+  {
+    "id": "CLAIM-ADR-0035-LUCK-CRITICAL",
+    "claim": "ADR-0035: The luck adjustment is critical and counts every backtest run.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "makes the luck adjustment critical: an edge that many tries could find by chance never sails"
+  },
+  {
+    "id": "CLAIM-ADR-0035-COST-PARITY",
+    "claim": "ADR-0035: Paper trading and the replay share one cost model: identical fills, gross P&L and fees on the same bars.",
+    "testFile": "packages/api/test/paper-broker.test.ts",
+    "testName": "M-A: achieves bit-for-bit fill price, contracts, and PnL parity between PaperBroker and ReplayEngine across identical confirmed bars"
   }
 ]

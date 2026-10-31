@@ -617,7 +617,7 @@ export const keelApiContract = c.router({
         401: ApiErrorSchema
       },
       summary:
-        "Seed deterministic confirmed bars and 8h settled funding rates for research & replay"
+        "Seed deterministic confirmed bars and 8h settled funding rates for research & replay, stored under the market's SYN- id (e.g. SYN-BTC-USDT-SWAP), never the real one"
     }
   },
   replay: {

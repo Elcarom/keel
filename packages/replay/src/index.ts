@@ -6,6 +6,7 @@ import {
   overlapsSealed2026Holdout,
   ScaledDecimal,
   computeMarketExitPrice,
+  DEFAULT_EXECUTION_COSTS,
   computeNextBarOpenEntry,
   computeTradePnL,
   defaultInstrumentSpec,
@@ -778,9 +779,9 @@ export class ReplayEngine {
     const initialEquityUsdt = input.initialEquityUsdt ?? ScaledDecimal.fromString("10000.00000000");
     const riskFraction = input.riskFractionPerTrade ?? 0.0075;
     const maxLeverage = input.maxGrossLeverage ?? 2.0;
-    const takerFeeBps = input.takerFeeBps ?? 5;
-    const halfSpreadBps = input.halfSpreadBps ?? 2;
-    const slippageBps = input.slippageBps ?? 3;
+    const takerFeeBps = input.takerFeeBps ?? DEFAULT_EXECUTION_COSTS.takerFeeBps;
+    const halfSpreadBps = input.halfSpreadBps ?? DEFAULT_EXECUTION_COSTS.halfSpreadBps;
+    const slippageBps = input.slippageBps ?? DEFAULT_EXECUTION_COSTS.slippageBps;
     const oneWayFeeBps = takerFeeBps + halfSpreadBps;
     const totalOneWayCostBps = oneWayFeeBps + slippageBps;
     const costStressMultiplier = input.costStressMultiplier ?? 2.0;
@@ -1102,8 +1103,10 @@ export class ReplayEngine {
         })
       : [];
 
+    // The assumed rate stands in for every 8-hour settlement the stored history lacks, not only
+    // when it lacks them all
     const assumedFundingFraction =
-      allSettledFunding.length === 0 && (params.assumedFundingBpsPer8h ?? 0) > 0
+      (params.assumedFundingBpsPer8h ?? 0) > 0
         ? ScaledDecimal.fromString(((params.assumedFundingBpsPer8h ?? 0) / 10_000).toFixed(8))
         : null;
 

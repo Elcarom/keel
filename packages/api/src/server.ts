@@ -11,6 +11,7 @@ import {
   SEALED_HOLDOUT_START_TS,
   SEALED_2026_HOLDOUT_START_TS,
   overlapsSealed2026Holdout,
+  syntheticInstrumentId,
   SystemClock,
   createDefaultConfig,
   EXCHANGE_INSTRUMENT_IDS,
@@ -1440,10 +1441,11 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           return { status: 401, body: { error: "Authentication required" } };
         }
         const active = getActiveSnapshot();
-        // Synthetic bars stay in the in-sample period so research on them never reaches a sealed holdout (ADR-0011)
+        // Synthetic bars stay in the in-sample period so research on them never reaches a sealed holdout (ADR-0011),
+        // under their own SYN- id so no backtest of real history can read them (ADR-0035)
         const snapshot = seedSyntheticMarketSeries({
           marketDataRepo: dataStore.marketDataRepo,
-          instrumentId: body.instrumentId,
+          instrumentId: syntheticInstrumentId(body.instrumentId),
           endCloseTs: Math.min(clock.nowMs(), SEALED_HOLDOUT_START_TS),
           barCount1H: body.barCount1H
         });
@@ -1456,7 +1458,7 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           riskClass: "safe",
           configHash: active.configHash,
           details: {
-            instrumentId: body.instrumentId,
+            instrumentId: syntheticInstrumentId(body.instrumentId),
             barCount1H: body.barCount1H,
             snapshotId: snapshot.snapshotId,
             barCount: snapshot.barCount,

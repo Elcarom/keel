@@ -375,6 +375,9 @@ describe("PaperBroker (ADR-0006)", () => {
     expect(paperClosed.exitPrice).toBe(replayTrade.exitPrice.toFixed(8));
     expect(paperClosed.contracts).toBe(replayTrade.contracts.toFixed(8));
     expect(paperClosed.realizedPnlUsdt).toBe(replayTrade.grossPnlUsdt.toFixed(8));
+    // One cost model: the same fees each side, with slippage in the fill price and never charged
+    // again as a fee (ADR-0035)
+    expect(paperClosed.feesPaidUsdt).toBe(replayTrade.feesUsdt.toFixed(8));
 
     store.close();
   });

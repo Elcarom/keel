@@ -2,6 +2,7 @@ import {
   RiskGuardian,
   ScaledDecimal,
   computeMarketExitPrice,
+  DEFAULT_EXECUTION_COSTS,
   computeNextBarOpenEntry,
   defaultInstrumentSpec,
   evaluateIntrabarExit,
@@ -55,7 +56,7 @@ export class PaperBroker implements Broker {
   private readonly getRiskConfig: () => RiskConfig;
   private readonly onCircuitBreakerTripped: ((record: CircuitBreakerRecord) => void) | undefined;
   private readonly chooser = new BaselineChooser();
-  private readonly totalFeeRateBps: number;
+  private readonly feeRateBps: number;
   private readonly slippageBps: number;
 
   public constructor(options: PaperBrokerOptions) {
@@ -64,11 +65,11 @@ export class PaperBroker implements Broker {
     this.paperAccountRepo = options.paperAccountRepo;
     this.getRiskConfig = options.getRiskConfig;
     this.onCircuitBreakerTripped = options.onCircuitBreakerTripped;
-    const taker = options.takerFeeBps ?? 5;
-    const spread = options.halfSpreadBps ?? 2;
-    const slippage = options.slippageBps ?? 3;
-    this.slippageBps = slippage;
-    this.totalFeeRateBps = taker + spread + slippage;
+    // The replay's cost model: fee and half-spread on notional, slippage on the fill price only
+    const taker = options.takerFeeBps ?? DEFAULT_EXECUTION_COSTS.takerFeeBps;
+    const spread = options.halfSpreadBps ?? DEFAULT_EXECUTION_COSTS.halfSpreadBps;
+    this.slippageBps = options.slippageBps ?? DEFAULT_EXECUTION_COSTS.slippageBps;
+    this.feeRateBps = taker + spread;
   }
 
   public getCircuitBreaker(): CircuitBreakerRecord {
@@ -260,7 +261,7 @@ export class PaperBroker implements Broker {
           const entryPrice = exec.entryPrice;
           const notional = decision.contracts.mul(spec.contractValue).mul(entryPrice);
           const entryFee = notional.mul(
-            ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
+            ScaledDecimal.fromString((this.feeRateBps / 10_000).toFixed(8))
           );
           const existingPosCount = this.paperAccountRepo.listAllPositions().length;
           const posId = `pos-${adjustedProp.strategyId}-${asOfMs}-${existingPosCount + 1}`;
@@ -417,7 +418,7 @@ export class PaperBroker implements Broker {
 
         const exitNotional = contracts.mul(spec.contractValue).mul(exitPrice);
         const exitFee = exitNotional.mul(
-          ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
+          ScaledDecimal.fromString((this.feeRateBps / 10_000).toFixed(8))
         );
 
         // Record exit journal into double-entry ledger
@@ -754,9 +755,7 @@ export class PaperBroker implements Broker {
     });
     const exitPrice = exitMarket.exitPrice;
     const notional = contracts.mul(spec.contractValue).mul(exitPrice);
-    const exitFee = notional.mul(
-      ScaledDecimal.fromString((this.totalFeeRateBps / 10_000).toFixed(8))
-    );
+    const exitFee = notional.mul(ScaledDecimal.fromString((this.feeRateBps / 10_000).toFixed(8)));
     const grossPnl =
       pos.side === "long"
         ? contracts.mul(spec.contractValue).mul(exitPrice.sub(entryPrice))

@@ -395,6 +395,7 @@ export const SEA_TRIAL_CHECKS = [
   "beats_random",
   "beats_holding",
   "luck_adjusted",
+  "research_gate",
   "survives_resampling",
   "shallow_drawdown"
 ] as const;
@@ -450,9 +451,12 @@ export const SeaTrialSchema = z.object({
   outOfSampleAvgR: z.number(),
   /** Where the boat's Sharpe sits among random-entry paths, 0-100. */
   randomEntryPercentile: z.number(),
-  /** Propositions assessed so far: the trial count behind the luck adjustment. */
+  /** Backtests run so far across every sea trial: the trial count behind the luck adjustment. */
   trials: z.number().int().positive(),
-  /** "settled" when real funding history was charged; "assumed" when a flat rate stood in. */
+  /**
+   * "settled" when OKX's funding history covers the window; "assumed" when a flat rate stood in
+   * for the 8-hour settlements it lacks.
+   */
   funding: z.enum(["settled", "assumed"]),
   /** Equity change (%) at each week of the backtest window: a fixed grid, so trials compare. */
   weeklyEquityPct: z.array(z.number()).default([]),
@@ -460,6 +464,19 @@ export const SeaTrialSchema = z.object({
   avgHoldHours: z.number().nonnegative().default(0)
 });
 export type SeaTrial = z.infer<typeof SeaTrialSchema>;
+
+/**
+ * The Blind Trial (ADR-0035): a design that passes every in-sample check is replayed once on
+ * 2025, a year no sea trial or Shipwright prompt ever sees. Only pass or fail is kept, never the
+ * numbers. "skipped" when the in-sample trial fell short; "budget_spent" when the Fleet has used
+ * every blind look it is allowed.
+ */
+export const BlindTrialSchema = z.object({
+  outcome: z.enum(["passed", "failed", "skipped", "budget_spent"]),
+  fromTs: z.number().int(),
+  toTs: z.number().int()
+});
+export type BlindTrial = z.infer<typeof BlindTrialSchema>;
 
 /** A boat or proposition whose backtest moved almost in step with this one (ADR-0030). */
 export const LookalikeSchema = z.object({
@@ -495,7 +512,9 @@ export const AssessmentSchema = z.object({
   days: z.number().int().positive().default(365),
   /** Null for propositions assessed before sea trials existed. */
   seaTrial: SeaTrialSchema.nullable().default(null),
-  lookalike: LookalikeSchema.nullable().default(null)
+  lookalike: LookalikeSchema.nullable().default(null),
+  /** Null for propositions assessed before the Blind Trial existed. */
+  blindTrial: BlindTrialSchema.nullable().default(null)
 });
 export type Assessment = z.infer<typeof AssessmentSchema>;
 
@@ -612,13 +631,16 @@ export const BotSchema = z.object({
   lastBarAtMs: z.number().int().nullable(),
   equityCurve: z.array(z.number()),
   recentTrades: z.array(BotTradeSchema),
+  /** Every closed trade's net P&L in units of its initial risk (R), oldest first. */
+  tradeR: z.array(z.number()).default([]),
   /** Daily equity since launch, the last point being now (display only). */
   equityHistory: z.array(EquityPointSchema),
   /** "drifting" when the drift watch would dock it; "new" until it has 10 trades. */
   health: z.enum(["new", "on_course", "drifting"]),
   /**
-   * How the boat ranks against propositions (ADR-0033): its sea-trial score, blended towards its
-   * live paper results the longer it sails. Unproven until it has sailed long enough to judge.
+   * How the boat ranks against propositions (ADR-0033, ADR-0035): its sea-trial score, moved by how
+   * far its live trades' average R falls short of, or beats, what that trial expected. Unproven
+   * until it has sailed long enough to judge.
    */
   standing: z.object({ score: z.number(), proven: z.boolean() }).nullable().default(null),
   /** For each coin it trades: closed trades and their net P&L. */

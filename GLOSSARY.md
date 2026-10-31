@@ -127,7 +127,7 @@ The verified execution of a Kill Switch event: locking out new entries first, th
 _Avoid_: Soft flatten, local close
 
 **Sealed Holdout Period**:
-An out-of-sample partition of historical market data (specifically 2025-01-01 to 2025-12-31 UTC) that was strictly quarantined and evaluated once in Phase D verification. Now spent.
+An out-of-sample partition of historical market data (specifically 2025-01-01 to 2025-12-31 UTC), strictly quarantined. Spent on Phase D's hand-written strategies; for the Fleet it is the unseen year of the Blind Trial, read under a fixed budget of looks.
 _Avoid_: Test set, validation split
 
 **Unspent Sealed Holdout Partition (2026)**:
@@ -197,7 +197,7 @@ The Fleet Duty that has Claude research the fleet each night: Claude sees every 
 _Avoid_: Research agent, background AI
 
 **Standing**:
-How a Boat ranks against Propositions: its Sea Trial score at launch, shifting towards its live paper results over its first 90 days at sea. A Boat is proven, and can be replaced, once it has sailed long enough to judge.
+How a Boat ranks against Propositions: its Sea Trial score, moved up or down by how its live trades compare with what that Sea Trial expected, by more the longer its record. A Boat is proven, and can be replaced, once it has sailed long enough to judge.
 _Avoid_: Rank (a Proposition's rank is within its design batch), live score
 
 **Upgrade**:
@@ -205,7 +205,7 @@ A Proposition the Night Shift drew up to improve on one proven Boat: the same id
 _Avoid_: Version, fork, retune
 
 **Drift Watch**:
-The Fleet Duty that docks a Boat doing clearly worse than its Sea Trial expected.
+The Fleet Duty that docks a Boat doing clearly worse than its Sea Trial expected: a far deeper dip, far fewer wins, or live trades whose average a sequential test finds has lost the expected edge.
 _Avoid_: Kill switch (that halts everything; the drift watch docks one Boat)
 
 **Lookalike**:
@@ -249,16 +249,28 @@ Where the operator writes a guided brief, the Boat designer drafts Propositions,
 _Avoid_: Strategy Lab (the older research surface), generator
 
 **Sea Trial**:
-The examination every Proposition faces before it is ranked: its backtest, the same idea with each setting nudged, and the same idea on its Sibling Market, judged by a list of named checks. Some checks are critical; a Proposition failing any critical check is never rated seaworthy, whatever its score.
+The examination every Proposition faces before it is ranked: its backtest on real OKX history, the same idea with each setting nudged, and the same idea on its Sibling Market, judged by a list of named checks. The critical checks together are the Research Gate; a Proposition that fails any of them is never rated seaworthy, whatever its score.
 _Avoid_: Backtest (a Sea Trial contains several), audition
 
+**Research Gate**:
+The bar a design must clear before it may face a Blind Trial: enough trades, a positive average trade at doubled costs, a Sharpe ratio that survives the luck adjustment for every backtest run, beating holding and most random entries, and a shallow worst dip. One standard for research replays and the Fleet alike.
+_Avoid_: Strict gate, replay gate (as if separate from seaworthy)
+
+**Blind Trial**:
+A single replay of a design that cleared the Research Gate on a year no Sea Trial and no Shipwright prompt ever sees, judged by a rule fixed beforehand. Only its outcome is kept, never its numbers, and the Fleet may run only a set number of them.
+_Avoid_: Out-of-sample check (the Sea Trial's later folds are not unseen), holdout test, validation run
+
 **Verdict**:
-A Sea Trial's one-word conclusion: seaworthy, promising, choppy or sinks.
+A Sea Trial's one-word conclusion: seaworthy, promising, choppy or sinks. Seaworthy means the Research Gate cleared and a Blind Trial passed; nothing less is launched by the Autopilot.
 _Avoid_: Grade, rating
 
 **Sibling Market**:
 The instrument a Proposition's idea is re-tested on during its Sea Trial, chosen because it trades much like the original and is neither in its Basket nor one of its Reference Markets. A Pair Boat is re-tested on another pair of Instruments. An edge that only exists on one market is more likely luck.
 _Avoid_: Control market, benchmark
+
+**Synthetic Series**:
+A deterministic stand-in price series for research, stored under its own SYN- instrument (SYN-BTC-USDT-SWAP stands in for BTC-USDT-SWAP), never under a real market's. No Sea Trial reads one.
+_Avoid_: Fallback data, offline data
 
 **Paper-only Instrument**:
 An instrument Boats may trade on paper but the exchange broker refuses. Making one tradable on an exchange is a Gate G2 decision.

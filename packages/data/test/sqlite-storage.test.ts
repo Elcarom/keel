@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ManualClock, createDefaultConfig, normalizeRig } from "@keel/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSqliteDataStore } from "../src/index.js";
+import { createSqliteDataStore, seedSyntheticMarketSeries } from "../src/index.js";
 
 describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => {
   let tempDir: string;
@@ -236,6 +236,82 @@ describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => 
       expect(reopened.fleetRepo.getBot("bot-1")?.rig).toEqual(rig);
     } finally {
       reopened.close();
+    }
+  });
+
+  it("purges synthetic series an older Keel wrote under real market ids, once", () => {
+    const dbPath = join(tempDir, "keel.sqlite");
+    const clock = new ManualClock(1_793_000_000_000);
+    const windowFrom = Date.UTC(2022, 11, 2);
+    const bars1H = (instrumentId: string) =>
+      store.marketDataRepo.getConfirmedBarsInRange({
+        instrumentId,
+        timeframe: "1H",
+        fromOpenTs: 0,
+        toCloseTs: Date.UTC(2027, 0, 1)
+      }).length;
+
+    let store = createSqliteDataStore({ dbPath, clock });
+    const seed = (instrumentId: string, endCloseTs: number) =>
+      seedSyntheticMarketSeries({
+        marketDataRepo: store.marketDataRepo,
+        instrumentId,
+        endCloseTs,
+        barCount1H: 48
+      });
+    // The Fleet's old fallback when OKX was unreachable
+    seed("BTC-USDT-SWAP", Date.UTC(2024, 11, 1));
+    store.fleetRepo.setBacktestDataSource("BTC-USDT-SWAP", windowFrom, "synthetic");
+    // The Research Lab's old seed, later taken for OKX history by the Fleet
+    seed("SOL-USDT-SWAP", Date.UTC(2024, 11, 1));
+    store.fleetRepo.setBacktestDataSource("SOL-USDT-SWAP", windowFrom, "okx");
+    store.auditRepo.append({
+      ts: clock.nowMs(),
+      actor: "operator",
+      clientIp: "203.0.113.9",
+      action: "market.seed_synthetic",
+      riskClass: "safe",
+      configHash: "c".repeat(64),
+      details: { instrumentId: "SOL-USDT-SWAP", barCount1H: 48 }
+    });
+    // Untouched: real history, live bars after the in-sample years, and SYN- research series
+    seed("ETH-USDT-SWAP", Date.UTC(2024, 11, 1));
+    store.fleetRepo.setBacktestDataSource("ETH-USDT-SWAP", windowFrom, "okx");
+    seed("BTC-USDT-SWAP", Date.UTC(2026, 9, 1));
+    seed("SYN-BTC-USDT-SWAP", Date.UTC(2024, 11, 1));
+    store.close();
+    // As a database from before the purge existed
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("DELETE FROM data_migrations");
+    raw.close();
+
+    store = createSqliteDataStore({ dbPath, clock });
+    try {
+      expect(bars1H("BTC-USDT-SWAP")).toBe(48);
+      expect(
+        store.marketDataRepo.getSettledFundingInRange({
+          instrumentId: "BTC-USDT-SWAP",
+          fromTs: 0,
+          toTs: Date.UTC(2025, 0, 1)
+        })
+      ).toEqual([]);
+      expect(store.fleetRepo.getBacktestDataSource("BTC-USDT-SWAP", windowFrom)).toBeNull();
+      expect(bars1H("SOL-USDT-SWAP")).toBe(0);
+      expect(store.fleetRepo.getBacktestDataSource("SOL-USDT-SWAP", windowFrom)).toBeNull();
+      expect(bars1H("ETH-USDT-SWAP")).toBe(48);
+      expect(store.fleetRepo.getBacktestDataSource("ETH-USDT-SWAP", windowFrom)).toBe("okx");
+      expect(bars1H("SYN-BTC-USDT-SWAP")).toBe(48);
+
+      // Once only: history fetched afresh after the purge stays
+      seed("SOL-USDT-SWAP", Date.UTC(2024, 11, 1));
+    } finally {
+      store.close();
+    }
+    store = createSqliteDataStore({ dbPath, clock });
+    try {
+      expect(bars1H("SOL-USDT-SWAP")).toBe(48);
+    } finally {
+      store.close();
     }
   });
 });

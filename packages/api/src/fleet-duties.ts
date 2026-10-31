@@ -85,10 +85,49 @@ function signedPct(value: number): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
+/** The alarm level of the expectancy test: Wald's boundary for 1% error either way. */
+const EXPECTANCY_ALARM = Math.log(99);
+
+/**
+ * The spread of one trade's net R in a boat's sea trial, recovered from the trial's t-statistic
+ * (t = mean ÷ (spread ÷ √trades)). One R when the trial cannot say.
+ */
+function trialSpreadR(trial: NonNullable<Bot["backtest"]>): number {
+  const t = trial.seaTrial?.tStat ?? 0;
+  const spread =
+    t > 0 && trial.totalTrades > 1 && trial.avgR > 0
+      ? (trial.avgR * Math.sqrt(trial.totalTrades)) / t
+      : 1;
+  return Math.min(5, Math.max(0.5, spread));
+}
+
+/**
+ * A sequential test of a boat's live trades (ADR-0035): the CUSUM of Wald's log-likelihood ratio
+ * for "its edge is gone" (an average of zero R) against "as its sea trial expected". Each trade
+ * that fits no edge better raises it and each that fits the trial lowers it, never below zero, so
+ * an edge that fades after a good start is still caught. Zero when the trial expected no edge.
+ */
+export function expectancyAlarm(
+  tradeR: readonly number[],
+  expectedR: number,
+  spreadR: number
+): number {
+  if (expectedR <= 0) return 0;
+  let alarm = 0;
+  for (const r of tradeR) {
+    alarm = Math.max(0, alarm + (expectedR * expectedR - 2 * r * expectedR) / (2 * spreadR ** 2));
+  }
+  return alarm;
+}
+
+const mean = (values: readonly number[]): number =>
+  values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+
 /**
  * Whether a running boat has drifted clearly outside what its sea trial expected: a worst dip
- * well beyond the trial's 95th-percentile resampled dip, or, after 20 trades, a win rate more
- * than two standard errors below the backtest's. Null when it is on course.
+ * well beyond the trial's 95th-percentile resampled dip; after 20 trades, a win rate more than
+ * two standard errors below the backtest's; or live trades whose average R a sequential test
+ * finds has fallen to no edge. Null when it is on course.
  */
 export function driftOf(bot: Bot): string | null {
   const trial = bot.backtest;
@@ -107,54 +146,39 @@ export function driftOf(bot: Bot): string | null {
       return `it has won ${Math.round(bot.winRate * 100)}% of ${n} trades, below the ${Math.round(floor * 100)}% its sea trial makes plausible`;
     }
   }
+  const tradeR = bot.tradeR ?? [];
+  if (trial && expectancyAlarm(tradeR, trial.avgR, trialSpreadR(trial)) >= EXPECTANCY_ALARM) {
+    return `its ${tradeR.length} trades average ${mean(tradeR).toFixed(2)}R against the ${trial.avgR.toFixed(2)}R its sea trial expected: its edge has most likely gone`;
+  }
   return null;
 }
 
-/** Days over which a boat's Standing shifts from its sea trial to its live record. */
-const STANDING_BLEND_DAYS = 90;
 /** How long the night shift waits before trying to improve the same boat again. */
 const UPGRADE_RETRY_MS = 14 * DAY_MS;
 
 /**
- * 0-100 from the boat's live daily equity: 50 for a flat record, rising and falling with its
- * annualised Sharpe ratio (1 is about 73, 2 about 88). Null until it has a week of days.
- */
-function liveScoreOf(history: Bot["equityHistory"]): number | null {
-  if (history.length < 8) return null;
-  const returns: number[] = [];
-  for (let i = 1; i < history.length; i++) {
-    const before = Number(history[i - 1]?.equityUsdt ?? 0);
-    const after = Number(history[i]?.equityUsdt ?? 0);
-    if (before > 0) returns.push(after / before - 1);
-  }
-  if (returns.length < 2) return null;
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const sd = Math.sqrt(returns.reduce((a, r) => a + (r - mean) ** 2, 0) / (returns.length - 1));
-  if (sd === 0) return 50;
-  const first = history[0]?.ts ?? 0;
-  const last = history[history.length - 1]?.ts ?? first;
-  const stepDays = Math.max(1, (last - first) / DAY_MS / returns.length);
-  const sharpe = (mean / sd) * Math.sqrt(365 / stepDays);
-  return 50 + 50 * Math.tanh(sharpe / 2);
-}
-
-/**
- * How a boat ranks against propositions (ADR-0033). It starts at its sea-trial score and moves
- * towards its live score over its first 90 days at sea. It is proven, and so can be replaced,
- * once it has sailed the set number of days. Null for a boat without a sea trial.
+ * How a boat ranks against propositions (ADR-0033, ADR-0035): its sea-trial score, moved by a
+ * t-statistic of its live trades' average R against the average its trial expected. A short
+ * record barely moves it; a long one that falls short pulls it down by up to 50 points, and one
+ * that beats the trial lifts it. On course, it keeps its trial's score, so it compares with
+ * propositions on their own scale. It is proven, and so can be replaced, once it has sailed the
+ * set number of days. Null for a boat without a sea trial.
  */
 export function standingOf(
-  bot: Pick<Bot, "backtest" | "createdAtMs" | "equityHistory">,
+  bot: Pick<Bot, "backtest" | "createdAtMs" | "tradeR">,
   nowMs: number,
   minLiveDays: number
 ): { readonly score: number; readonly proven: boolean } | null {
-  const trial = bot.backtest?.score;
-  if (trial === undefined) return null;
+  const trial = bot.backtest;
+  if (!trial) return null;
   const days = Math.max(0, (nowMs - bot.createdAtMs) / DAY_MS);
-  const weight = Math.min(1, days / STANDING_BLEND_DAYS);
-  const live = liveScoreOf(bot.equityHistory) ?? trial;
+  const tradeR = bot.tradeR ?? [];
+  const t =
+    tradeR.length >= 2
+      ? (mean(tradeR) - trial.avgR) / (trialSpreadR(trial) / Math.sqrt(tradeR.length))
+      : 0;
   return {
-    score: Math.round((1 - weight) * trial + weight * live),
+    score: Math.round(Math.max(0, Math.min(100, trial.score + 50 * Math.tanh(t / 2)))),
     proven: days >= minLiveDays
   };
 }
@@ -297,7 +321,10 @@ export class FleetDuties {
     return share.gt(available) ? available : share;
   }
 
-  /** Seaworthy propositions that reach the minimum score, best first. */
+  /**
+   * Seaworthy propositions that reach the minimum score, best first. Seaworthy means the research
+   * gate and a passed Blind Trial on OKX history; older verdicts without one never sail (ADR-0035).
+   */
   private candidates(): Candidate[] {
     const cfg = this.getConfig().fleet;
     return this.fleet
@@ -315,6 +342,8 @@ export class FleetDuties {
           p.status === "ranked" &&
           a !== null &&
           a.verdict === "seaworthy" &&
+          a.dataSource === "okx" &&
+          a.blindTrial?.outcome === "passed" &&
           a.score >= cfg.autopilotMinScore
         );
       })
@@ -492,7 +521,11 @@ export class FleetDuties {
     this.done("rebalance", moved.length > 0 ? moved.join("; ") : "Stakes were already even");
   }
 
-  /** What the fleet has learned so far, in words Claude can build on. */
+  /**
+   * What the fleet has learned so far, in words Claude can build on. A failed idea is named with its
+   * verdict only: which checks it missed, and by how much, would let Claude tune the next idea to
+   * the same history until one passes by luck (ADR-0035). The Blind Trial is never mentioned.
+   */
   private research(): DesignResearch {
     const cfg = this.getConfig().fleet;
     const now = this.clock.nowMs();
@@ -513,9 +546,7 @@ export class FleetDuties {
           ];
         }
         if (!a || (a.verdict !== "sinks" && a.verdict !== "choppy")) return [];
-        const missed = (a.seaTrial?.checks ?? []).filter((c) => !c.passed).map((c) => c.label);
-        const why = missed.length > 0 ? `; failed ${missed.join(", ")}` : "";
-        return [`${p.rig.name} (${p.rig.archetype}, ${coin(p)}) ${a.verdict}: ${a.headline}${why}`];
+        return [`${p.rig.name} (${p.rig.archetype}, ${coin(p)}) did not pass its sea trial`];
       });
     const left = bots
       .filter((b) => /^(Drift watch|Replaced by)/.test(b.statusReason ?? ""))

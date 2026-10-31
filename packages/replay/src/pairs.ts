@@ -2,6 +2,7 @@ import {
   SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
   computeMarketExitPrice,
+  DEFAULT_EXECUTION_COSTS,
   computeNextBarOpenEntry,
   computeTradePnL,
   defaultInstrumentSpec,
@@ -55,6 +56,8 @@ export interface PairReplayInput {
   readonly replayMinTrades?: number | undefined;
   readonly replayMinSharpe?: number | undefined;
   readonly replayMinDeflatedSharpeConfidence?: number | undefined;
+  /** Explicit consent to read the sealed 2025 holdout, as for a single replay (ADR-0009). */
+  readonly allowHoldoutAccess?: boolean | undefined;
 }
 
 /** Why a leg left the market. "pair-leg" is the pair rule closing a leg left on its own. */
@@ -202,10 +205,9 @@ function legData(
     strategy: leg.strategy,
     byCloseTs: new Map(bars.map((b) => [b.closeTs, b])),
     fundingByCloseTs,
+    // Stands in for every 8-hour settlement the stored history lacks
     assumedFundingFraction:
-      funding.length === 0 && assumedFundingBpsPer8h > 0
-        ? dec(assumedFundingBpsPer8h / 10_000)
-        : null,
+      assumedFundingBpsPer8h > 0 ? dec(assumedFundingBpsPer8h / 10_000) : null,
     snapshot
   };
 }
@@ -610,11 +612,18 @@ export function runPairReplay(
   repo: MarketDataRepository,
   input: PairReplayInput
 ): PairReplayResult {
-  if (input.toTs > SEALED_HOLDOUT_START_TS || overlapsSealed2026Holdout(input.fromTs, input.toTs)) {
-    throw new Error("Sealed holdout violation: a pair replay never reads the sealed holdouts");
+  if (
+    (input.toTs > SEALED_HOLDOUT_START_TS && !input.allowHoldoutAccess) ||
+    overlapsSealed2026Holdout(input.fromTs, input.toTs)
+  ) {
+    throw new Error(
+      "Sealed holdout violation: a pair replay reads 2025 only with explicit consent, and 2026 never"
+    );
   }
-  const slippageBps = input.slippageBps ?? 3;
-  const oneWayFeeBps = (input.takerFeeBps ?? 5) + (input.halfSpreadBps ?? 2);
+  const slippageBps = input.slippageBps ?? DEFAULT_EXECUTION_COSTS.slippageBps;
+  const oneWayFeeBps =
+    (input.takerFeeBps ?? DEFAULT_EXECUTION_COSTS.takerFeeBps) +
+    (input.halfSpreadBps ?? DEFAULT_EXECUTION_COSTS.halfSpreadBps);
   const barsOf = (leg: PairLegInput): ConfirmedBar[] => [
     ...repo.getConfirmedBarsInRange({
       instrumentId: leg.instrumentId,

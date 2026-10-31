@@ -55,7 +55,8 @@ const ASSESSMENT: Assessment = {
     weeklyEquityPct: Array.from({ length: 40 }, (_, i) => Math.sin(i / 2) * 3 + i * 0.4),
     avgHoldHours: 12
   },
-  lookalike: null
+  lookalike: null,
+  blindTrial: { outcome: "passed", fromTs: 0, toTs: 1 }
 };
 
 function bot(overrides: Partial<Bot> = {}): Bot {
@@ -100,6 +101,7 @@ function bot(overrides: Partial<Bot> = {}): Bot {
     lastBarAtMs: null,
     equityCurve: [],
     recentTrades: [],
+    tradeR: [],
     equityHistory: [],
     health: "on_course",
     coins: [],
@@ -110,15 +112,11 @@ function bot(overrides: Partial<Bot> = {}): Bot {
 
 const DAY = 24 * 3_600_000;
 
-/** A boat launched `days` ago whose equity has moved by `daily` (repeating) each day since. */
-function sailed(days: number, daily: readonly number[], overrides: Partial<Bot> = {}): Bot {
+/** A boat launched `days` ago that has closed one trade a day since, netting `r` (repeating). */
+function sailed(days: number, r: readonly number[], overrides: Partial<Bot> = {}): Bot {
   const createdAtMs = MONDAY_8AM - days * DAY;
-  let equity = 1000;
-  const equityHistory = Array.from({ length: days }, (_, i) => {
-    equity *= 1 + (daily[i % daily.length] ?? 0);
-    return { ts: createdAtMs + (i + 1) * DAY, equityUsdt: equity.toFixed(2) };
-  });
-  return bot({ createdAtMs, equityHistory, ...overrides });
+  const tradeR = Array.from({ length: days }, (_, i) => r[i % r.length] ?? 0);
+  return bot({ createdAtMs, tradeR, tradesCount: days, ...overrides });
 }
 
 function proposition(id: string, overrides: Partial<Assessment> = {}): Proposition {
@@ -240,6 +238,19 @@ describe("Drift watch", () => {
     expect(driftOf(bot({ tradesCount: 15, winRate: 0.2 }))).toBeNull();
   });
 
+  it("docks a boat whose live trades a sequential test finds have lost the trial's edge", () => {
+    // The trial expected +0.2R a trade with a spread of about 0.88R (t = 2.5 over 120 trades):
+    // telling that from no edge at all takes well over a hundred trades
+    const flat = Array.from({ length: 200 }, (_, i) => (i % 2 === 0 ? 0.6 : -0.6));
+    expect(driftOf(bot({ tradeR: flat.slice(0, 20) }))).toBeNull();
+    expect(driftOf(bot({ tradeR: flat }))).toBe(
+      "its 200 trades average 0.00R against the 0.20R its sea trial expected: its edge has most likely gone"
+    );
+    // A boat earning what its trial expected is left alone, however long it sails
+    const steady = Array.from({ length: 200 }, (_, i) => (i % 2 === 0 ? 0.8 : -0.4));
+    expect(driftOf(bot({ tradeR: steady }))).toBeNull();
+  });
+
   it("pauses drifting boats and says why", async () => {
     const { duties, calls, sent } = harness({
       bots: [bot({ botId: "b1", maxDrawdownPct: 20 }), bot({ botId: "b2", name: "Calm" })],
@@ -261,6 +272,9 @@ describe("Autopilot", () => {
         proposition("p1", { score: 70 }),
         proposition("p2", { score: 90 }),
         proposition("p3", { score: 99, verdict: "promising" }),
+        // Seaworthy before the Blind Trial existed, or on synthetic data: never launched
+        proposition("p5", { score: 98, blindTrial: null }),
+        proposition("p6", { score: 97, dataSource: "synthetic" }),
         proposition("p4", { score: 95, lookalike: { name: "X", kind: "boat", correlation: 0.9 } })
       ]
     });
@@ -360,21 +374,25 @@ describe("Scheduled duties", () => {
   });
 });
 
-// Loses 1% then makes 0.5%, day after day: a clearly losing live record
-const LOSING = [-0.01, 0.005];
-// Makes 1% then gives back 0.5%: a clearly winning one
-const WINNING = [0.01, -0.005];
+// Loses 1R then makes 0.5R, trade after trade: -0.25R a trade, a clearly losing live record
+const LOSING = [-1, 0.5];
+// Makes 1R then gives back 0.2R: +0.4R a trade, clearly beating the trial's +0.2R
+const WINNING = [1, -0.2];
+// The trial's own +0.2R a trade
+const ON_COURSE = [0.9, -0.5];
 
 describe("Standing", () => {
-  it("starts at the sea-trial score and moves towards the live record", () => {
+  it("starts at the sea-trial score and moves with how the live trades compare with the trial", () => {
     expect(standingOf(sailed(0, LOSING), MONDAY_8AM, 14)).toEqual({ score: 80, proven: false });
     const loser = standingOf(sailed(30, LOSING), MONDAY_8AM, 14);
     const winner = standingOf(sailed(30, WINNING), MONDAY_8AM, 14);
     expect(loser?.proven).toBe(true);
     expect(loser?.score ?? 0).toBeLessThan(60);
     expect(winner?.score ?? 0).toBeGreaterThan(80);
-    // After 90 days the live record is all that counts
-    expect(standingOf(sailed(120, LOSING), MONDAY_8AM, 14)?.score ?? 99).toBeLessThan(5);
+    // On course, a boat keeps its trial's score however long it sails
+    expect(standingOf(sailed(120, ON_COURSE), MONDAY_8AM, 14)?.score).toBe(80);
+    // A long losing record sinks it as far as the test allows
+    expect(standingOf(sailed(120, LOSING), MONDAY_8AM, 14)?.score ?? 99).toBeLessThanOrEqual(31);
   });
 
   it("is still proving itself until it has sailed the set number of days", () => {
@@ -523,7 +541,7 @@ describe("The night shift's research round", () => {
   it("shows Claude the fleet's record and failures, then asks for an Upgrade of the weakest proven boat", async () => {
     const sunk = proposition("s1", {
       verdict: "sinks",
-      headline: "Lost 12% after costs",
+      headline: "Lost 12% after costs · passed 3 of 12 sea-trial checks",
       score: 20
     });
     const { duties, calls } = harness({
@@ -543,7 +561,8 @@ describe("The night shift's research round", () => {
     expect(gaps?.research.fleetReport[0]).toMatch(
       /^Leaky Hull \(momentum, BTC, running\): sea trial scored 80 .*; at sea 30 days: .*standing \d+\.$/
     );
-    expect(gaps?.research.lessons).toEqual(["Idea s1 (momentum, BTC) sinks: Lost 12% after costs"]);
+    // Only that the idea failed: never which checks, or by how much (ADR-0035)
+    expect(gaps?.research.lessons).toEqual(["Idea s1 (momentum, BTC) did not pass its sea trial"]);
     expect(upgrade?.research.improve?.name).toBe("Leaky Hull");
     expect(duties.status().find((d) => d.duty === "nightShift")?.note).toBe(
       "Drafted 4 new ideas; Upgrades of Leaky Hull"

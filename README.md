@@ -58,6 +58,7 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
   - [ADR-0032: Pair Boats Hold One Coin Against Another](./docs/adr/0032-pair-boats.md)
   - [ADR-0033: A Self-Managing Fleet, Researched by Claude on the Owner's Subscription](./docs/adr/0033-self-managing-fleet.md)
   - [ADR-0034: The Shipwright Designs Every Boat, and Blueprints Become Rigs](./docs/adr/0034-shipwright-only-shipyard.md)
+  - [ADR-0035: The Blind Trial, the Research Gate for Seaworthy, and Real History Only](./docs/adr/0035-blind-trial-and-honest-sea-trials.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)
@@ -162,7 +163,7 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 
 ## A tour of the ship
 
-- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial**, on real OKX prices and settled funding, and is ranked: seaworthy, promising, choppy or sinks. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
+- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial** on real OKX prices (and settled funding where OKX still has it), and is ranked: seaworthy, promising, choppy or sinks. Only a design that clears the research gate and then passes a **Blind Trial** on 2025, a year the Sea Trial and the Shipwright never see, is seaworthy. When OKX is out of reach, trials wait and retry hourly. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
 - **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
 - **Treasury:** the paper wallets that fund the boats.
 - **Logbook:** recent trades across the Fleet, and what the unattended duties have done.

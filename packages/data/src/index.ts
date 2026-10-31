@@ -10,6 +10,8 @@ const { DatabaseSync } = nodeRequire("node:sqlite") as {
 import {
   ConfigRiskClassSchema,
   KeelConfigSchema,
+  SEALED_HOLDOUT_START_TS,
+  SYNTHETIC_INSTRUMENT_PREFIX,
   SecretKeyNameSchema,
   computeConfigHash,
   createDefaultConfig,
@@ -231,6 +233,54 @@ function mapSecretRow(row: Record<string, unknown>): EncryptedSecretRecord {
   };
 }
 
+/**
+ * Keel once wrote synthetic stand-in series under real market ids: the Fleet when OKX was
+ * unreachable, and the Research Lab's seed. Those bars and their "settled" funding would pass for
+ * OKX history in any later backtest. Once per database, this deletes every in-sample (pre-2025)
+ * bar and funding row of each affected market, and forgets the Fleet's record that its window was
+ * charted, so the next sea trial fetches the real history afresh (ADR-0035).
+ */
+function purgeSyntheticUnderRealIds(db: DatabaseSyncType, nowMs: number): void {
+  const name = "purge-synthetic-under-real-ids";
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY, applied_at_ms INTEGER NOT NULL)"
+  );
+  if (db.prepare("SELECT 1 FROM data_migrations WHERE name = ?").get(name)) return;
+
+  const affected = new Set<string>();
+  for (const row of db
+    .prepare("SELECT instrument_id FROM fleet_backtest_data WHERE source != 'okx'")
+    .all()) {
+    affected.add(String(row["instrument_id"]).split("@")[0] ?? "");
+  }
+  for (const row of db
+    .prepare("SELECT details_json FROM audit_events WHERE action = 'market.seed_synthetic'")
+    .all()) {
+    try {
+      const details = JSON.parse(String(row["details_json"])) as { instrumentId?: unknown };
+      if (typeof details.instrumentId === "string") affected.add(details.instrumentId);
+    } catch {
+      // Unreadable details: nothing to purge for this event
+    }
+  }
+  affected.delete("");
+  for (const instrumentId of affected) {
+    if (instrumentId.startsWith(SYNTHETIC_INSTRUMENT_PREFIX)) continue;
+    db.prepare("DELETE FROM confirmed_bars WHERE instrument_id = ? AND open_ts < ?").run(
+      instrumentId,
+      SEALED_HOLDOUT_START_TS
+    );
+    db.prepare("DELETE FROM settled_funding_rates WHERE instrument_id = ? AND funding_ts < ?").run(
+      instrumentId,
+      SEALED_HOLDOUT_START_TS
+    );
+    db.prepare("DELETE FROM fleet_backtest_data WHERE instrument_id LIKE ?").run(
+      `${instrumentId}@%`
+    );
+  }
+  db.prepare("INSERT INTO data_migrations (name, applied_at_ms) VALUES (?, ?)").run(name, nowMs);
+}
+
 export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDataStore {
   if (options.dbPath !== ":memory:") {
     mkdirSync(dirname(options.dbPath), { recursive: true });
@@ -271,6 +321,7 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
       // Column already renamed
     }
   }
+  purgeSyntheticUnderRealIds(db, options.clock.nowMs());
   try {
     db.exec("ALTER TABLE admin_users ADD COLUMN totp_last_step INTEGER");
   } catch {

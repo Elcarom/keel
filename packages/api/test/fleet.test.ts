@@ -8,7 +8,12 @@ import {
   type KeelConfig,
   type Wallet
 } from "@keel/core";
-import { OkxPublicIngestor, createSqliteDataStore, seedSyntheticMarketSeries } from "@keel/data";
+import {
+  OkxPublicIngestor,
+  createSqliteDataStore,
+  seedSyntheticMarketSeries,
+  type FetchOkxHistoryCandlesFn
+} from "@keel/data";
 import { createKeelServer } from "../src/index.js";
 
 const PASSWORD = "correct-horse-battery-staple";
@@ -16,15 +21,85 @@ const HEADERS = { "cf-connecting-ip": "203.0.113.9", "x-forwarded-proto": "https
 // 2026-10-25, after the sealed 2026 holdout partition
 const NOW_MS = 1_793_000_000_000;
 
-async function setup(configure: (config: KeelConfig) => KeelConfig = (c) => c) {
+const HOUR_MS = 3_600_000;
+/** Where the stand-in history starts; every sea-trial and Blind Trial window lies after it. */
+const HISTORY_FROM_TS = Date.UTC(2022, 0, 1);
+/** Where it ends: the live hours after it come from each test's own bars. */
+const HISTORY_TO_TS = Date.UTC(2026, 0, 1);
+const BASE_PRICES: Readonly<Record<string, number>> = {
+  "BTC-USDT-SWAP": 30_000,
+  "ETH-USDT-SWAP": 2_000,
+  "SOL-USDT-SWAP": 40,
+  "AVAX-USDT-SWAP": 20,
+  "LINK-USDT-SWAP": 10
+};
+
+/**
+ * A stand-in for OKX's history API: each market a seeded random walk of hourly candles, the same
+ * on every call, so sea trials run on the real-data path without the network.
+ */
+function okxHistory(): FetchOkxHistoryCandlesFn {
+  const closes = new Map<string, number[]>();
+  const walk = (instrumentId: string): number[] => {
+    const known = closes.get(instrumentId);
+    if (known) return known;
+    let seed = [...instrumentId].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+    };
+    let price = BASE_PRICES[instrumentId] ?? 1;
+    const series: number[] = [];
+    for (let ts = HISTORY_FROM_TS; ts < HISTORY_TO_TS; ts += HOUR_MS) {
+      price *= Math.exp((random() - 0.5) * 0.02);
+      series.push(price);
+    }
+    closes.set(instrumentId, series);
+    return series;
+  };
+  return ({ instrumentId, timeframe, fromOpenTs, toOpenTs }) => {
+    if (timeframe !== "1H" || toOpenTs >= HISTORY_TO_TS) {
+      return Promise.reject(new Error("offline"));
+    }
+    const series = walk(instrumentId);
+    const candles = [];
+    for (let ts = Math.max(fromOpenTs, HISTORY_FROM_TS); ts <= toOpenTs; ts += HOUR_MS) {
+      const i = (ts - HISTORY_FROM_TS) / HOUR_MS;
+      const open = series[i - 1] ?? series[0] ?? 1;
+      const close = series[i] ?? open;
+      candles.push({
+        openTs: ts,
+        open: open.toFixed(6),
+        high: (Math.max(open, close) * 1.002).toFixed(6),
+        low: (Math.min(open, close) * 0.998).toFixed(6),
+        close: close.toFixed(6),
+        volumeContracts: "1000",
+        volumeQuote: (1000 * close).toFixed(2),
+        confirm: "1"
+      });
+    }
+    return Promise.resolve(candles);
+  };
+}
+
+async function setup(
+  configure: (config: KeelConfig) => KeelConfig = (c) => c,
+  history: FetchOkxHistoryCandlesFn = okxHistory()
+) {
   const clock = new ManualClock(NOW_MS);
   const config = configure(createDefaultConfig());
   const dataStore = createSqliteDataStore({ dbPath: ":memory:", clock, initialConfig: config });
-  // OKX is unreachable in tests: backtests fall back to (and are labelled as) synthetic data
+  // OKX's history comes from a seeded stand-in; its funding archive is out of reach, so funding
+  // is assumed. Nothing in a test touches the network
   const marketIngestor = new OkxPublicIngestor({
     marketDataRepo: dataStore.marketDataRepo,
-    fetchHistoryCandles: () => Promise.reject(new Error("offline")),
-    fetchHistoryFunding: () => Promise.reject(new Error("offline"))
+    fetchFn: () => Promise.reject(new Error("offline")),
+    fetchHistoryCandles: history,
+    fetchHistoryFunding: () => Promise.reject(new Error("offline")),
+    fetchArchivedFunding: () => Promise.reject(new Error("offline"))
   });
   let bootstrapToken = "";
   const app = await createKeelServer({
@@ -116,25 +191,76 @@ describe("Fleet API", () => {
     expect([...scores].sort((a, b) => b - a)).toEqual(scores);
     for (const p of batch.propositions) {
       expect(p.status).toBe("ranked");
-      expect(p.assessment?.dataSource).toBe("synthetic");
+      expect(p.assessment?.dataSource).toBe("okx");
       // In-sample only: two years ending before the sealed holdout (2025-01-01)
       expect(p.assessment?.toTs).toBeLessThanOrEqual(1_735_689_600_000);
       expect(p.assessment?.days).toBe(730);
 
       // Every proposition goes through the full sea trial
       const trial = p.assessment?.seaTrial;
-      expect(trial?.checks).toHaveLength(11);
+      expect(trial?.checks).toHaveLength(12);
       expect(trial?.neighbours).toHaveLength(4);
       expect(trial?.sibling?.instrumentId).toBe("ETH-USDT-SWAP");
       expect(trial?.segments).toHaveLength(8);
-      expect(trial?.trials).toBeGreaterThanOrEqual(3);
-      // A seaworthy verdict is impossible with any critical check failed
+      // Every backtest of every idea counts: main run, four nudges and the sibling market
+      expect(trial?.trials).toBeGreaterThanOrEqual(18);
+      expect(trial?.funding).toBe("assumed");
+      // A seaworthy verdict needs every critical check and a passed Blind Trial
       if (p.assessment?.verdict === "seaworthy") {
         expect(trial?.checks.filter((c) => c.critical).every((c) => c.passed)).toBe(true);
+        expect(p.assessment.blindTrial?.outcome).toBe("passed");
       }
+      // The Blind Trial is kept as an outcome only, never as numbers
+      expect(Object.keys(p.assessment?.blindTrial ?? {}).sort()).toEqual([
+        "fromTs",
+        "outcome",
+        "toTs"
+      ]);
     }
     expect(new Set(batch.propositions.map((p) => p.rig.name)).size).toBe(3);
   }, 60_000);
+
+  it("waits for OKX history rather than trial a stand-in, and tries again every hour", async () => {
+    let online = false;
+    const history = okxHistory();
+    const { call, clock } = await setup(
+      (c) => c,
+      (input) => (online ? history(input) : Promise.reject(new Error("offline")))
+    );
+    const res = await call("POST", "/api/v1/fleet/designs", {
+      instruments: ["BTC-USDT-SWAP"],
+      direction: "any",
+      count: 2,
+      notes: ""
+    });
+    const batchId = (res.body["batch"] as DesignBatch).batchId;
+    const find = async () =>
+      ((await call("GET", "/api/v1/fleet/designs")).body["batches"] as DesignBatch[]).find(
+        (b) => b.batchId === batchId
+      );
+    let batch = await find();
+    for (let i = 0; i < 200 && !batch?.progress?.startsWith("Waiting for OKX"); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      batch = await find();
+    }
+    expect(batch?.status).toBe("assessing");
+    expect(batch?.progress).toMatch(/OKX history for BTC covers 0% of the window: offline/);
+    expect(batch?.propositions.every((p) => p.status === "assessing" && !p.assessment)).toBe(true);
+
+    // OKX answers again: the next hourly step sends the batch back to the slipway
+    online = true;
+    clock.advanceMs(HOUR_MS);
+    await call("POST", "/api/v1/system/scheduler/step");
+    for (let i = 0; i < 1200 && batch?.status !== "done"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      batch = await find();
+    }
+    expect(batch?.status).toBe("done");
+    for (const p of batch?.propositions ?? []) {
+      expect(p.status).toBe("ranked");
+      expect(p.assessment?.dataSource).toBe("okx");
+    }
+  }, 120_000);
 
   it("designs for any of the ten waters and cross-checks each idea on its sibling market", async () => {
     const { call } = await setup();

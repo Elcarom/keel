@@ -1,7 +1,10 @@
 import {
+  SEALED_HOLDOUT_END_TS,
+  SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
   normalizeRig,
   type Assessment,
+  type BlindTrial,
   type BotArchetype,
   type Rig,
   type ConfirmedBar,
@@ -71,6 +74,20 @@ export function weeklyCorrelation(a: readonly number[], b: readonly number[]): n
 export const BACKTEST_TO_TS = 1_733_011_200_000; // 2024-12-01 00:00:00 UTC
 export const BACKTEST_DAYS = 730;
 export const BACKTEST_FROM_TS = BACKTEST_TO_TS - BACKTEST_DAYS * DAY_MS;
+
+/**
+ * The Blind Trial's year: 2025, the sealed holdout, which no sea trial and no Shipwright prompt
+ * ever sees (ADR-0035). It ends a millisecond before the sealed 2026 partition.
+ */
+export const BLIND_FROM_TS = SEALED_HOLDOUT_START_TS;
+export const BLIND_TO_TS = SEALED_HOLDOUT_END_TS - 1;
+export const BLIND_DAYS = 365;
+
+/**
+ * Backtests behind every sea trial: the main run, four nudged versions and the sibling market.
+ * Each one is a look at the same history, so each counts towards the luck adjustment.
+ */
+export const REPLAYS_PER_SEA_TRIAL = 6;
 
 /**
  * OKX's public API keeps only recent funding history, so most of the window has none. Every open
@@ -250,7 +267,9 @@ export function combineRuns(runs: readonly TrialRun[], initial: number, trials: 
     stressNetExpectancyR: byTrades((r) => r.stressNetExpectancyR),
     walkForwardOutOfSampleAvgR: byTrades((r) => r.walkForwardOutOfSampleAvgR),
     replayGatePassed: runs.every((r) => r.replayGatePassed),
-    randomEntryPercentile: mean((r) => r.randomEntryPercentile ?? 0),
+    // An average of percentiles is no percentile: the basket beats random only as far as its
+    // weakest coin does
+    randomEntryPercentile: Math.min(...runs.map((r) => r.randomEntryPercentile ?? 0)),
     buyAndHoldReturnPct: mean((r) => r.buyAndHoldReturnPct ?? 0),
     buyAndHoldSharpeRatio: mean((r) => r.buyAndHoldSharpeRatio ?? 0),
     trades,
@@ -299,7 +318,10 @@ export function variantOf(
   };
 }
 
-/** Each trade's net P&L as a fraction of the equity it was taken with (one position at a time). */
+/**
+ * Each trade's net P&L as a fraction of the equity it was taken with (one position at a time).
+ * A basket's trades overlap, so for a basket this is an approximation.
+ */
 function tradeReturns(result: TrialRun, initial: number): number[] {
   let equity = initial;
   const returns: number[] = [];
@@ -317,22 +339,37 @@ interface CheckSpec {
   readonly critical: boolean;
 }
 
-/** Weights sum to 60; the other 40 points come from the headline performance. */
+/**
+ * Weights sum to 60; the other 40 points come from the headline performance. The critical checks
+ * together are Keel's research gate (ADR-0009, ADR-0035): a design must pass them all, and then
+ * its Blind Trial, to be seaworthy.
+ */
 const CHECKS: Readonly<Record<SeaTrialCheckKey, CheckSpec>> = {
   enough_trades: { label: "Enough trades to judge", weight: 3, critical: true },
   survives_costs: { label: "Survives doubled costs", weight: 8, critical: true },
-  out_of_sample: { label: "Holds up out of sample", weight: 8, critical: true },
+  out_of_sample: { label: "Holds up on later folds", weight: 8, critical: true },
   robust_parameters: { label: "Robust to nudged settings", weight: 8, critical: true },
   steady_quarters: { label: "Steady across the seasons", weight: 7, critical: false },
   travels_well: { label: "Works on a sibling market", weight: 6, critical: false },
-  luck_adjusted: { label: "More skill than luck", weight: 6, critical: false },
+  luck_adjusted: { label: "More skill than luck", weight: 6, critical: true },
+  research_gate: { label: "Clears the research gate", weight: 4, critical: true },
   survives_resampling: { label: "Survives reshuffled trades", weight: 5, critical: false },
-  beats_holding: { label: "Beats holding, risk-adjusted", weight: 4, critical: false },
-  beats_random: { label: "Beats random entries", weight: 3, critical: false },
+  beats_holding: { label: "Beats holding, risk-adjusted", weight: 2, critical: false },
+  beats_random: { label: "Beats random entries", weight: 1, critical: false },
   shallow_drawdown: { label: "Shallow worst dip", weight: 2, critical: false }
 };
 
-export const MIN_TRADES = 30;
+/** The research gate's bars (promotionLadder in the config), shared with the replay engine. */
+export interface ResearchGate {
+  readonly minTrades: number;
+  readonly minSharpe: number;
+  readonly minDeflatedSharpe: number;
+}
+
+/** The worst dip the research gate allows, as in the replay engine's gate. */
+export const GATE_MAX_DRAWDOWN_PCT = 25;
+/** The gate's random-entry bar: the boat's Sharpe above the 75th percentile of random entries. */
+export const GATE_RANDOM_PERCENTILE = 75;
 
 export interface SeaTrialInput {
   readonly main: TrialRun;
@@ -341,8 +378,8 @@ export interface SeaTrialInput {
   readonly neighbours: readonly SeaTrialVariant[];
   readonly sibling: (SeaTrialVariant & { readonly instrumentId: string }) | null;
   readonly initialEquityUsdt: string;
-  readonly dataSource: "okx" | "synthetic";
   readonly funding: "settled" | "assumed";
+  readonly gate: ResearchGate;
   readonly trials: number;
   readonly days: number;
   readonly seed: number;
@@ -399,19 +436,33 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
   const randomPercentile = main.randomEntryPercentile ?? 0;
   const holdSharpe = main.buyAndHoldSharpeRatio ?? 0;
   const oosR = main.walkForwardOutOfSampleAvgR;
+  const { gate } = input;
+  const gateMisses = [
+    sharpe < gate.minSharpe ? `Sharpe ${round(sharpe)} below ${gate.minSharpe}` : null,
+    sharpe <= holdSharpe
+      ? `Sharpe ${round(sharpe)} not above holding's ${round(holdSharpe)}`
+      : null,
+    randomPercentile < GATE_RANDOM_PERCENTILE
+      ? `below the ${GATE_RANDOM_PERCENTILE}th percentile of random entries`
+      : null,
+    main.maxDrawdownPct > GATE_MAX_DRAWDOWN_PCT
+      ? `worst dip ${round(main.maxDrawdownPct, 1)}% over ${GATE_MAX_DRAWDOWN_PCT}%`
+      : null
+  ].filter((m): m is string => m !== null);
 
   const results: Record<SeaTrialCheckKey, { passed: boolean; detail: string }> = {
     enough_trades: {
-      passed: trades >= MIN_TRADES,
-      detail: `${trades} trades in ${input.days} days (needs ${MIN_TRADES})`
+      passed: trades >= gate.minTrades,
+      detail: `${trades} trades in ${input.days} days (needs ${gate.minTrades})`
     },
     survives_costs: {
       passed: main.stressNetExpectancyR > 0,
       detail: `Average trade ${signed(main.stressNetExpectancyR, "R")} with fees and slippage doubled`
     },
     out_of_sample: {
-      passed: oosR > 0 && trades >= MIN_TRADES,
-      detail: `Average trade ${signed(oosR, "R")} on walk-forward folds it was not judged on`
+      passed: oosR > 0 && trades >= gate.minTrades,
+      // Later folds of the same window: a check on stability, not unseen data (the Blind Trial is)
+      detail: `Average trade ${signed(oosR, "R")} on the window's later walk-forward folds`
     },
     robust_parameters: {
       passed:
@@ -431,11 +482,18 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
         : "No sibling market to compare"
     },
     luck_adjusted: {
-      passed: main.deflatedSharpeRatio >= 0.5,
-      detail: `${Math.round(main.deflatedSharpeRatio * 100)}% confidence after ${input.trials} ideas tried`
+      passed: main.deflatedSharpeRatio >= gate.minDeflatedSharpe,
+      detail: `${Math.round(main.deflatedSharpeRatio * 100)}% confidence after ${input.trials} backtests (needs ${Math.round(gate.minDeflatedSharpe * 100)}%)`
+    },
+    research_gate: {
+      passed: gateMisses.length === 0,
+      detail:
+        gateMisses.length === 0
+          ? `Sharpe ${round(sharpe)} of at least ${gate.minSharpe}, above holding and ${GATE_RANDOM_PERCENTILE}% of random entries, worst dip within ${GATE_MAX_DRAWDOWN_PCT}%`
+          : `Short of the gate: ${gateMisses.join("; ")}`
     },
     survives_resampling: {
-      passed: trades >= MIN_TRADES && mc.lossProbabilityPct <= 20,
+      passed: trades >= gate.minTrades && mc.lossProbabilityPct <= 20,
       detail: `${round(mc.lossProbabilityPct, 1)}% of ${mc.paths} reshuffled histories lose money`
     },
     beats_holding: {
@@ -472,10 +530,11 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
   }
   score = round(Math.max(0, Math.min(100, score)), 0);
 
+  // Clearing every in-sample check earns a Blind Trial; only passing that makes a boat seaworthy
   const criticalFailures = checks.filter((c) => c.critical && !c.passed).length;
   const verdict: Verdict =
-    criticalFailures === 0 && score >= 65
-      ? "seaworthy"
+    criticalFailures === 0 && score >= BLIND_TRIAL_MIN_SCORE
+      ? "promising"
       : criticalFailures <= 1 && score >= 45
         ? "promising"
         : returnPct < 0 && score < 30
@@ -545,8 +604,8 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
     score,
     verdict,
     headline,
-    gatePassed: main.replayGatePassed,
-    dataSource: input.dataSource,
+    gatePassed: checks.every((c) => !c.critical || c.passed),
+    dataSource: "okx",
     fromTs: main.fromTs,
     toTs: main.toTs,
     totalTrades: trades,
@@ -560,6 +619,53 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
     equityCurvePct,
     days: input.days,
     seaTrial,
-    lookalike: null
+    lookalike: null,
+    blindTrial: null
   };
+}
+
+/** The in-sample score a design needs, with every critical check passed, to earn a Blind Trial. */
+export const BLIND_TRIAL_MIN_SCORE = 65;
+
+/** Whether an in-sample assessment has earned its Blind Trial: the research gate and the score. */
+export function earnsBlindTrial(a: Pick<Assessment, "score" | "seaTrial">): boolean {
+  const checks = a.seaTrial?.checks ?? [];
+  return (
+    checks.length > 0 &&
+    checks.every((c) => !c.critical || c.passed) &&
+    a.score >= BLIND_TRIAL_MIN_SCORE
+  );
+}
+
+/**
+ * The Blind Trial's rule, fixed before any design sees 2025 (ADR-0035): over the unseen year the
+ * design trades at least half the gate's two-year minimum, its average trade stays positive with
+ * every cost doubled, and its worst dip stays within the gate's limit.
+ */
+export function passesBlindTrial(
+  run: Pick<TrialRun, "totalTrades" | "stressNetExpectancyR" | "maxDrawdownPct">,
+  gate: ResearchGate
+): boolean {
+  return (
+    run.totalTrades >= Math.ceil(gate.minTrades / 2) &&
+    run.stressNetExpectancyR > 0 &&
+    run.maxDrawdownPct <= GATE_MAX_DRAWDOWN_PCT
+  );
+}
+
+/**
+ * Settles the verdict once the Blind Trial is known: a design that earned it is seaworthy only if
+ * it passed, and choppy if it failed. Only the outcome is kept, never the year's numbers.
+ */
+export function withBlindTrial(a: Assessment, blind: BlindTrial): Assessment {
+  if (!earnsBlindTrial(a)) return { ...a, blindTrial: blind };
+  const verdict: Verdict =
+    blind.outcome === "passed" ? "seaworthy" : blind.outcome === "failed" ? "choppy" : "promising";
+  const said =
+    blind.outcome === "passed"
+      ? "passed its Blind Trial"
+      : blind.outcome === "failed"
+        ? "failed its Blind Trial"
+        : "no Blind Trial left in the budget";
+  return { ...a, verdict, headline: `${a.headline} · ${said}`, blindTrial: blind };
 }

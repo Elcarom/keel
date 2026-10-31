@@ -9,6 +9,9 @@ import { createSqliteDataStore, OkxPublicIngestor } from "@keel/data";
 import { UnattendedScheduler } from "../src/scheduler.js";
 import { PaperBroker } from "../src/paper-broker.js";
 
+/** Unit tests never reach OKX: any fetch the test did not stub fails at once. */
+const offlineFetch: typeof fetch = () => Promise.reject(new Error("offline"));
+
 describe("Unattended Ingest & Tick Scheduler (M7)", () => {
   it("ingests newly confirmed bars and triggers strategy ticks autonomously", async () => {
     const clock = new ManualClock(1_730_000_000_000);
@@ -39,6 +42,8 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     let ingestedCount = 0;
     const ingestor = new OkxPublicIngestor({
       marketDataRepo: dataStore.marketDataRepo,
+      fetchFn: offlineFetch,
+      fetchHistoryFunding: async () => [],
       fetchHistoryCandles: async () => {
         ingestedCount++;
         return [
@@ -243,6 +248,8 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
 
     const ingestor = new OkxPublicIngestor({
       marketDataRepo: dataStore.marketDataRepo,
+      fetchFn: offlineFetch,
+      fetchHistoryFunding: async () => [],
       fetchHistoryCandles: async () => [
         {
           openTs: confirmedOpenTs,
@@ -627,6 +634,8 @@ describe("Unattended Ingest & Tick Scheduler (M7)", () => {
     // Fake ingestor returns all 720 gap bars up to the bar before now
     const ingestor = new OkxPublicIngestor({
       marketDataRepo: dataStore.marketDataRepo,
+      fetchFn: offlineFetch,
+      fetchHistoryFunding: async () => [],
       fetchHistoryCandles: async ({ fromOpenTs, toOpenTs }) => {
         const gapCandles = [];
         let cur = fromOpenTs;

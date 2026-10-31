@@ -39,9 +39,9 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
 
     // The flagship's sea trial shows every check behind its rank
     const flagship = batch.getByTestId("proposition-card").first();
-    await expect(flagship.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
+    await expect(flagship.getByTestId("sea-trial-summary")).toContainText("of 12 checks");
     await flagship.getByTestId("sea-trial-toggle").click();
-    await expect(flagship.locator('[data-testid^="check-"]')).toHaveCount(11);
+    await expect(flagship.locator('[data-testid^="check-"]')).toHaveCount(12);
     await expect(flagship.getByTestId("check-robust_parameters")).toContainText("nudged versions");
 
     // Launch the flagship onto paper trading; live trading is offered but disabled
@@ -154,6 +154,6 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(batch).toBeVisible({ timeout: 60_000 });
     await expect(batch.getByText("✦ Drawn up in a chat")).toBeVisible();
     await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
-    await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
+    await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 12 checks");
   });
 });

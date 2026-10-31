@@ -48,7 +48,6 @@ import {
   createLedgerRepository,
   createPaperAccountRepository,
   dropBookSql,
-  seedSyntheticMarketSeries,
   type OkxPublicIngestor,
   type SqliteDataStore
 } from "@keel/data";
@@ -68,13 +67,21 @@ import {
   BACKTEST_DAYS,
   BACKTEST_FROM_TS,
   BACKTEST_TO_TS,
+  BLIND_DAYS,
+  BLIND_FROM_TS,
+  BLIND_TO_TS,
   DEFAULT_SEA_TRIAL_SETTINGS,
+  REPLAYS_PER_SEA_TRIAL,
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
+  earnsBlindTrial,
   neighbourRigs,
+  passesBlindTrial,
   variantOf,
   weeklyCorrelation,
+  withBlindTrial,
+  type ResearchGate,
   type SeaTrialSettings,
   type TrialRun
 } from "./sea-trial.js";
@@ -85,6 +92,37 @@ const HOUR_MS = 3_600_000;
 const REFERENCE_GRACE_MS = 3 * HOUR_MS;
 
 const coin = (id: string): string => id.replace("-USDT-SWAP", "");
+
+/** A stretch of OKX history a backtest replays. */
+interface TrialWindow {
+  readonly fromTs: number;
+  readonly toTs: number;
+  readonly days: number;
+  /** The Blind Trial's year lies in the sealed 2025 holdout, which a replay reads only on request. */
+  readonly blind: boolean;
+}
+
+const SEA_TRIAL_WINDOW: TrialWindow = {
+  fromTs: BACKTEST_FROM_TS,
+  toTs: BACKTEST_TO_TS,
+  days: BACKTEST_DAYS,
+  blind: false
+};
+const BLIND_WINDOW: TrialWindow = {
+  fromTs: BLIND_FROM_TS,
+  toTs: BLIND_TO_TS,
+  days: BLIND_DAYS,
+  blind: true
+};
+
+/**
+ * OKX history for a trial's window could not be fetched. The trial waits and tries again; it is
+ * never run on a stand-in series (ADR-0035).
+ */
+class MissingHistoryError extends Error {}
+
+/** How often a sea trial waiting for OKX history tries again. */
+const HISTORY_RETRY_MS = HOUR_MS;
 
 /**
  * The market a boat is cross-checked on: its lead coin's sibling, unless the boat already trades
@@ -158,20 +196,6 @@ function referenceMarketsOf(b: Rig): FleetInstrument[] {
 const BACKTEST_EQUITY_USDT = "10000.00";
 const DEFAULT_WALLET_USDT = "10000.00000000";
 
-/** Starting prices for the synthetic stand-in series when OKX history is unreachable. */
-const SYNTHETIC_BASE_PRICES: Readonly<Record<FleetInstrument, number>> = {
-  "BTC-USDT-SWAP": 60000,
-  "ETH-USDT-SWAP": 2500,
-  "SOL-USDT-SWAP": 150,
-  "XRP-USDT-SWAP": 0.6,
-  "DOGE-USDT-SWAP": 0.15,
-  "BNB-USDT-SWAP": 550,
-  "ADA-USDT-SWAP": 0.45,
-  "AVAX-USDT-SWAP": 30,
-  "LINK-USDT-SWAP": 15,
-  "LTC-USDT-SWAP": 80
-};
-
 export class FleetError extends Error {
   public constructor(
     public readonly status: 400 | 404 | 409,
@@ -231,7 +255,9 @@ export class FleetService {
   private readonly ingestor: OkxPublicIngestor | null;
   private readonly engines = new Map<string, BotEngine>();
   private assessQueue: Promise<void> = Promise.resolve();
-  private readonly dataFills = new Map<string, Promise<"okx" | "synthetic">>();
+  private readonly dataFills = new Map<string, Promise<void>>();
+  /** Batches whose sea trials wait for OKX history: why, and when they last tried. */
+  private readonly waiting = new Map<string, { readonly reason: string; readonly atMs: number }>();
   /** One settled-funding backfill attempt per instrument per process. */
   private readonly fundingFills = new Map<string, Promise<void>>();
   private readonly seaTrialSettings: SeaTrialSettings;
@@ -447,7 +473,12 @@ export class FleetService {
     return {
       ...batch,
       status: assessing ? "assessing" : "done",
-      progress: assessing ? (this.progress.get(batchId) ?? "Waiting for the slipway…") : null,
+      progress: assessing
+        ? (this.progress.get(batchId) ??
+          (this.waiting.has(batchId)
+            ? `Waiting for OKX history (${this.waiting.get(batchId)?.reason ?? ""}); Keel tries again every hour`
+            : "Waiting for the slipway…"))
+        : null,
       propositions
     };
   }
@@ -460,11 +491,13 @@ export class FleetService {
 
   private async assessBatch(batchId: string): Promise<void> {
     const pending = this.repo.listPropositions(batchId).filter((p) => p.status === "assessing");
-    // Every idea ever drafted counts as a trial: the more ideas tried, the more luck is discounted
-    const trials = Math.max(
-      this.repo.listPropositions(batchId).length,
-      this.repo.countPropositions()
-    );
+    // Every backtest of every idea ever drafted counts as a trial: the main run, its nudged
+    // versions and its sibling market. The more looks at the same history, the more luck is
+    // discounted (ADR-0035)
+    const trials =
+      Math.max(this.repo.listPropositions(batchId).length, this.repo.countPropositions()) *
+      REPLAYS_PER_SEA_TRIAL;
+    this.waiting.delete(batchId);
     try {
       for (const [index, proposition] of pending.entries()) {
         const say = (stage: string) =>
@@ -477,6 +510,11 @@ export class FleetService {
           const assessment = { ...trial, lookalike: this.lookalikeOf(proposition, trial) };
           this.repo.saveProposition({ ...proposition, status: "ranked", assessment, error: null });
         } catch (err) {
+          if (err instanceof MissingHistoryError) {
+            // Still assessing: the hourly retry picks it up once OKX answers
+            this.waiting.set(batchId, { reason: err.message, atMs: this.clock.nowMs() });
+            continue;
+          }
           this.repo.saveProposition({
             ...proposition,
             status: "failed",
@@ -570,15 +608,17 @@ export class FleetService {
     rig: Proposition["rig"],
     strategyId: string,
     trials: number,
-    full: boolean
+    full: boolean,
+    window: TrialWindow = SEA_TRIAL_WINDOW
   ): ReplayRunResult {
     const config = this.getConfig();
     return this.replayEngine.run({
       instrumentId: rig.instrumentId,
       timeframe: "1H",
       strategy: new SpecStrategy(compileRig(rig, strategyId)),
-      fromTs: BACKTEST_FROM_TS,
-      toTs: BACKTEST_TO_TS,
+      fromTs: window.fromTs,
+      toTs: window.toTs,
+      allowHoldoutAccess: window.blind,
       numTrials: Math.max(1, trials),
       initialEquityUsdt: ScaledDecimal.fromString(BACKTEST_EQUITY_USDT),
       riskFractionPerTrade: config.risk.strategy.riskPerTradePct / 100,
@@ -600,7 +640,8 @@ export class FleetService {
     legs: readonly [FleetInstrument, FleetInstrument],
     strategyId: string,
     trials: number,
-    full: boolean
+    full: boolean,
+    window: TrialWindow = SEA_TRIAL_WINDOW
   ): PairReplayResult {
     const config = this.getConfig();
     return runPairReplay(this.dataStore.marketDataRepo, {
@@ -614,8 +655,9 @@ export class FleetService {
           strategy: new SpecStrategy(compileRig(rig, strategyId, 1))
         }
       ],
-      fromTs: BACKTEST_FROM_TS,
-      toTs: BACKTEST_TO_TS,
+      fromTs: window.fromTs,
+      toTs: window.toTs,
+      allowHoldoutAccess: window.blind,
       initialEquityUsdt: ScaledDecimal.fromString(BACKTEST_EQUITY_USDT),
       riskFractionPerTrade: config.risk.strategy.riskPerTradePct / 100,
       maxGrossLeverage: config.risk.strategy.maxGrossLeverage,
@@ -636,12 +678,70 @@ export class FleetService {
     rig: Rig,
     strategyId: string,
     trials: number,
-    full: boolean
+    full: boolean,
+    window: TrialWindow = SEA_TRIAL_WINDOW
   ): Promise<TrialRun> {
     const legs = pairLegs(rig);
-    if (!legs) return this.replayBasket(rig, strategyId, trials, full);
+    if (!legs) return this.replayBasket(rig, strategyId, trials, full, window);
     await this.breathe();
-    return this.replayPair(rig, legs, strategyId, trials, full);
+    return this.replayPair(rig, legs, strategyId, trials, full, window);
+  }
+
+  /** The research gate's bars from the Promotion Ladder settings. */
+  private researchGate(): ResearchGate {
+    const ladder = this.getConfig().promotionLadder;
+    return {
+      minTrades: ladder.replayMinTrades,
+      minSharpe: ladder.replayMinSharpe,
+      minDeflatedSharpe: ladder.replayMinDeflatedSharpeConfidence
+    };
+  }
+
+  /** Blind Trials the Fleet has run so far: each one a look at the unseen year. */
+  private blindLooks(): number {
+    return this.repo
+      .listBatches(100_000)
+      .flatMap((batch) => this.repo.listPropositions(batch.batchId))
+      .filter((p) => {
+        const outcome = p.assessment?.blindTrial?.outcome;
+        return outcome === "passed" || outcome === "failed";
+      }).length;
+  }
+
+  /**
+   * The Blind Trial (ADR-0035): a design that cleared every in-sample check is replayed once on
+   * 2025. Only the outcome is kept; the year's numbers are never stored, shown or sent to Claude.
+   */
+  private async blindTrial(
+    proposition: Proposition,
+    inSample: Assessment,
+    say: (stage: string) => void
+  ): Promise<Assessment> {
+    const window = { fromTs: BLIND_FROM_TS, toTs: BLIND_TO_TS };
+    if (!earnsBlindTrial(inSample)) {
+      return withBlindTrial(inSample, { outcome: "skipped", ...window });
+    }
+    if (this.blindLooks() >= this.getConfig().fleet.blindTrialLimit) {
+      return withBlindTrial(inSample, { outcome: "budget_spent", ...window });
+    }
+    const b = proposition.rig;
+    for (const market of [...new Set([...rigMarkets(b), ...referenceMarketsOf(b)])]) {
+      say(`charting the unseen year of ${coin(market)} history`);
+      await this.ensureBacktestData(market, BLIND_WINDOW);
+      await this.breathe();
+    }
+    say("the Blind Trial on the unseen year");
+    const run = await this.replayBoat(
+      b,
+      `${proposition.propositionId}_blind`,
+      1,
+      false,
+      BLIND_WINDOW
+    );
+    return withBlindTrial(inSample, {
+      outcome: passesBlindTrial(run, this.researchGate()) ? "passed" : "failed",
+      ...window
+    });
   }
 
   /**
@@ -659,10 +759,9 @@ export class FleetService {
     const references = referenceMarketsOf(b);
     const needed = [...new Set([...markets, ...references])];
 
-    let dataSource: "okx" | "synthetic" = "okx";
     for (const market of needed) {
       say(`charting ${BACKTEST_DAYS} days of ${coin(market)} history`);
-      if ((await this.ensureBacktestData(market)) === "synthetic") dataSource = "synthetic";
+      await this.ensureBacktestData(market);
       await this.breathe();
     }
 
@@ -740,27 +839,31 @@ export class FleetService {
     const bars = legs
       ? pairRatioBars(marketBars[0] ?? [], marketBars[1] ?? [])
       : basketIndexBars(marketBars);
+    // Settled only when OKX's history covers the window; any 8-hour slot it lacks pays the
+    // assumed rate
     const settled = markets.every(
       (instrumentId) =>
         repo.getSettledFundingInRange({
           instrumentId,
           fromTs: BACKTEST_FROM_TS,
           toTs: BACKTEST_TO_TS
-        }).length > 0
+        }).length >=
+        ((BACKTEST_DAYS * 24) / 8) * 0.95
     );
-    return assessSeaTrial({
+    const inSample = assessSeaTrial({
       main,
       bars,
       neighbours,
       sibling,
       initialEquityUsdt: BACKTEST_EQUITY_USDT,
-      dataSource,
       funding: settled ? "settled" : "assumed",
+      gate: this.researchGate(),
       trials,
       days: BACKTEST_DAYS,
       seed: seedFromString(proposition.propositionId),
       settings: this.seaTrialSettings
     });
+    return this.blindTrial(proposition, inSample, say);
   }
 
   /** One backtest per coin a boat trades, combined into the boat's portfolio (ADR-0028). */
@@ -768,96 +871,114 @@ export class FleetService {
     rig: Rig,
     strategyId: string,
     trials: number,
-    full: boolean
+    full: boolean,
+    window: TrialWindow = SEA_TRIAL_WINDOW
   ): Promise<TrialRun> {
     const runs: TrialRun[] = [];
     for (const instrumentId of rigMarkets(rig)) {
       await this.breathe();
-      runs.push(this.replay({ ...rig, instrumentId, basket: [] }, strategyId, trials, full));
+      runs.push(
+        this.replay({ ...rig, instrumentId, basket: [] }, strategyId, trials, full, window)
+      );
     }
     return combineRuns(runs, Number(BACKTEST_EQUITY_USDT), trials);
   }
 
-  /** The backtest window's bars and, for real OKX history, its settled funding. */
-  private async ensureBacktestData(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
-    const source = await this.ensureBacktestBars(instrumentId);
-    if (source === "okx") await this.ensureBacktestFunding(instrumentId);
-    return source;
+  /** A trial window's bars and settled funding from OKX. Throws MissingHistoryError when unreachable. */
+  private async ensureBacktestData(
+    instrumentId: FleetInstrument,
+    window: TrialWindow = SEA_TRIAL_WINDOW
+  ): Promise<void> {
+    await this.ensureBacktestBars(instrumentId, window);
+    await this.ensureBacktestFunding(instrumentId, window);
   }
 
   /**
-   * Backfills the window's settled funding from OKX (recent endpoint, then the monthly archive).
-   * A failed attempt leaves the window unsettled, and the sea trial then says funding was assumed.
+   * Backfills a window's settled funding from OKX (recent endpoint, then the monthly archive).
+   * A failed attempt leaves gaps, and the replay charges the assumed rate in each one.
    */
-  private ensureBacktestFunding(instrumentId: FleetInstrument): Promise<void> {
-    const known = this.fundingFills.get(instrumentId);
+  private ensureBacktestFunding(instrumentId: FleetInstrument, window: TrialWindow): Promise<void> {
+    const key = `${instrumentId}@${window.fromTs}`;
+    const known = this.fundingFills.get(key);
     if (known) return known;
     const fill = (async (): Promise<void> => {
-      const window = { instrumentId, fromTs: BACKTEST_FROM_TS, toTs: BACKTEST_TO_TS };
-      const expected = (BACKTEST_DAYS * 24) / 8;
-      const stored = this.dataStore.marketDataRepo.getSettledFundingInRange(window).length;
+      const range = { instrumentId, fromTs: window.fromTs, toTs: window.toTs };
+      const expected = (window.days * 24) / 8;
+      const stored = this.dataStore.marketDataRepo.getSettledFundingInRange(range).length;
       if (!this.ingestor || stored >= expected * 0.95) return;
       try {
         await this.ingestor.ingestFundingRates({
           instrumentId,
-          fromFundingTs: BACKTEST_FROM_TS,
-          toFundingTs: BACKTEST_TO_TS
+          fromFundingTs: window.fromTs,
+          toFundingTs: window.toTs
         });
       } catch {
-        // Unreachable archive: the trial runs on assumed funding
+        // Unreachable archive: the trial runs on assumed funding where history is missing
       }
     })();
-    this.fundingFills.set(instrumentId, fill);
+    this.fundingFills.set(key, fill);
     return fill;
   }
 
   /**
-   * Fills the backtest window's bars once per instrument: OKX history when reachable, otherwise
-   * a synthetic series that every assessment then labels as synthetic.
+   * Fills a window's hourly bars from OKX once per instrument. When OKX is unreachable or its
+   * history covers too little of the window, nothing is recorded and MissingHistoryError is
+   * thrown, so the next attempt fetches again. Keel never stands in a synthetic series under a
+   * real market's id (ADR-0035).
    */
-  private ensureBacktestBars(instrumentId: FleetInstrument): Promise<"okx" | "synthetic"> {
-    const known = this.repo.getBacktestDataSource(instrumentId, BACKTEST_FROM_TS);
-    if (known) return Promise.resolve(known);
-    const inFlight = this.dataFills.get(instrumentId);
+  private ensureBacktestBars(instrumentId: FleetInstrument, window: TrialWindow): Promise<void> {
+    if (this.repo.getBacktestDataSource(instrumentId, window.fromTs) === "okx") {
+      return Promise.resolve();
+    }
+    const key = `${instrumentId}@${window.fromTs}`;
+    const inFlight = this.dataFills.get(key);
     if (inFlight) return inFlight;
 
-    const fill = (async (): Promise<"okx" | "synthetic"> => {
-      const expectedBars = BACKTEST_DAYS * 24;
-      const countBars = (): number =>
-        this.dataStore.marketDataRepo.getConfirmedBarsInRange({
-          instrumentId,
-          timeframe: "1H",
-          fromOpenTs: BACKTEST_FROM_TS,
-          toCloseTs: BACKTEST_TO_TS
-        }).length;
+    const fill = (async (): Promise<void> => {
+      const expectedBars = window.days * 24;
+      let failure = "";
       if (this.ingestor) {
         try {
           await this.ingestor.ingestRange({
             instrumentId,
             timeframe: "1H",
-            fromOpenTs: BACKTEST_FROM_TS,
-            toOpenTs: BACKTEST_TO_TS - HOUR_MS
+            fromOpenTs: window.fromTs,
+            toOpenTs: window.toTs - HOUR_MS
           });
-        } catch {
-          // Unreachable venue: fall through to the coverage check
+        } catch (err) {
+          failure = `: ${err instanceof Error ? err.message : String(err)}`;
         }
+      } else {
+        failure = ": no OKX connection is configured";
       }
-      let source: "okx" | "synthetic" = "okx";
-      if (countBars() < expectedBars * 0.95) {
-        seedSyntheticMarketSeries({
-          marketDataRepo: this.dataStore.marketDataRepo,
-          instrumentId,
-          endCloseTs: BACKTEST_TO_TS,
-          barCount1H: expectedBars,
-          basePrice: SYNTHETIC_BASE_PRICES[instrumentId]
-        });
-        source = "synthetic";
+      const bars = this.dataStore.marketDataRepo.getConfirmedBarsInRange({
+        instrumentId,
+        timeframe: "1H",
+        fromOpenTs: window.fromTs,
+        toCloseTs: window.toTs
+      }).length;
+      if (bars < expectedBars * 0.95) {
+        throw new MissingHistoryError(
+          `OKX history for ${coin(instrumentId)} covers ${Math.floor((bars / expectedBars) * 100)}% of the window${failure}`
+        );
       }
-      this.repo.setBacktestDataSource(instrumentId, BACKTEST_FROM_TS, source);
-      return source;
-    })().finally(() => this.dataFills.delete(instrumentId));
-    this.dataFills.set(instrumentId, fill);
+      this.repo.setBacktestDataSource(instrumentId, window.fromTs, "okx");
+    })().finally(() => this.dataFills.delete(key));
+    this.dataFills.set(key, fill);
     return fill;
+  }
+
+  /**
+   * Sends batches whose sea trials wait for OKX history back to the slipway, at most once an
+   * hour. Runs with the Fleet's duties.
+   */
+  private retryWaitingTrials(): void {
+    const now = this.clock.nowMs();
+    for (const [batchId, wait] of this.waiting) {
+      if (now - wait.atMs < HISTORY_RETRY_MS) continue;
+      this.waiting.set(batchId, { ...wait, atMs: now });
+      this.enqueueAssessment(batchId);
+    }
   }
 
   public discard(propositionId: string): Proposition {
@@ -881,6 +1002,12 @@ export class FleetService {
       throw new FleetError(
         409,
         `Only assessed propositions can be launched (this one is ${p.status})`
+      );
+    }
+    if (p.assessment?.dataSource !== "okx") {
+      throw new FleetError(
+        409,
+        "This proposition was sea-trialled on synthetic data, which says nothing about real markets: draw it up again"
       );
     }
     if (!this.repo.getWallet(input.walletId)) throw new FleetError(404, "Wallet not found");
@@ -1060,6 +1187,7 @@ export class FleetService {
   /** Closes every bot position (Kill Switch Flatten). Statuses are left for the operator. */
   /** Runs the unattended duties that are due (ADR-0030); the scheduler calls it every step. */
   public runDuties(): Promise<string[]> {
+    this.retryWaitingTrials();
     return this.duties.run();
   }
 
@@ -1492,6 +1620,10 @@ export class FleetService {
       }),
       equityCurve: curve,
       recentTrades,
+      tradeR: closed.map((p) => {
+        const risk = ScaledDecimal.fromString(p.initialRiskUsdt);
+        return risk.isPositive() ? round(Number(this.netPnl(p).div(risk).toFixed(8)), 4) : 0;
+      }),
       equityHistory,
       coins
     };

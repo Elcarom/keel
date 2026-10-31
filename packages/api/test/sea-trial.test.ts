@@ -5,11 +5,15 @@ import {
   BACKTEST_DAYS,
   BACKTEST_FROM_TS,
   BACKTEST_TO_TS,
+  BLIND_FROM_TS,
+  BLIND_TO_TS,
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
   neighbourRigs,
+  passesBlindTrial,
   weeklyCorrelation,
+  withBlindTrial,
   type SeaTrialInput
 } from "../src/index.js";
 
@@ -117,6 +121,9 @@ const ROBUST: SeaTrialVariant[] = [
   { label: "Trigger +25%", returnPct: 12, sharpeRatio: 1.0, trades: 45 }
 ];
 
+/** A research gate the 64-trade STEADY run below clears: Sharpe 1.6, deflated 0.8. */
+const GATE = { minTrades: 60, minSharpe: 1, minDeflatedSharpe: 0.8 };
+
 function trial(input: Partial<SeaTrialInput> & { main: ReplayRunResult }) {
   return assessSeaTrial({
     bars: BARS,
@@ -129,8 +136,8 @@ function trial(input: Partial<SeaTrialInput> & { main: ReplayRunResult }) {
       trades: 50
     },
     initialEquityUsdt: "10000.00",
-    dataSource: "okx",
     funding: "assumed",
+    gate: GATE,
     trials: 4,
     days: BACKTEST_DAYS,
     seed: 7,
@@ -180,7 +187,9 @@ describe("Basket sea trials", () => {
     expect(combined.maxDrawdownPct).toBe(0);
     // Statistics each replay measured on its own are averaged, weighted by trades
     expect(combined.stressNetExpectancyR).toBeCloseTo(0.05);
-    expect(combined.randomEntryPercentile).toBeCloseTo(73.5);
+    // ...but an average of percentiles is no percentile: the basket is only as far above random
+    // entries as its weakest coin
+    expect(combined.randomEntryPercentile).toBe(50);
     expect(combined.avgR).toBeCloseTo(0.75);
   });
 
@@ -232,12 +241,64 @@ describe("Lookalikes", () => {
 });
 
 describe("Sea trial", () => {
-  it("rates a steady, robust edge seaworthy and passes every check", () => {
+  it("passes a steady, robust edge on every check, but holds seaworthy back for its Blind Trial", () => {
     const a = trial({ main: result({ trades: STEADY }) });
     expect(a.seaTrial?.checks.filter((c) => !c.passed).map((c) => c.key)).toEqual([]);
-    expect(a.verdict).toBe("seaworthy");
+    expect(a.gatePassed).toBe(true);
+    expect(a.verdict).toBe("promising");
+    expect(a.blindTrial).toBeNull();
     expect(a.score).toBeGreaterThanOrEqual(65);
     expect(a.seaTrial?.monteCarlo.lossProbabilityPct).toBe(0);
+  });
+
+  it("calls a design seaworthy only once it passes the Blind Trial it earned", () => {
+    const a = trial({ main: result({ trades: STEADY }) });
+    const year = { fromTs: BLIND_FROM_TS, toTs: BLIND_TO_TS };
+    const passed = withBlindTrial(a, { outcome: "passed", ...year });
+    expect(passed.verdict).toBe("seaworthy");
+    expect(passed.headline).toMatch(/passed its Blind Trial$/);
+    expect(withBlindTrial(a, { outcome: "failed", ...year }).verdict).toBe("choppy");
+    expect(withBlindTrial(a, { outcome: "budget_spent", ...year }).verdict).toBe("promising");
+
+    // A design that never earned one keeps its in-sample verdict whatever the outcome says
+    const weak = trial({ main: result({ trades: STEADY, stressNetExpectancyR: -0.02 }) });
+    expect(withBlindTrial(weak, { outcome: "passed", ...year }).verdict).toBe(weak.verdict);
+  });
+
+  it("fixes the Blind Trial's rule in advance: half the gate's trades, positive stressed R, a shallow dip", () => {
+    const year = { totalTrades: 30, stressNetExpectancyR: 0.05, maxDrawdownPct: 12 };
+    expect(passesBlindTrial(year, GATE)).toBe(true);
+    expect(passesBlindTrial({ ...year, totalTrades: 29 }, GATE)).toBe(false);
+    expect(passesBlindTrial({ ...year, stressNetExpectancyR: 0 }, GATE)).toBe(false);
+    expect(passesBlindTrial({ ...year, maxDrawdownPct: 25.5 }, GATE)).toBe(false);
+  });
+
+  it("makes the luck adjustment critical: an edge that many tries could find by chance never sails", () => {
+    const a = trial({ main: result({ trades: STEADY, deflatedSharpeRatio: 0.6 }), trials: 600 });
+    const luck = a.seaTrial?.checks.find((c) => c.key === "luck_adjusted");
+    expect(luck?.critical).toBe(true);
+    expect(luck?.passed).toBe(false);
+    expect(luck?.detail).toBe("60% confidence after 600 backtests (needs 80%)");
+    expect(a.gatePassed).toBe(false);
+    expect(a.verdict).not.toBe("seaworthy");
+  });
+
+  it("holds every design to the research gate: Sharpe, holding, random entries and the worst dip", () => {
+    const a = trial({
+      main: result({
+        trades: STEADY,
+        sharpeRatio: 0.85,
+        randomEntryPercentile: 70,
+        maxDrawdownPct: 26
+      })
+    });
+    const gate = a.seaTrial?.checks.find((c) => c.key === "research_gate");
+    expect(gate?.critical).toBe(true);
+    expect(gate?.passed).toBe(false);
+    expect(gate?.detail).toBe(
+      "Short of the gate: Sharpe 0.85 below 1; Sharpe 0.85 not above holding's 0.9; below the 75th percentile of random entries; worst dip 26% over 25%"
+    );
+    expect(a.gatePassed).toBe(false);
   });
 
   it("never calls an idea seaworthy when nudged settings sink it, however good it looks", () => {

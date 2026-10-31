@@ -153,8 +153,24 @@ export function getExchangeInstrumentSpec(instrumentId: string): InstrumentSpec 
   return getInstrumentSpec(instrumentId);
 }
 
+/**
+ * Research-only synthetic series live under their own ids, never under a real market's, so no
+ * backtest of real history can read them (ADR-0035).
+ */
+export const SYNTHETIC_INSTRUMENT_PREFIX = "SYN-";
+
+/** The id a synthetic stand-in for a market is stored under, e.g. SYN-BTC-USDT-SWAP. */
+export function syntheticInstrumentId(instrumentId: string): string {
+  return instrumentId.startsWith(SYNTHETIC_INSTRUMENT_PREFIX)
+    ? instrumentId
+    : `${SYNTHETIC_INSTRUMENT_PREFIX}${instrumentId}`;
+}
+
 export function getInstrumentSpec(instrumentId: string): InstrumentSpec {
-  const spec = INSTRUMENT_SPECS[instrumentId];
+  // A synthetic series sizes like the market it stands in for
+  const spec = instrumentId.startsWith(SYNTHETIC_INSTRUMENT_PREFIX)
+    ? INSTRUMENT_SPECS[instrumentId.slice(SYNTHETIC_INSTRUMENT_PREFIX.length)]
+    : INSTRUMENT_SPECS[instrumentId];
   if (!spec) {
     throw new Error(`Unsupported instrument: ${instrumentId}. Explicit InstrumentSpec required.`);
   }

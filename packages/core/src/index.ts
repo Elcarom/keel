@@ -52,6 +52,7 @@ export {
 export { ScaledDecimal, type TickRoundMode } from "./decimal.js";
 export {
   computeMarketExitPrice,
+  DEFAULT_EXECUTION_COSTS,
   computeNextBarOpenEntry,
   computeTradePnL,
   evaluateIntrabarExit,
@@ -206,6 +207,8 @@ export {
 export {
   EXCHANGE_INSTRUMENT_IDS,
   INSTRUMENT_SPECS,
+  SYNTHETIC_INSTRUMENT_PREFIX,
+  syntheticInstrumentId,
   defaultInstrumentSpec,
   getExchangeInstrumentSpec,
   getInstrumentSpec,

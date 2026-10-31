@@ -426,6 +426,8 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
       expect(seedRes.statusCode).toBe(200);
       expect(seedRes.json().snapshot.snapshotId).toMatch(/^[0-9a-f]{64}$/);
       expect(seedRes.json().snapshot.barCount).toBeGreaterThan(240);
+      // Synthetic research data never lands under the real market's id (ADR-0035)
+      expect(seedRes.json().snapshot.instrumentIds).toEqual(["SYN-BTC-USDT-SWAP"]);
 
       const runReplayRes = await app.inject({
         method: "POST",
@@ -433,7 +435,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         headers: { cookie: cookieHeader },
         payload: {
           strategyId: "donchian-trend-v1",
-          instrumentId: "BTC-USDT-SWAP",
+          instrumentId: "SYN-BTC-USDT-SWAP",
           timeframe: "1H"
         }
       });
@@ -450,7 +452,7 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         headers: { cookie: cookieHeader },
         payload: {
           strategyId: "vol-mean-reversion-v1",
-          instrumentId: "BTC-USDT-SWAP",
+          instrumentId: "SYN-BTC-USDT-SWAP",
           timeframe: "1H"
         }
       });
@@ -504,7 +506,11 @@ describe("@keel/api — Fastify Server, Observability, Auth, Config Governance, 
         method: "POST",
         url: "/api/v1/replay/run",
         headers: { cookie: cookieHeader },
-        payload: { strategyId: "donchian-trend-v1", instrumentId: "BTC-USDT-SWAP", timeframe: "1H" }
+        payload: {
+          strategyId: "donchian-trend-v1",
+          instrumentId: "SYN-BTC-USDT-SWAP",
+          timeframe: "1H"
+        }
       });
       expect(runReplayRes.statusCode).toBe(200);
     } finally {

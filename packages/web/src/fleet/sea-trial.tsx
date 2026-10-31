@@ -5,6 +5,15 @@ import { coin, signedPct, tone } from "./ui.js";
 // Sea trial: the checks behind a proposition's rank
 // ---------------------------------------------------------------------------
 
+/** What each Blind Trial outcome means; only the outcome is ever kept (ADR-0035). */
+const BLIND_TRIAL_WORDS: Readonly<Record<string, string>> = {
+  passed: "Passed: it held up with doubled costs on a year it never saw",
+  failed: "Failed on a year it never saw",
+  skipped: "Not run: a design earns it by clearing every critical check",
+  budget_spent: "Not run: the Blind Trial budget is spent",
+  none: "Not run: assessed before Blind Trials"
+};
+
 export function shortDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
 }
@@ -218,7 +227,7 @@ export function SeaTrialPanel({ assessment, trial }: { assessment: Assessment; t
           <dt className="text-[11px] text-slate-500">Is the edge real?</dt>
           <dd className="text-slate-200">
             t = {trial.tStat.toFixed(2)}, p ={" "}
-            {trial.pValue < 0.001 ? "<0.001" : trial.pValue.toFixed(3)} · {trial.trials} ideas
+            {trial.pValue < 0.001 ? "<0.001" : trial.pValue.toFixed(3)} · {trial.trials} backtests
             counted
           </dd>
         </div>
@@ -228,7 +237,7 @@ export function SeaTrialPanel({ assessment, trial }: { assessment: Assessment; t
             {trial.stressAvgR >= 0 ? "+" : ""}
             {trial.stressAvgR.toFixed(2)}R per trade at 2× costs ·{" "}
             {trial.funding === "assumed"
-              ? "funding assumed at 0.01%/8h (OKX keeps no older history)"
+              ? "funding assumed at 0.01%/8h wherever OKX keeps no history"
               : "settled funding charged"}
           </dd>
         </div>
@@ -237,6 +246,14 @@ export function SeaTrialPanel({ assessment, trial }: { assessment: Assessment; t
           <dd className="text-slate-200">
             {assessment.gatePassed ? "Passed" : "Not yet"} · random entries beaten{" "}
             {Math.round(trial.randomEntryPercentile)}%
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-slate-500">
+            Blind Trial (2025, never shown to the Shipwright)
+          </dt>
+          <dd className="text-slate-200" data-testid="blind-trial">
+            {BLIND_TRIAL_WORDS[assessment.blindTrial?.outcome ?? "none"]}
           </dd>
         </div>
       </dl>

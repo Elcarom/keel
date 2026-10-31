@@ -135,6 +135,8 @@ export const FleetConfigSchema = z.object({
   autopilotEnabled: z.boolean().default(false),
   autopilotWalletName: z.string().min(1).max(40).default("Autopilot"),
   autopilotMinScore: z.number().int().min(45).max(100).default(65),
+  /** Designs the Fleet may ever replay on its unseen 2025 year (ADR-0035). */
+  blindTrialLimit: z.number().int().min(0).max(1000).default(100),
   autopilotStakePct: z.number().min(1).max(100).default(10),
   /** The most running boats the Autopilot keeps in its wallet; past it, a newcomer must replace one. */
   autopilotMaxBoats: z.number().int().min(1).max(30).default(8),
@@ -790,6 +792,16 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     min: 45,
     max: 100,
     defaultValue: 65,
+    riskClass: "confirm"
+  },
+  {
+    path: "fleet.blindTrialLimit",
+    label: "Blind Trial Budget",
+    helpText:
+      "How many designs may ever be replayed on 2025, the year no sea trial sees. Every look leaks a little of it into the Fleet's choices, so raising this weakens the check.",
+    min: 0,
+    max: 1000,
+    defaultValue: 100,
     riskClass: "confirm"
   },
   {

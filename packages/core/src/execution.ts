@@ -1,5 +1,16 @@
 import { ScaledDecimal } from "./decimal.js";
 
+/**
+ * One cost model for every simulated fill, backtest and paper alike (ADR-0014, ADR-0035): a taker
+ * fee and half the spread are charged as a fee on notional each side; slippage moves the fill price
+ * and is never charged a second time as a fee.
+ */
+export const DEFAULT_EXECUTION_COSTS = {
+  takerFeeBps: 5,
+  halfSpreadBps: 2,
+  slippageBps: 3
+} as const;
+
 export interface NextBarOpenExecutionResult {
   readonly entryPrice: ScaledDecimal;
   readonly effectiveStopPrice: ScaledDecimal;

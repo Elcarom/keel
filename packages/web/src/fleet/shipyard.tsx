@@ -245,7 +245,7 @@ export function PropositionCard({
               />
               {a.seaTrial ? (
                 <Stat
-                  label="Out of sample"
+                  label="Later folds"
                   value={`${a.seaTrial.outOfSampleAvgR >= 0 ? "+" : ""}${a.seaTrial.outOfSampleAvgR.toFixed(2)}R`}
                   valueClass={tone(a.seaTrial.outOfSampleAvgR)}
                   hint="per trade"
@@ -262,7 +262,9 @@ export function PropositionCard({
           <div>
             <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
               <span>Backtest equity, % from start</span>
-              <span>{a.dataSource === "synthetic" ? "⚠ synthetic data" : "OKX history"}</span>
+              <span>
+                {a.dataSource === "synthetic" ? "⚠ synthetic data: cannot launch" : "OKX history"}
+              </span>
             </div>
             <Sparkline
               values={a.equityCurvePct}
