@@ -34,7 +34,7 @@ import {
   DesignBriefSchema,
   FleetOverviewSchema,
   InventionRejectionSchema,
-  InventorPromptRequestSchema,
+  ShipwrightPromptRequestSchema,
   PropositionSchema,
   WalletSchema
 } from "./fleet.js";
@@ -208,10 +208,10 @@ export const keelApiContract = c.router({
       },
       summary: "Ask the boat designer for propositions; each is then backtested and ranked"
     },
-    inventorPrompt: {
+    shipwrightPrompt: {
       method: "POST",
-      path: "/api/v1/fleet/inventor-prompt",
-      body: InventorPromptRequestSchema,
+      path: "/api/v1/fleet/shipwright-prompt",
+      body: ShipwrightPromptRequestSchema,
       responses: {
         200: z.object({ prompt: z.string() }),
         400: ApiErrorSchema,
@@ -220,7 +220,7 @@ export const keelApiContract = c.router({
         409: ApiErrorSchema
       },
       summary:
-        "The Inventor prompt to paste into a chat with any model, which answers with a JSON file"
+        "The Shipwright prompt to paste into a chat with any model, which answers with a JSON file"
     },
     importInventions: {
       method: "POST",
@@ -239,7 +239,7 @@ export const keelApiContract = c.router({
         404: ApiErrorSchema,
         409: ApiErrorSchema
       },
-      summary: "Check inventions from a JSON file, then sea-trial and rank the ones that pass"
+      summary: "Check designs from a JSON file, then sea-trial and rank the ones that pass"
     },
     discardProposition: {
       method: "POST",

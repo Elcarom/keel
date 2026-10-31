@@ -777,11 +777,11 @@ export {
   type DesignResearch
 } from "./bot-designer.js";
 export {
-  INVENTOR_SYSTEM_PROMPT,
-  inventorChatPrompt,
-  inventorChatRepairPrompt,
+  SHIPWRIGHT_SYSTEM_PROMPT,
+  shipwrightChatPrompt,
+  shipwrightChatRepairPrompt,
   sampleInventions,
   type InventionChecker,
   type InventionCheckResult,
-  type InventorChatPromptOptions
-} from "./inventor.js";
+  type ShipwrightChatPromptOptions
+} from "./shipwright.js";

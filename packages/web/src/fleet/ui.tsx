@@ -240,7 +240,7 @@ export function ArchetypeIcon({
   }
 }
 
-/** An invention's rules as Keel reads them, one line each. */
+/** A design's rules as Keel reads them, one line each. */
 export function InventionRules({ rules }: { rules: readonly string[] }) {
   return (
     <ul className="space-y-1 rounded-xl border border-violet-400/25 bg-violet-400/5 p-3 text-xs text-slate-200">
@@ -257,9 +257,9 @@ export function InventionRules({ rules }: { rules: readonly string[] }) {
 }
 
 export const INVENTED_BADGES: Record<DesignSource, string> = {
-  claude: "✦ Invented by Claude",
-  imported: "✦ Invented in a chat",
-  sample: "✦ Sample invention"
+  claude: "✦ Drawn up by Claude",
+  imported: "✦ Drawn up in a chat",
+  sample: "✦ Sample design"
 };
 
 export function InventedBadge({ source }: { source: DesignSource }) {

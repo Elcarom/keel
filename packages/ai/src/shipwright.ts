@@ -1,7 +1,7 @@
 import { FLEET_INSTRUMENTS, type Rig, type DesignBrief } from "@keel/core";
 
 // ============================================================================
-// The Inventor: Claude writes new entry rules in the Strategy Spec condition language. Keel
+// The Shipwright: Claude writes new entry rules in the Strategy Spec condition language. Keel
 // checks every invention (an injected checker from @keel/spec), asks Claude once to repair the
 // ones that fail, and drops what still fails. The model never touches stops or sizing.
 // ============================================================================
@@ -14,7 +14,7 @@ export type InventionCheckResult =
 export type InventionChecker = (raw: unknown, brief: DesignBrief) => InventionCheckResult;
 
 /** The condition language and Keel's limits, shared by the API prompt and the chat prompt. */
-const INVENTOR_LANGUAGE = `Each invention trades USDT perpetuals on confirmed 1-hour bars: its own "instrumentId" and, if you like, a "basket" of up to 4 more coins that run the same rules, one position per coin, all funded from one stake. You write its entry rules, and if you like its exit rules, as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes each position and enters at the next bar's open.
+const SHIPWRIGHT_LANGUAGE = `Each invention trades USDT perpetuals on confirmed 1-hour bars: its own "instrumentId" and, if you like, a "basket" of up to 4 more coins that run the same rules, one position per coin, all funded from one stake. You write its entry rules, and if you like its exit rules, as JSON in Keel's condition language. Keel attaches the protective stop (stopAtrMultiple × ATR(14)) and the take-profit (rewardMultiple × the risk) itself, sizes each position and enters at the next bar's open.
 
 EXITS (all optional): "longExit" / "shortExit" close an open position at the bar's close when the condition turns true. "trailingAtrMultiple" (0.5-6) ratchets the stop that many ATR(14) behind each close, so winners can run; it never loosens. "maxBarsHeld" (2-240) closes any position after that many hours. Exits are how an idea says when it is over: a reversion trade that has reverted, a trend that has turned, a session that has ended.
 
@@ -58,9 +58,9 @@ Markets are written in full, e.g. "SOL-USDT-SWAP". Keel trades and reads: ${FLEE
 THE SEA TRIAL
 Keel measures every invention itself: a two-year backtest with doubled costs and funding (a basket is judged as one portfolio across all its coins, a pair on both legs together), walk-forward folds, a random-entry baseline, every window and threshold nudged (windows -25% and +33%, thresholds ±10%), and the same rules on a sibling market outside the basket (for a pair, another pair of coins). Fragile curve-fits sink. Trades should happen often enough to judge: roughly 30-300 over two years.`;
 
-export const INVENTOR_SYSTEM_PROMPT = `You invent trading strategies for Keel, a self-hosted crypto perpetual-futures lab, and you are expected to be original. Keel's theme is the sea: every strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
+export const SHIPWRIGHT_SYSTEM_PROMPT = `You invent trading strategies for Keel, a self-hosted crypto perpetual-futures lab, and you are expected to be original. Keel's theme is the sea: every strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
 
-${INVENTOR_LANGUAGE}
+${SHIPWRIGHT_LANGUAGE}
 
 HOW TO INVENT WELL
 - Start from a mechanism: who is forced to trade, when, and why price should respond. Examples: session opens and closes, weekend illiquidity, volatility regimes, crowded breakouts, exhaustion after a run of bars, volume shocks.
@@ -72,11 +72,11 @@ HOW TO INVENT WELL
 
 Return only the JSON.`;
 
-export const INVENTOR_REPAIR_PROMPT = `Some of your inventions failed Keel's checks. For each one below, return a corrected version that keeps the idea but fixes exactly the problem named. Same JSON shape as before: {"propositions":[...]}, one per failed invention, in the same order.`;
+export const SHIPWRIGHT_REPAIR_PROMPT = `Some of your inventions failed Keel's checks. For each one below, return a corrected version that keeps the idea but fixes exactly the problem named. Same JSON shape as before: {"propositions":[...]}, one per failed invention, in the same order.`;
 
 const FENCE = "```";
 
-export interface InventorChatPromptOptions {
+export interface ShipwrightChatPromptOptions {
   readonly count: number;
   readonly instruments: readonly string[];
   readonly direction: DesignBrief["direction"];
@@ -87,10 +87,10 @@ export interface InventorChatPromptOptions {
 }
 
 /**
- * The Inventor prompt for a chat with any model the operator chooses. It hands the model the whole
+ * The Shipwright prompt for a chat with any model the operator chooses. It hands the model the whole
  * language and asks for range, not caution: Keel's checks and the sea trial do the doubting.
  */
-export function inventorChatPrompt(options: InventorChatPromptOptions): string {
+export function shipwrightChatPrompt(options: ShipwrightChatPromptOptions): string {
   const n = options.count;
   const direction =
     options.direction === "long_only"
@@ -103,7 +103,7 @@ export function inventorChatPrompt(options: InventorChatPromptOptions): string {
     options.namesAlreadyInTheFleet.length > 0
       ? options.namesAlreadyInTheFleet.join(", ")
       : "none yet";
-  return `You are the inventor-in-residence at Keel, a self-hosted lab that researches systematic strategies on crypto perpetual futures. I want ${n} brand-new trading ${n === 1 ? "strategy" : "strategies"} from you, as creative, novel and interesting as you can make them. You have full creative freedom inside the language below; its hard limits are the only rules. Keel's theme is the sea: each strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
+  return `You are the shipwright-in-residence at Keel, a self-hosted lab that researches systematic strategies on crypto perpetual futures. I want ${n} brand-new trading ${n === 1 ? "strategy" : "strategies"} from you, as creative, novel and interesting as you can make them. You have full creative freedom inside the language below; its hard limits are the only rules. Keel's theme is the sea: each strategy becomes a boat with a short nautical name (1-3 words) that hints at how it trades. Never use real people, brands or existing products as names.
 
 YOUR BRIEF
 - Strategies: ${n}
@@ -114,7 +114,7 @@ YOUR BRIEF
 - Names already in my fleet (do not reuse): ${fleet}
 - My fleet today: ${options.fleetToday ?? "unknown"} Prefer what it lacks; an idea that trades like a boat I already have adds nothing.
 
-${INVENTOR_LANGUAGE}
+${SHIPWRIGHT_LANGUAGE}
 
 HOW TO INVENT
 Think it through before you write any JSON. Go wide first: sketch two or three times as many ideas as I asked for, then keep the ${n} most original and most plausible.
@@ -148,7 +148,7 @@ Write one short line per strategy saying what it hunts. Then put all ${n} in a s
 }
 
 /** A message for the same chat, asking it to fix what Keel rejected from its file. */
-export function inventorChatRepairPrompt(
+export function shipwrightChatRepairPrompt(
   rejected: readonly { readonly name: string; readonly error: string }[]
 ): string {
   const problems = rejected.map((r) => `- ${r.name}: ${r.error}`).join("\n");

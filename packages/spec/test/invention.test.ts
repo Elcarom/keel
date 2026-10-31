@@ -210,9 +210,9 @@ describe("Inventions", () => {
       return read.ok ? null : read.error;
     };
     expect(fails("nothing to see")).toMatch(/^No JSON found/);
-    expect(fails(JSON.stringify({ propositions: [] }))).toMatch(/at least one invention/);
+    expect(fails(JSON.stringify({ propositions: [] }))).toMatch(/at least one design/);
     expect(fails(JSON.stringify(Array.from({ length: 21 }, () => SNAPBACK)))).toMatch(
-      /holds 21 inventions; import at most 20/
+      /holds 21 designs; import at most 20/
     );
   });
 

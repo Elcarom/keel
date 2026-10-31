@@ -636,13 +636,13 @@
     "testName": "follows the brief's waters and direction whatever the invention asked for"
   },
   {
-    "id": "CLAIM-INVENTOR-REPAIR",
+    "id": "CLAIM-SHIPWRIGHT-REPAIR",
     "claim": "A failed invention goes back to Claude once with Keel's exact complaint.",
     "testFile": "packages/ai/test/bot-designer.test.ts",
     "testName": "sends a failed invention back once with Keel's exact complaint"
   },
   {
-    "id": "CLAIM-INVENTOR-NO-PRETENDING",
+    "id": "CLAIM-SHIPWRIGHT-NO-PRETENDING",
     "claim": "When nothing Claude invented passes Keel's checks, the Shipyard says so instead of inventing propositions.",
     "testFile": "packages/ai/test/bot-designer.test.ts",
     "testName": "refuses to pretend when nothing Claude invented passes"

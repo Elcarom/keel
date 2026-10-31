@@ -5,7 +5,7 @@ import {
   type FleetInstrument,
   type FleetOverview,
   type InventionRejection,
-  type InventorPromptRequest
+  type ShipwrightPromptRequest
 } from "@keel/core";
 import { Banner, Chip, api, card, coin, errorOf, ghostBtn, input, primaryBtn } from "./ui.js";
 
@@ -53,14 +53,14 @@ export function CopyBox({
 }
 
 /**
- * The Inventor via a chat: Keel writes the prompt, the operator runs it in a chat with any model,
- * and the JSON that comes back is checked and sea-trialled like any other invention.
+ * The Shipwright via a chat: Keel writes the prompt, the operator runs it in a chat with any model,
+ * and the JSON that comes back is checked and sea-trialled like any other design.
  */
 export function ImportSteps({
   request,
   onImported
 }: {
-  request: InventorPromptRequest;
+  request: ShipwrightPromptRequest;
   onImported: () => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState<string | null>(null);
@@ -75,7 +75,7 @@ export function ImportSteps({
 
   const getPrompt = async () => {
     setError(null);
-    const res = await api.fleet.inventorPrompt({ body: request });
+    const res = await api.fleet.shipwrightPrompt({ body: request });
     if (res.status === 200) setPrompt(res.body.prompt);
     else setError(errorOf(res.body));
   };
@@ -112,21 +112,21 @@ export function ImportSteps({
         <p className={step}>1 · Ask the model of your choice</p>
         <p className="mb-3 text-xs text-slate-400">
           Keel writes a prompt holding the whole rule language and your brief above. Paste it into a
-          new chat with any model you like. The strongest reasoning models give the most inventive
+          new chat with any model you like. The strongest reasoning models give the most original
           answers.
         </p>
         {prompt === null ? (
           <button
             type="button"
             className={ghostBtn}
-            data-testid="get-inventor-prompt-btn"
+            data-testid="get-shipwright-prompt-btn"
             onClick={() => void getPrompt()}
           >
             Write the prompt for {request.count} {request.count === 1 ? "idea" : "ideas"}
           </button>
         ) : (
           <div className="space-y-2">
-            <CopyBox text={prompt} testId="inventor-prompt" />
+            <CopyBox text={prompt} testId="shipwright-prompt" />
             <button
               type="button"
               className="text-xs font-semibold text-teal-300 hover:text-teal-200"
@@ -142,8 +142,7 @@ export function ImportSteps({
         <p className={step}>2 · Bring the answer back</p>
         <p className="mb-3 text-xs text-slate-400">
           Choose the .json file the model made, or paste its whole reply. Keel finds the JSON,
-          checks every rule, attaches the stop and puts each invention that passes through a sea
-          trial.
+          checks every rule, attaches the stop and puts each design that passes through a sea trial.
         </p>
         <input
           type="file"
@@ -168,7 +167,7 @@ export function ImportSteps({
             disabled={busy || text.trim().length === 0}
             onClick={() => void importText()}
           >
-            {busy ? "Checking the rules…" : "Sea-trial these inventions"}
+            {busy ? "Checking the rules…" : "Sea-trial these designs"}
           </button>
         </div>
       </div>
@@ -176,8 +175,8 @@ export function ImportSteps({
       {error && <Banner kind="danger">{error}</Banner>}
       {result && result.accepted > 0 && (
         <Banner kind="ok" testId="import-success-banner">
-          {result.accepted} invention{result.accepted === 1 ? " is" : "s are"} on the slipway for a
-          sea trial.
+          {result.accepted} design{result.accepted === 1 ? " is" : "s are"} on the slipway for a sea
+          trial.
         </Banner>
       )}
       {result && result.rejected.length > 0 && (
@@ -185,7 +184,7 @@ export function ImportSteps({
           <Banner kind="warn">
             <p className="font-semibold">
               Keel rejected {result.rejected.length}{" "}
-              {result.rejected.length === 1 ? "invention" : "inventions"}:
+              {result.rejected.length === 1 ? "design" : "designs"}:
             </p>
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
               {result.rejected.map((r, i) => (
@@ -217,7 +216,7 @@ export function BriefForm({
   onDesigned: () => Promise<void>;
   designer: FleetOverview["designer"];
 }) {
-  // With Claude linked the Inventor is the default; without it, the Inventor via a chat
+  // With Claude linked the Shipwright is the default; without it, the Shipwright via a chat
   const claude = designer.source === "claude";
   const [brief, setBrief] = useState<DesignBrief>({
     instruments: [...MAJORS],
@@ -261,8 +260,8 @@ export function BriefForm({
         <div>
           <h2 className="text-lg font-bold text-slate-50">Draw up a brief</h2>
           <p className="text-sm text-slate-400">
-            A model invents brand-new entry rules. Keel checks every rule, attaches the stop and
-            puts each invention through a sea trial, then ranks them.
+            The Shipwright draws up boats with brand-new entry rules. Keel checks every rule,
+            attaches the stop and puts each design through a sea trial, then ranks them.
           </p>
         </div>
         <span
@@ -274,26 +273,26 @@ export function BriefForm({
           }`}
         >
           {viaChat
-            ? "Inventor: a chat of your choosing"
+            ? "Shipwright: a chat of your choosing"
             : claude
-              ? `Inventor: Claude (${designer.model})`
-              : "Inventor: samples (Claude not linked)"}
+              ? `Shipwright: Claude (${designer.model})`
+              : "Shipwright: samples (Claude not linked)"}
         </span>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Inventor">
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Shipwright">
         {(
           [
             [
               false,
-              "inventor",
-              "✦ Inventor",
+              "shipwright",
+              "✦ Shipwright",
               "Claude, on your subscription, writes new rules from indicators, price, volume and the clock."
             ],
             [
               true,
               "chat",
-              "⇅ Inventor via a chat",
+              "⇅ Shipwright via a chat",
               "Use any model you like: copy Keel's prompt into its chat, then bring back the JSON it writes."
             ]
           ] as const
@@ -433,7 +432,7 @@ export function BriefForm({
               className={primaryBtn}
               disabled={submitting}
             >
-              {submitting ? "Claude is at the drawing table…" : "Commission inventions"}
+              {submitting ? "The Shipwright is at the drawing table…" : "Commission designs"}
             </button>
           </div>
         </>

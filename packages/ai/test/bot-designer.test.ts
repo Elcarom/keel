@@ -35,7 +35,7 @@ const DRAFT: RigDraft = {
   rationale: "Impulses persist."
 };
 
-describe("Bot designer: the Inventor", () => {
+describe("Bot designer: the Shipwright", () => {
   /** A stand-in for @keel/spec's checker: anything named "Broken…" fails with a fixed reason. */
   const checkInvention: InventionChecker = (raw) => {
     const name =
@@ -46,7 +46,7 @@ describe("Bot designer: the Inventor", () => {
     return { ok: true, rig: { ...normalizeRig(DRAFT), name, archetype: "invented" } };
   };
 
-  function inventorWith(replies: unknown[], apiKey: string | null = "sk-ant-test") {
+  function shipwrightWith(replies: unknown[], apiKey: string | null = "sk-ant-test") {
     const calls: Anthropic.Beta.Messages.MessageCreateParamsNonStreaming[] = [];
     const client: ClaudeMessagesClient = {
       create: (params) => {
@@ -83,7 +83,7 @@ describe("Bot designer: the Inventor", () => {
   }
 
   it("asks Claude to think deeply and accepts fenced JSON", async () => {
-    const { designer, calls } = inventorWith([
+    const { designer, calls } = shipwrightWith([
       { propositions: [{ name: "Night Watch" }, { name: "Slack Water" }] }
     ]);
     const result = await designer.design(BRIEF, []);
@@ -95,7 +95,7 @@ describe("Bot designer: the Inventor", () => {
   });
 
   it("never reuses a name already in the fleet or the batch", async () => {
-    const { designer } = inventorWith([
+    const { designer } = shipwrightWith([
       { propositions: [{ name: "Trade Wind" }, { name: "Trade Wind" }] }
     ]);
     const result = await designer.design(BRIEF, ["Trade Wind"]);
@@ -103,7 +103,7 @@ describe("Bot designer: the Inventor", () => {
   });
 
   it("sends a failed invention back once with Keel's exact complaint", async () => {
-    const { designer, calls } = inventorWith([
+    const { designer, calls } = shipwrightWith([
       { propositions: [{ name: "Night Watch" }, { name: "Broken Compass" }] },
       { propositions: [{ name: "True Compass" }] }
     ]);
@@ -115,28 +115,28 @@ describe("Bot designer: the Inventor", () => {
   });
 
   it("drops what still fails after the repair, and says so", async () => {
-    const { designer } = inventorWith([
+    const { designer } = shipwrightWith([
       { propositions: [{ name: "Night Watch" }, { name: "Broken Compass" }] },
       { propositions: [{ name: "Broken Again" }] }
     ]);
     const result = await designer.design(BRIEF, []);
     expect(result.rigs.map((b) => b.name)).toEqual(["Night Watch"]);
-    expect(result.note).toMatch(/1 invention still broke Keel's rule limits.*Broken Again/);
+    expect(result.note).toMatch(/1 design still broke Keel's rule limits.*Broken Again/);
   });
 
   it("refuses to pretend when nothing Claude invented passes", async () => {
-    const { designer } = inventorWith([{ propositions: [{ name: "Broken Compass" }] }]);
+    const { designer } = shipwrightWith([{ propositions: [{ name: "Broken Compass" }] }]);
     await expect(designer.design({ ...BRIEF, count: 1 } as DesignBrief, [])).rejects.toThrow(
-      /None of Claude's inventions passed Keel's checks/
+      /None of the Shipwright's designs passed Keel's checks/
     );
   });
 
   it("offers Keel's own sample inventions when Claude is not linked", async () => {
-    const { designer, calls } = inventorWith([], null);
+    const { designer, calls } = shipwrightWith([], null);
     const result = await designer.design(BRIEF, []);
     expect(calls).toHaveLength(0);
     expect(result.source).toBe("sample");
-    expect(result.note).toMatch(/sample inventions/);
+    expect(result.note).toMatch(/sample designs/);
     expect(result.rigs.map((b) => b.name)).toEqual(["Night Watch", "Tidal Snapback"]);
   });
 });

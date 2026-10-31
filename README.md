@@ -2,7 +2,7 @@
 
 **Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on your own server: Unraid, or any Docker host. A keel keeps a ship steady, and the whole product follows the sea:
 
-- **The Shipyard** drafts strategy **Propositions**. The **Inventor** has Claude, on your subscription, write brand-new entry rules; the **Inventor via a chat** does the same with any model you choose and brings its answer back as a file. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
+- **The Shipyard** drafts strategy **Propositions**. The **Shipwright** has Claude, on your subscription, write brand-new entry rules; the **Shipwright via a chat** does the same with any model you choose and brings its answer back as a file. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
 - **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin, a **Basket** of up to five, or a **Pair Boat** that holds one coin against another, from its own **Boat Book** and stake.
 - **The Treasury** holds the paper **Wallets** that fund the Fleet.
 - **The Engine Room** links Claude and Discord, switches on the Fleet's autonomy, and holds the Kill Switch, backups and the audit trail.
@@ -57,7 +57,7 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
   - [ADR-0031: Higher-Timeframe Bars and Funding in the Rule Language](./docs/adr/0031-higher-timeframes-and-funding.md)
   - [ADR-0032: Pair Boats Hold One Coin Against Another](./docs/adr/0032-pair-boats.md)
   - [ADR-0033: A Self-Managing Fleet, Researched by Claude on the Owner's Subscription](./docs/adr/0033-self-managing-fleet.md)
-  - [ADR-0034: The Shipyard Only Invents, and Blueprints Become Rigs](./docs/adr/0034-inventor-only-shipyard.md)
+  - [ADR-0034: The Shipwright Designs Every Boat, and Blueprints Become Rigs](./docs/adr/0034-shipwright-only-shipyard.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)
@@ -109,7 +109,7 @@ The compose file defaults are set for a home server:
 | `KEEL_ALLOW_INSECURE_HTTP` | `true`  | Lets you sign in over plain `http://` on your LAN. Requests over HTTPS still get `Secure` cookies. Set `false` if you only use HTTPS |
 | `KEEL_ENABLE_SCHEDULER`    | `true`  | Fetches new hourly bars and steps the Fleet. Without it, boats never trade                                                           |
 | `CLAUDE_CODE_OAUTH_TOKEN`  | blank   | Optional: your Claude subscription, from `claude setup-token`. Lets the night shift research and upgrade boats with no API key       |
-| `ANTHROPIC_API_KEY`        | blank   | Optional: lets Claude design boats. You can store it in the vault instead, or skip it and use **⇅ Inventor via your chat**           |
+| `ANTHROPIC_API_KEY`        | blank   | Optional: lets Claude design boats. You can store it in the vault instead, or skip it and use **⇅ Shipwright via a chat**            |
 
 **Unraid template.** Copy [`deploy/unraid/keel-template.xml`](./deploy/unraid/keel-template.xml) to `/boot/config/plugins/dockerMan/templates-user/my-keel.xml`, then choose **Docker → Add Container → Keel**. Fill in the master key, check the paths and port, and click **Apply**. See [`docs/unraid.md`](./docs/unraid.md) for the details, including moving from the old `psychic-octo-funicular` image name.
 
@@ -141,12 +141,12 @@ Open `http://<server-ip>:8080` (or your tunnel's address). Paste the token, choo
 
 In the **Engine Room**, under **Claude and alerts**, store what you use. Every secret is encrypted at rest with AES-256-GCM and never sent back over the API.
 
-| Secret              | What for                                                                                                         |
-| :------------------ | :--------------------------------------------------------------------------------------------------------------- |
-| Claude subscription | The token from `claude setup-token`. Claude designs, invents and, each night, researches and upgrades your boats |
-| Discord alerts      | The daily digest, launches, replacements and warnings                                                            |
+| Secret              | What for                                                                                                             |
+| :------------------ | :------------------------------------------------------------------------------------------------------------------- |
+| Claude subscription | The token from `claude setup-token`. The Shipwright designs your boats and, each night, researches and upgrades them |
+| Discord alerts      | The daily digest, launches, replacements and warnings                                                                |
 
-Without Claude linked, the Shipyard offers samples, and **⇅ Inventor via your chat** still works.
+Without Claude linked, the Shipyard offers samples, and **⇅ Shipwright via a chat** still works.
 
 ### 5. Open waters: a Cloudflare Tunnel
 

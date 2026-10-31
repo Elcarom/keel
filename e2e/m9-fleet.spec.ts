@@ -19,11 +19,11 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await page.getByTestId("bootstrap-submit-btn").click();
     await expect(page.getByTestId("fleet-app")).toBeVisible();
 
-    // Shipyard: a guided brief; without Claude linked, the Inventor offers sample inventions
+    // Shipyard: a guided brief; without Claude linked, the Shipwright offers sample inventions
     await page.getByTestId("tab-shipyard").click();
-    // Without Claude the Shipyard opens on the Inventor via a chat; switch to the Inventor
+    // Without Claude the Shipyard opens on the Shipwright via a chat; switch to the Shipwright
     await expect(page.getByTestId("designer-source")).toContainText("a chat of your choosing");
-    await page.getByTestId("mode-inventor").click();
+    await page.getByTestId("mode-shipwright").click();
     await expect(page.getByTestId("designer-source")).toContainText("samples");
     await page.getByTestId("brief-notes").fill("something steady for the e2e run");
     await page.getByTestId("design-submit-btn").click();
@@ -95,7 +95,7 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(page.getByTestId("back-to-fleet")).toBeVisible();
   });
 
-  test("hands the Inventor prompt to a chat and imports its answer", async ({ page }) => {
+  test("hands the Shipwright prompt to a chat and imports its answer", async ({ page }) => {
     test.setTimeout(480_000);
     await page.goto("/");
     const bootstrapPanel = page.getByTestId("bootstrap-panel");
@@ -113,9 +113,9 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(page.getByTestId("designer-source")).toContainText("a chat of your choosing");
     await page.getByTestId("import-count-10").click();
     await page.getByTestId("brief-notes").fill("session handovers");
-    await page.getByTestId("get-inventor-prompt-btn").click();
-    await expect(page.getByTestId("inventor-prompt")).toHaveValue(/I want 10 brand-new/);
-    await expect(page.getByTestId("inventor-prompt")).toHaveValue(/session handovers/);
+    await page.getByTestId("get-shipwright-prompt-btn").click();
+    await expect(page.getByTestId("shipwright-prompt")).toHaveValue(/I want 10 brand-new/);
+    await expect(page.getByTestId("shipwright-prompt")).toHaveValue(/session handovers/);
 
     // Step 2: the chat's reply comes back; the broken invention returns with a repair message
     const rule = (op: string, value: number) => ({
@@ -141,7 +141,7 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
       .getByTestId("import-text")
       .fill("```json\n" + JSON.stringify({ propositions: [invention, broken] }) + "\n```");
     await page.getByTestId("import-submit-btn").click();
-    await expect(page.getByTestId("import-success-banner")).toContainText("1 invention is");
+    await expect(page.getByTestId("import-success-banner")).toContainText("1 design is");
     await expect(page.getByTestId("import-rejections")).toContainText("Bilge Pump");
     await expect(page.getByTestId("repair-prompt")).toHaveValue(/Keel rejected 1 of your/);
 
@@ -152,7 +152,7 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
       .first();
     // A sea trial already under way can hold up the list for a few seconds
     await expect(batch).toBeVisible({ timeout: 60_000 });
-    await expect(batch.getByText("✦ Invented in a chat")).toBeVisible();
+    await expect(batch.getByText("✦ Drawn up in a chat")).toBeVisible();
     await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
     await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 11 checks");
   });

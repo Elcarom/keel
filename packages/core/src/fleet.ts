@@ -120,7 +120,7 @@ export const BotDirectionSchema = z.enum(BOT_DIRECTIONS);
 export type BotDirection = z.infer<typeof BotDirectionSchema>;
 
 export const ARCHETYPE_LABELS: Readonly<Record<RigArchetype, string>> = {
-  invented: "Invented rules",
+  invented: "Shipwright's rules",
   breakout: "Channel breakout",
   mean_reversion: "Mean reversion",
   momentum: "Momentum",
@@ -345,7 +345,7 @@ export function normalizeRig(draft: RigDraftInput): Rig {
   });
 }
 
-/** The operator's request to the Shipyard: Claude invents rules for these waters (ADR-0034). */
+/** The operator's request to the Shipwright: new rules for these waters (ADR-0034). */
 export const DesignBriefSchema = z.object({
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
   direction: z.enum(["any", "long_only", "short_only"]),
@@ -365,14 +365,14 @@ export const BatchBriefSchema = DesignBriefSchema.extend({
 });
 export type BatchBrief = z.infer<typeof BatchBriefSchema>;
 
-/** What the operator wants a chat to invent, for the copy-and-paste Inventor prompt. */
-export const InventorPromptRequestSchema = z.object({
+/** What the operator wants a chat to invent, for the copy-and-paste Shipwright prompt. */
+export const ShipwrightPromptRequestSchema = z.object({
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
   direction: z.enum(["any", "long_only", "short_only"]),
   count: z.number().int().min(1).max(MAX_IMPORTED_INVENTIONS),
   notes: z.string().max(1000)
 });
-export type InventorPromptRequest = z.infer<typeof InventorPromptRequestSchema>;
+export type ShipwrightPromptRequest = z.infer<typeof ShipwrightPromptRequestSchema>;
 
 /** An imported invention Keel refused, with the reason in words Claude can act on. */
 export const InventionRejectionSchema = z.object({

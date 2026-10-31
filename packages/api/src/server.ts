@@ -742,8 +742,8 @@ export async function createKeelServer(options: KeelServerOptions = {}): Promise
           };
         }
       },
-      inventorPrompt: async ({ body, request }) =>
-        fleetAction(request, "inventor_prompt", () => ({ prompt: fleet.inventorPrompt(body) })),
+      shipwrightPrompt: async ({ body, request }) =>
+        fleetAction(request, "shipwright_prompt", () => ({ prompt: fleet.shipwrightPrompt(body) })),
       importInventions: async ({ body, request }) =>
         fleetAction(request, "import_inventions", () => fleet.importInventions(body.text)),
       discardProposition: async ({ params, request }) =>

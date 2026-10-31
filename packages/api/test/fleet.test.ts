@@ -165,7 +165,7 @@ describe("Fleet API", () => {
   it("writes a chat prompt carrying the brief, the language and the names already taken", async () => {
     const { call, designAndWait, launch } = await setup();
     await launch(await designAndWait(2), "1000", "Old Salt");
-    const res = await call("POST", "/api/v1/fleet/inventor-prompt", {
+    const res = await call("POST", "/api/v1/fleet/shipwright-prompt", {
       instruments: ["SOL-USDT-SWAP", "DOGE-USDT-SWAP"],
       direction: "long_only",
       count: 12,
@@ -564,7 +564,7 @@ describe("Fleet API", () => {
     const launched = await call(
       "POST",
       `/api/v1/fleet/propositions/${propositions[0]?.propositionId}/launch`,
-      { name: "Inventor One", walletId: wallet.walletId, allocationUsdt: "1000", mode: "paper" }
+      { name: "Shipwright One", walletId: wallet.walletId, allocationUsdt: "1000", mode: "paper" }
     );
     expect(launched.status).toBe(200);
     const bot = launched.body["bot"] as Bot;

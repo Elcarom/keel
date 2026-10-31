@@ -24,7 +24,7 @@ import {
   type FleetInstrument,
   type FleetOverview,
   type InventionRejection,
-  type InventorPromptRequest,
+  type ShipwrightPromptRequest,
   type KeelConfig,
   type Lookalike,
   type NotificationMessage,
@@ -36,8 +36,8 @@ import {
   type Wallet
 } from "@keel/core";
 import {
-  inventorChatPrompt,
-  inventorChatRepairPrompt,
+  shipwrightChatPrompt,
+  shipwrightChatRepairPrompt,
   withUniqueNames,
   type BotDesigner,
   type DesignResearch
@@ -351,9 +351,9 @@ export class FleetService {
     return this.launchBatch({ ...brief, upgradeOf }, result.source, result.note, result.rigs);
   }
 
-  /** The Inventor prompt to paste into a chat, briefed like the Shipyard's own. */
-  public inventorPrompt(request: InventorPromptRequest): string {
-    return inventorChatPrompt({
+  /** The Shipwright prompt to paste into a chat, briefed like the Shipyard's own. */
+  public shipwrightPrompt(request: ShipwrightPromptRequest): string {
+    return shipwrightChatPrompt({
       ...request,
       namesAlreadyInTheFleet: this.repo.listBots().map((b) => b.name),
       fleetToday: this.fleetSummary()
@@ -378,7 +378,7 @@ export class FleetService {
       checks.flatMap((c) => (c.ok ? [c.rig] : [])),
       this.repo.listBots().map((b) => b.name)
     );
-    const repairPrompt = rejected.length > 0 ? inventorChatRepairPrompt(rejected) : null;
+    const repairPrompt = rejected.length > 0 ? shipwrightChatRepairPrompt(rejected) : null;
     if (accepted.length === 0) return { batch: null, rejected, repairPrompt };
 
     const brief: BatchBrief = {
@@ -390,7 +390,7 @@ export class FleetService {
     };
     const note =
       rejected.length > 0
-        ? `${rejected.length} invention${rejected.length === 1 ? "" : "s"} in the file broke Keel's rules and ${rejected.length === 1 ? "was" : "were"} left out: ${rejected.map((r) => r.name).join(", ")}.`
+        ? `${rejected.length} design${rejected.length === 1 ? "" : "s"} in the file broke Keel's rules and ${rejected.length === 1 ? "was" : "were"} left out: ${rejected.map((r) => r.name).join(", ")}.`
         : null;
     return { batch: this.launchBatch(brief, "imported", note, accepted), rejected, repairPrompt };
   }

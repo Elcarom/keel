@@ -7,12 +7,12 @@ import {
 } from "@keel/core";
 import { z } from "zod";
 import {
-  INVENTOR_REPAIR_PROMPT,
-  INVENTOR_SYSTEM_PROMPT,
+  SHIPWRIGHT_REPAIR_PROMPT,
+  SHIPWRIGHT_SYSTEM_PROMPT,
   sampleInventions,
   type InventionChecker,
   type InventionCheckResult
-} from "./inventor.js";
+} from "./shipwright.js";
 
 export interface BotDesignResult {
   readonly source: DesignSource;
@@ -61,7 +61,7 @@ export interface BotDesignerOptions {
   readonly gateway: LlmGateway;
   /** True when a real model can be called; otherwise the designer offers sample inventions. */
   readonly isLive: () => boolean;
-  /** Checks invented rules (from @keel/spec); without it the Inventor is unavailable. */
+  /** Checks invented rules (from @keel/spec); without it the Shipwright is unavailable. */
   readonly checkInvention?: InventionChecker | undefined;
 }
 
@@ -90,7 +90,7 @@ export function withUniqueNames(rigs: readonly Rig[], takenNames: readonly strin
 }
 
 /**
- * The Shipyard's Inventor. Claude writes the rules; the brief's hard choices (instruments,
+ * The Shipyard's Shipwright. Claude writes the rules; the brief's hard choices (instruments,
  * direction, count) are enforced by the checker, which also attaches the stop.
  */
 export class BotDesigner {
@@ -117,7 +117,7 @@ export class BotDesigner {
     research?: DesignResearch
   ): Promise<BotDesignResult> {
     const check = this.checkInvention;
-    if (!check) throw new Error("The Inventor is not available on this server");
+    if (!check) throw new Error("The Shipwright is not available on this server");
     const checkAll = (raws: readonly unknown[]) => raws.map((raw) => check(raw, brief));
 
     if (!this.isLive()) {
@@ -125,7 +125,7 @@ export class BotDesigner {
       return {
         source: "sample",
         rigs: this.uniqueNames(okRigs(results), takenNames),
-        note: "Claude is not linked, so these are Keel's own sample inventions. Link your Claude subscription in the Engine Room to have Claude invent strategies for you."
+        note: "Claude is not linked, so these are Keel's own sample designs. Link your Claude subscription in the Engine Room to have the Shipwright draw up boats for you."
       };
     }
 
@@ -142,7 +142,7 @@ export class BotDesigner {
       );
 
     const first = await request(
-      INVENTOR_SYSTEM_PROMPT,
+      SHIPWRIGHT_SYSTEM_PROMPT,
       JSON.stringify({
         request: `Invent ${brief.count} strategies.`,
         instruments: brief.instruments,
@@ -159,8 +159,8 @@ export class BotDesigner {
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0) {
       const repairs = await request(
-        INVENTOR_SYSTEM_PROMPT,
-        `${INVENTOR_REPAIR_PROMPT}\n\n${JSON.stringify(
+        SHIPWRIGHT_SYSTEM_PROMPT,
+        `${SHIPWRIGHT_REPAIR_PROMPT}\n\n${JSON.stringify(
           results.flatMap((r, i) =>
             r.ok ? [] : [{ invention: first.parsed.propositions[i], problem: r.error }]
           )
@@ -175,7 +175,7 @@ export class BotDesigner {
     const dropped = results.filter((r): r is Extract<InventionCheckResult, { ok: false }> => !r.ok);
     if (rigs.length === 0) {
       throw new Error(
-        `None of Claude's inventions passed Keel's checks: ${dropped.map((d) => `${d.name} (${d.error})`).join("; ")}`
+        `None of the Shipwright's designs passed Keel's checks: ${dropped.map((d) => `${d.name} (${d.error})`).join("; ")}`
       );
     }
     return {
@@ -183,7 +183,7 @@ export class BotDesigner {
       rigs: this.uniqueNames(rigs, takenNames),
       note:
         dropped.length > 0
-          ? `${dropped.length} invention${dropped.length === 1 ? "" : "s"} still broke Keel's rule limits after a repair attempt and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.map((d) => d.name).join(", ")}.`
+          ? `${dropped.length} design${dropped.length === 1 ? "" : "s"} still broke Keel's rule limits after a repair attempt and ${dropped.length === 1 ? "was" : "were"} dropped: ${dropped.map((d) => d.name).join(", ")}.`
           : null
     };
   }

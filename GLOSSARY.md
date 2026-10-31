@@ -229,15 +229,15 @@ How a Boat is set up to sail: its coins, its entry rules (an Invention, or one o
 _Avoid_: Blueprint (its former name), prompt, config, recipe
 
 **Invention**:
-Entry rules a model wrote itself in the Strategy Spec condition language. Keel checks every Invention against the language's limits, attaches the protective stop and take-profit itself, and renders the rules in plain English. A Rig holds at most one Invention.
+Entry rules the Shipwright wrote itself in the Strategy Spec condition language; the Shipyard shows it as a design. Keel checks every Invention against the language's limits, attaches the protective stop and take-profit itself, and renders the rules in plain English. A Rig holds at most one Invention.
 _Avoid_: Custom strategy, AI strategy (the AI never trades it; the compiled rules do)
 
-**Inventor**:
-The Shipyard's only way to design: Claude, on the owner's subscription, writes Inventions for a brief. The **Inventor via a chat** does the same in a chat with any model the owner chooses.
-_Avoid_: Inventor Mode, Blueprint mode, free mode, creative mode
+**Shipwright**:
+The Shipyard's only way to design: Claude, on the owner's subscription, writes Inventions for a brief. The **Shipwright via a chat** does the same in a chat with any model the owner chooses.
+_Avoid_: Inventor, Inventor Mode, Blueprint mode, free mode, creative mode
 
 **Imported Invention**:
-An Invention the operator brings in as a file, written in a chat with a model of the operator's choosing rather than by Keel's own Inventor. It keeps its own market and direction, and faces exactly the checks and Sea Trial any other Invention faces.
+An Invention the operator brings in as a file, written in a chat with a model of the operator's choosing rather than by Keel's own Shipwright. It keeps its own market and direction, and faces exactly the checks and Sea Trial any other Invention faces.
 _Avoid_: Uploaded strategy, manual strategy
 
 **Proposition**:

@@ -401,13 +401,13 @@ export function readInventionFile(text: string): InventionFileRead {
   if (!Array.isArray(list) || list.length === 0) {
     return {
       ok: false,
-      error: 'Expected {"propositions": [...]} with at least one invention in it.'
+      error: 'Expected {"propositions": [...]} with at least one design in it.'
     };
   }
   if (list.length > MAX_IMPORTED_INVENTIONS) {
     return {
       ok: false,
-      error: `The file holds ${list.length} inventions; import at most ${MAX_IMPORTED_INVENTIONS} at a time.`
+      error: `The file holds ${list.length} designs; import at most ${MAX_IMPORTED_INVENTIONS} at a time.`
     };
   }
   return { ok: true, inventions: list };
