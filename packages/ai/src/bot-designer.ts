@@ -404,7 +404,7 @@ export class BotDesigner {
       return {
         source: "sample",
         blueprints: this.finish(sampleBlueprints(brief), brief, takenNames),
-        note: "Claude is not linked, so these are sample propositions. Add a Claude subscription token (claudeCodeToken) or an Anthropic API key under Engine Room → Secrets to have Claude design your boats."
+        note: "Claude is not linked, so these are sample propositions. Link your Claude subscription in the Engine Room to have Claude design your boats."
       };
     }
 
@@ -457,7 +457,7 @@ export class BotDesigner {
       return {
         source: "sample",
         blueprints: this.uniqueNames(okBlueprints(results), takenNames),
-        note: "Claude is not linked, so these are Keel's own sample inventions. Add a Claude subscription token (claudeCodeToken) or an Anthropic API key under Engine Room → Secrets to have Claude invent strategies for you."
+        note: "Claude is not linked, so these are Keel's own sample inventions. Link your Claude subscription in the Engine Room to have Claude invent strategies for you."
       };
     }
 

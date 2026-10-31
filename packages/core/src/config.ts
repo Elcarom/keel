@@ -772,7 +772,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "fleet.autopilotEnabled",
     label: "Autopilot",
     helpText:
-      "Launch seaworthy propositions onto paper by themselves, funded only from the Autopilot wallet.",
+      "Manage the boats in the Autopilot wallet: launch seaworthy propositions until the fleet is full, then replace the weakest proven boat with one that clearly out-scores it.",
     defaultValue: false,
     riskClass: "confirm"
   },
@@ -837,7 +837,8 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
   {
     path: "fleet.nightShiftEnabled",
     label: "Night Shift",
-    helpText: "Draw up a Shipyard brief on a schedule, so new ideas arrive on their own.",
+    helpText:
+      "Each night, show Claude every boat's record and the ideas that failed, and have it draft new ideas and Upgrades for the sea trial.",
     defaultValue: false,
     riskClass: "safe"
   },

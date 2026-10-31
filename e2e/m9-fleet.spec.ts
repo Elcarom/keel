@@ -32,7 +32,8 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await page.getByTestId("design-submit-btn").click();
 
     const batch = page.getByTestId("design-batch").first();
-    await expect(batch).toBeVisible();
+    // Its sea trial starts at once and can hold up the list for a few seconds
+    await expect(batch).toBeVisible({ timeout: 60_000 });
     // Every proposition is backtested and scored before it can be launched
     await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
     const scores = batch.getByTestId("proposition-score");
@@ -149,8 +150,12 @@ test.describe("Keel Fleet — design, rank, launch and manage paper boats", () =
     await expect(page.getByTestId("import-rejections")).toContainText("Bilge Pump");
     await expect(page.getByTestId("repair-prompt")).toHaveValue(/Keel rejected 1 of your/);
 
-    const batch = page.getByTestId("design-batch").first();
-    await expect(batch).toContainText("imported from your Claude chat");
+    // The first test's own batch is listed too, so find the import by its label
+    const batch = page
+      .getByTestId("design-batch")
+      .filter({ hasText: "imported from your Claude chat" })
+      .first();
+    await expect(batch).toBeVisible();
     await expect(batch.getByText("✦ Invented in your Claude chat")).toBeVisible();
     await expect(batch.getByTestId("proposition-assessing")).toHaveCount(0, { timeout: 420_000 });
     await expect(batch.getByTestId("sea-trial-summary")).toContainText("of 11 checks");

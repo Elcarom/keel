@@ -5,7 +5,7 @@
 - **The Shipyard** drafts strategy **Propositions**. Claude can fill one of 13 reviewed **Blueprints**, invent brand-new entry rules in **Inventor Mode**, or you can import inventions from your own Claude chat with no API fees. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
 - **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin, a **Basket** of up to five, or a **Pair Boat** that holds one coin against another, from its own **Boat Book** and stake.
 - **The Treasury** holds the paper **Wallets** that fund the Fleet.
-- **The Engine Room** holds configuration, the secret vault, the Kill Switch, the research tools and the budget-capped Gemini advisory layer.
+- **The Engine Room** links Claude and Discord, switches on the Fleet's autonomy, and holds the Kill Switch, backups and the audit trail.
 
 The money path never asks a model anything. It uses fixed-point `ScaledDecimal` accounting, stop-distance `1R` sizing, two-tier risk caps, exchange-side **Protective Stops** and an OKX **Dead-Man's Switch**, all strictly deterministic. Claude drafts rules; Keel's compiled rules and Risk Engine trade them.
 
@@ -137,14 +137,14 @@ Open `http://<server-ip>:8080` (or your tunnel's address). Paste the token, choo
 
 ### 4. Stow the keys
 
-In the **Engine Room**, under **Secrets**, store what you use. Every secret is encrypted at rest with AES-256-GCM and never sent back over the API.
+In the **Engine Room**, under **Claude and alerts**, store what you use. Every secret is encrypted at rest with AES-256-GCM and never sent back over the API.
 
-| Secret                                       | What for                                                                                                                             |
-| :------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------- |
-| `anthropicApiKey`                            | Claude designs and invents boats in the Shipyard. Optional: without it you get samples, and **⇅ Inventor via your chat** still works |
-| `discordWebhookUrl`                          | Alerts, plus the Fleet's daily digest                                                                                                |
-| `geminiApiKey`                               | The Engine Room's advisory AI layer                                                                                                  |
-| `okxApiKey`, `okxSecretKey`, `okxPassphrase` | OKX exchange access, for later. **Trade and Read only, withdrawals disabled.** Fleet boats trade on paper and never use them         |
+| Secret              | What for                                                                                                         |
+| :------------------ | :--------------------------------------------------------------------------------------------------------------- |
+| Claude subscription | The token from `claude setup-token`. Claude designs, invents and, each night, researches and upgrades your boats |
+| Discord alerts      | The daily digest, launches, replacements and warnings                                                            |
+
+Without Claude linked, the Shipyard offers samples, and **⇅ Inventor via your chat** still works.
 
 ### 5. Open waters: a Cloudflare Tunnel
 
@@ -164,11 +164,11 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 - **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
 - **Treasury:** the paper wallets that fund the boats.
 - **Logbook:** recent trades across the Fleet, and what the unattended duties have done.
-- **Engine Room:** settings, secrets, research tools, the Kill Switch and the audit trail, with a section bar to jump between them.
+- **Engine Room:** Claude and Discord, the Fleet's autonomy settings, the Kill Switch, backups, market data and the audit trail.
 
 ### Unattended duties
 
-Fixed rules run after every scheduler step, on paper only. A model never decides what to launch, dock, replace or fund ([ADR-0030](./docs/adr/0030-fleet-duties-and-diversity.md), [ADR-0033](./docs/adr/0033-self-managing-fleet.md)). Switch them in **Engine Room → Settings**:
+Fixed rules run after every scheduler step, on paper only. A model never decides what to launch, dock, replace or fund ([ADR-0030](./docs/adr/0030-fleet-duties-and-diversity.md), [ADR-0033](./docs/adr/0033-self-managing-fleet.md)). Switch them in **Engine Room → Autonomy**:
 
 | Duty         | Starts | What it does                                                                                                                                                                                                                       |
 | :----------- | :----- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

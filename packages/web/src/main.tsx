@@ -11,7 +11,7 @@ const ENGINE_ROOM_HASH = "#/engine-room";
 
 /**
  * The Fleet is home once signed in; the original dashboard lives on as the Engine Room
- * (configuration, secrets, Kill Switch, research tools) at #/engine-room.
+ * (Claude, autonomy settings, Kill Switch, backups and the audit trail) at #/engine-room.
  */
 function Root() {
   const [hash, setHash] = useState(window.location.hash);

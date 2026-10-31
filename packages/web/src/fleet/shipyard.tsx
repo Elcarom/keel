@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ARCHETYPE_LABELS,
   type Bot,
@@ -356,9 +356,12 @@ export function ShipyardView({
   const toggleCompare = (id: string) =>
     setCompare((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id].slice(-3)));
 
+  // Only the newest request may set the list: a slow, older answer must not hide a new batch
+  const latestLoad = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++latestLoad.current;
     const res = await api.fleet.listDesigns();
-    if (res.status === 200) setBatches(res.body.batches);
+    if (res.status === 200 && mine === latestLoad.current) setBatches(res.body.batches);
   }, []);
 
   useEffect(() => {

@@ -564,10 +564,7 @@ export class FleetDuties {
       return;
     }
     if (this.fleet.overview().designer.source !== "claude") {
-      this.notes.set(
-        "nightShift",
-        "Needs Claude: link your subscription (claudeCodeToken) or add an Anthropic key under Engine Room → Secrets"
-      );
+      this.notes.set("nightShift", "Needs Claude: link your subscription in the Engine Room");
       return;
     }
     const research = this.research();
@@ -635,7 +632,7 @@ export class FleetDuties {
     const last = this.repo.getDutyLastRun("digest") ?? 0;
     if (new Date(now).getUTCHours() < cfg.digestHourUtc || last >= startOfUtcDay(now)) return;
     if (!this.notify) {
-      this.notes.set("digest", "Waiting for Discord: add a webhook under Engine Room → Secrets");
+      this.notes.set("digest", "Waiting for Discord: add a webhook in the Engine Room");
       return;
     }
     const { bots } = this.fleet.overview();

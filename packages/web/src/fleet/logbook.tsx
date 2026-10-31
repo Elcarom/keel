@@ -40,7 +40,7 @@ export function DutiesPanel({
       <h2 className="text-base font-bold text-slate-100">Unattended duties</h2>
       <p className="mb-3 text-xs text-slate-400">
         Fixed rules that run after every scheduler step, on paper only. Switch them on or off under
-        Engine Room → Settings → Fleet.
+        Engine Room → Autonomy.
       </p>
       <ul className="divide-y divide-[#1E2833]">
         {duties.map((d) => (

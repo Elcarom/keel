@@ -68,8 +68,8 @@ Keel never exposes an open setup page. On first boot against an empty `/data` vo
 The night shift can research, invent and upgrade Boats on your Claude subscription rather than an API key ([ADR-0033](./adr/0033-self-managing-fleet.md)). The image already contains the Claude Code CLI.
 
 1. On any computer with Claude Code installed, run `claude setup-token` and sign in. It prints a long-lived token.
-2. In Keel, open **Engine Room → Secrets**, choose `claudeCodeToken`, and save the token. You can instead fill in the template's **Claude Subscription Token** field.
-3. In **Engine Room → Settings**, turn on **Night Shift** and **Autopilot**. Then open a paper wallet named **Autopilot** in the Treasury.
+2. In Keel, open the **Engine Room** and paste the token under **Claude subscription**. You can instead fill in the template's **Claude Subscription Token** field.
+3. Under **Autonomy**, turn on **Night Shift** and **Autopilot**. Then open a paper wallet named **Autopilot** in the Treasury.
 
 The research counts towards your plan's usage limits, so it runs once a night at the set hour.
 
