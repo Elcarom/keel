@@ -1622,7 +1622,7 @@ export class FleetService {
       recentTrades,
       tradeR: closed.map((p) => {
         const risk = ScaledDecimal.fromString(p.initialRiskUsdt);
-        return risk.isPositive() ? round(Number(this.netPnl(p).div(risk).toFixed(8)), 4) : 0;
+        return risk.isPositive() ? round(Number(this.netPnl(p).divFloor(risk).toFixed(8)), 4) : 0;
       }),
       equityHistory,
       coins
