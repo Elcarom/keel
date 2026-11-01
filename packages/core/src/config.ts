@@ -145,7 +145,9 @@ export const FleetConfigSchema = z.object({
   /** Days at sea before a boat's Standing counts and it can be replaced. */
   autopilotMinLiveDays: z.number().int().min(3).max(90).default(14),
   nightShiftEnabled: z.boolean().default(false),
-  nightShiftCadence: z.enum(["daily", "weekly"]).default("daily"),
+  /** "continuous": a new round as soon as the slipway is clear, with nightShiftGapMinutes between. */
+  nightShiftCadence: z.enum(["continuous", "daily", "weekly"]).default("continuous"),
+  nightShiftGapMinutes: z.number().int().min(10).max(1440).default(30),
   nightShiftHourUtc: z.number().int().min(0).max(23).default(2),
   nightShiftCount: z.number().int().min(2).max(6).default(4),
   /** How many proven boats the night shift asks Claude to improve each time it runs. */
@@ -856,14 +858,26 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
   {
     path: "fleet.nightShiftCadence",
     label: "Night Shift Cadence",
-    helpText: "How often the night shift drafts a brief.",
-    defaultValue: "daily",
+    helpText:
+      "How often the night shift drafts a brief: around the clock (a new round whenever the last one's sea trials are done), every night, or Mondays only.",
+    defaultValue: "continuous",
+    riskClass: "safe"
+  },
+  {
+    path: "fleet.nightShiftGapMinutes",
+    label: "Gap Between Rounds",
+    helpText:
+      "Around the clock, the least time between two research rounds. Each round spends some of your Claude subscription's usage.",
+    unit: "min",
+    min: 10,
+    max: 1440,
+    defaultValue: 30,
     riskClass: "safe"
   },
   {
     path: "fleet.nightShiftHourUtc",
     label: "Night Shift Hour (UTC)",
-    helpText: "The hour the night shift starts.",
+    helpText: "The hour the night shift starts, every night or on Mondays.",
     unit: "h",
     min: 0,
     max: 23,

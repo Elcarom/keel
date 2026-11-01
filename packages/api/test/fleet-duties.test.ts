@@ -143,6 +143,8 @@ function harness(options: {
   configure?: (config: KeelConfig) => KeelConfig;
   designer?: string;
   nowMs?: number;
+  /** A sea trial is still on the slipway. */
+  slipwayBusy?: boolean;
 }) {
   const clock = new ManualClock(options.nowMs ?? MONDAY_8AM);
   const store = createSqliteDataStore({ dbPath: ":memory:", clock });
@@ -163,7 +165,12 @@ function harness(options: {
       designer: { source: options.designer ?? "claude" }
     }),
     listDesigns: () => [
-      { createdAtMs: 0, brief: { upgradeOf: null }, propositions: options.propositions ?? [] },
+      {
+        createdAtMs: 0,
+        status: options.slipwayBusy ? ("assessing" as const) : ("done" as const),
+        brief: { upgradeOf: null },
+        propositions: options.propositions ?? []
+      },
       ...(options.upgrades ?? []).map((u) => ({
         createdAtMs: u.createdAtMs ?? 0,
         brief: { upgradeOf: u.upgradeOf },
@@ -334,10 +341,40 @@ describe("Scheduled duties", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("researches around the clock: a new round once the slipway is clear and the gap has passed", async () => {
+    const constant = (c: KeelConfig): KeelConfig => ({
+      ...c,
+      fleet: { ...c.fleet, nightShiftEnabled: true, digestEnabled: false }
+    });
+    const { duties, calls, clock } = harness({ configure: constant });
+    await duties.run();
+    expect(calls.designed).toBe(1);
+    // Not again inside the 30-minute gap, then again once it has passed, at any hour
+    clock.advanceMs(20 * 60_000);
+    await duties.run();
+    expect(calls.designed).toBe(1);
+    clock.advanceMs(15 * 60_000);
+    await duties.run();
+    expect(calls.designed).toBe(2);
+
+    // Never while the last round is still in its sea trials
+    const busy = harness({ configure: constant, slipwayBusy: true });
+    await busy.duties.run();
+    expect(busy.calls.designed).toBe(0);
+    expect(busy.duties.status().find((d) => d.duty === "nightShift")?.note).toMatch(
+      /^Waiting for the slipway/
+    );
+  });
+
   it("runs the night shift once on its day, and only with Claude to ask", async () => {
     const nightly = (c: KeelConfig): KeelConfig => ({
       ...c,
-      fleet: { ...c.fleet, nightShiftEnabled: true, digestEnabled: false }
+      fleet: {
+        ...c.fleet,
+        nightShiftEnabled: true,
+        nightShiftCadence: "daily",
+        digestEnabled: false
+      }
     });
     const monday = harness({ configure: nightly });
     await monday.duties.run();

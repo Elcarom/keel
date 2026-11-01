@@ -41,6 +41,8 @@ export interface FleetDutiesPort {
   };
   listDesigns(limit?: number): readonly {
     readonly createdAtMs: number;
+    /** "assessing" while any of the batch's sea trials is still running or waiting. */
+    readonly status?: "assessing" | "done";
     readonly brief: { readonly upgradeOf: string | null };
     readonly propositions: readonly Proposition[];
   }[];
@@ -575,7 +577,31 @@ export class FleetDuties {
   }
 
   /**
-   * The research round (ADR-0033), daily or every Monday at the set hour. Claude sees each boat's
+   * Whether a research round is due. Around the clock: once the gap has passed and no sea trial is
+   * still on the slipway, so rounds follow each other as fast as they can be judged. Otherwise
+   * once a day (or on Mondays) after the set hour.
+   */
+  private nightShiftDue(now: number): boolean {
+    const cfg = this.getConfig().fleet;
+    const last = this.repo.getDutyLastRun("nightShift") ?? 0;
+    if (cfg.nightShiftCadence === "continuous") {
+      if (now - last < cfg.nightShiftGapMinutes * 60_000) return false;
+      if (this.fleet.listDesigns(20).some((batch) => batch.status === "assessing")) {
+        this.notes.set(
+          "nightShift",
+          "Waiting for the slipway: the last round is still in its sea trials"
+        );
+        return false;
+      }
+      return true;
+    }
+    const date = new Date(now);
+    const dueToday = cfg.nightShiftCadence === "daily" || date.getUTCDay() === 1;
+    return dueToday && date.getUTCHours() >= cfg.nightShiftHourUtc && last < startOfUtcDay(now);
+  }
+
+  /**
+   * The research round (ADR-0033): around the clock, nightly or on Mondays. Claude sees each boat's
    * sea trial against its live record and the ideas that failed lately, drafts new ideas for the
    * fleet's gaps, then an Upgrade of each of the weakest proven boats. Every draft faces a sea
    * trial; the Autopilot's rules decide what, if anything, sails.
@@ -583,12 +609,7 @@ export class FleetDuties {
   private async nightShift(): Promise<void> {
     const cfg = this.getConfig().fleet;
     const now = this.clock.nowMs();
-    const date = new Date(now);
-    const last = this.repo.getDutyLastRun("nightShift") ?? 0;
-    const dueToday = cfg.nightShiftCadence === "daily" || date.getUTCDay() === 1;
-    if (!dueToday || date.getUTCHours() < cfg.nightShiftHourUtc || last >= startOfUtcDay(now)) {
-      return;
-    }
+    if (!this.nightShiftDue(now)) return;
     if (this.fleet.overview().designer.source !== "claude") {
       this.notes.set("nightShift", "Needs Claude: link your subscription in the Engine Room");
       return;

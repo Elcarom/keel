@@ -7,6 +7,7 @@ type FleetKey = keyof FleetConfig;
 /** The choices of the duty settings that are a fixed list rather than free text. */
 const CHOICES: Partial<Record<FleetKey, readonly (readonly [string, string])[]>> = {
   nightShiftCadence: [
+    ["continuous", "Around the clock"],
     ["daily", "Every night"],
     ["weekly", "Mondays only"]
   ]
