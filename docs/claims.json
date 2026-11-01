@@ -565,15 +565,15 @@
   },
   {
     "id": "CLAIM-DESIGNER-BRIEF",
-    "claim": "The bot designer enforces the brief's instruments and direction whatever the model answers.",
-    "testFile": "packages/ai/test/bot-designer.test.ts",
-    "testName": "enforces the brief's instruments and direction whatever the model answers"
+    "claim": "Keel's invention check enforces the brief's markets and direction whatever the Shipwright answers.",
+    "testFile": "packages/spec/test/invention.test.ts",
+    "testName": "follows the brief's waters and direction whatever the invention asked for"
   },
   {
     "id": "CLAIM-DESIGNER-REFUSAL",
-    "claim": "A Claude refusal is surfaced, never replaced by invented propositions.",
+    "claim": "When nothing Claude invented passes Keel's checks, the Shipwright says so instead of inventing propositions.",
     "testFile": "packages/ai/test/bot-designer.test.ts",
-    "testName": "surfaces a refusal instead of inventing propositions"
+    "testName": "refuses to pretend when nothing Claude invented passes"
   },
   {
     "id": "CLAIM-SEATRIAL-CRITICAL",
@@ -657,7 +657,7 @@
     "id": "CLAIM-IMPORT-SAME-CHECKS",
     "claim": "ADR-0027: Imported Inventions face the same checks and Sea Trial as API inventions, and rejected ones come back with a repair message.",
     "testFile": "packages/api/test/fleet.test.ts",
-    "testName": "imports a Claude chat's file: checks each invention, sea-trials the good and returns the rest for repair"
+    "testName": "imports a chat's file: checks each invention, sea-trials the good and returns the rest for repair"
   },
   {
     "id": "CLAIM-IMPORT-STRICT-MARKET",
@@ -793,9 +793,9 @@
   },
   {
     "id": "CLAIM-STANDING-BLEND",
-    "claim": "ADR-0033: A boat's Standing starts at its sea-trial score and moves towards its live record.",
+    "claim": "ADR-0035: A boat's Standing starts at its sea-trial score and moves with how its live trades compare with the trial's.",
     "testFile": "packages/api/test/fleet-duties.test.ts",
-    "testName": "starts at the sea-trial score and moves towards the live record"
+    "testName": "starts at the sea-trial score and moves with how the live trades compare with the trial"
   },
   {
     "id": "CLAIM-REPLACE-WEAKEST",
