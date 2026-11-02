@@ -189,11 +189,11 @@ One of the Fleet's unattended, rule-based jobs that run after every scheduler st
 _Avoid_: Bot, agent, automation
 
 **Autopilot**:
-The Fleet Duty that manages the Boats in the Autopilot wallet, whose balance is its whole cap. It launches seaworthy, original Propositions until the fleet is full, then replaces the weakest proven Boat with a Proposition or Upgrade whose score clearly beats its Standing.
+The Fleet Duty that manages the Boats in the Autopilot wallet, whose balance is its whole cap. It opens that wallet if there is none, launches seaworthy, original Propositions until the fleet is full, retires any of its Boats the Drift Watch catches, and replaces the weakest proven Boat with a Proposition or Upgrade whose score clearly beats its Standing.
 _Avoid_: Auto-trader
 
 **Night Shift**:
-The Fleet Duty that has Claude research the fleet each night: Claude sees every Boat's record and the ideas that failed, then drafts new Propositions and Upgrades.
+The Fleet Duty that has Claude research the fleet, around the clock by default: Claude sees every Boat's record and the ideas that failed, then drafts new Propositions and Upgrades.
 _Avoid_: Research agent, background AI
 
 **Standing**:
@@ -205,8 +205,8 @@ A Proposition the Night Shift drew up to improve on one proven Boat: the same id
 _Avoid_: Version, fork, retune
 
 **Drift Watch**:
-The Fleet Duty that docks a Boat doing clearly worse than its Sea Trial expected: a far deeper dip, far fewer wins, or live trades whose average a sequential test finds has lost the expected edge.
-_Avoid_: Kill switch (that halts everything; the drift watch docks one Boat)
+The Fleet Duty that catches a Boat doing clearly worse than its Sea Trial expected: a far deeper dip, far fewer wins, or live trades whose average a sequential test finds has lost the expected edge. It retires an Autopilot Boat and docks any other.
+_Avoid_: Kill switch (that halts everything; the drift watch acts on one Boat)
 
 **Lookalike**:
 A Proposition whose backtest moved almost in step with an existing Boat or another open Proposition, week by week. Launching both doubles the same bet.

@@ -856,5 +856,29 @@
     "claim": "ADR-0035: Paper trading and the replay share one cost model: identical fills, gross P&L and fees on the same bars.",
     "testFile": "packages/api/test/paper-broker.test.ts",
     "testName": "M-A: achieves bit-for-bit fill price, contracts, and PnL parity between PaperBroker and ReplayEngine across identical confirmed bars"
+  },
+  {
+    "id": "CLAIM-ADR-0036-DEFAULTS",
+    "claim": "ADR-0036: The Fleet runs itself by default: night shift around the clock, Autopilot, drift watch and rebalancing on.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "runs the whole loop by default: research around the clock, launch, rebalance"
+  },
+  {
+    "id": "CLAIM-ADR-0036-OWN-WALLET",
+    "claim": "ADR-0036: The Autopilot opens its own paper wallet when there is none.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "spends no more than the wallet holds, and opens its own wallet when there is none"
+  },
+  {
+    "id": "CLAIM-ADR-0036-RETIRE-DRIFT",
+    "claim": "ADR-0036: The drift watch retires a failing Autopilot boat and only docks the operator's own.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "retires a drifting Autopilot boat, so its stake and place go to the next idea"
+  },
+  {
+    "id": "CLAIM-ADR-0036-MIGRATION",
+    "claim": "ADR-0036: An older database is switched to full autonomy once; the operator can turn it off and it stays off.",
+    "testFile": "packages/data/test/sqlite-storage.test.ts",
+    "testName": "switches an older database's Fleet to full autonomy once, and leaves new ones as seeded"
   }
 ]

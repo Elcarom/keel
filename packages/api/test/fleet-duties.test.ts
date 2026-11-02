@@ -148,7 +148,7 @@ function harness(options: {
 }) {
   const clock = new ManualClock(options.nowMs ?? MONDAY_8AM);
   const store = createSqliteDataStore({ dbPath: ":memory:", clock });
-  const config = (options.configure ?? ((c) => c))(createDefaultConfig());
+  const config = (options.configure ?? ((c) => c))(quiet(createDefaultConfig()));
   const sent: NotificationMessage[] = [];
   const calls = {
     launched: [] as { propositionId: string; name: string; allocationUsdt: string }[],
@@ -156,7 +156,8 @@ function harness(options: {
     retired: [] as { botId: string; reason: string }[],
     designed: 0,
     briefs: [] as { notes: string; research: DesignResearch; upgradeOf: string | null }[],
-    rebalanced: [] as string[]
+    rebalanced: [] as string[],
+    walletsOpened: [] as { name: string; startingBalanceUsdt: string }[]
   };
   const port: FleetDutiesPort = {
     overview: () => ({
@@ -184,6 +185,10 @@ function harness(options: {
         allocationUsdt: input.allocationUsdt
       });
       return bot({ name: input.name });
+    },
+    createWallet: (name, startingBalanceUsdt) => {
+      calls.walletsOpened.push({ name, startingBalanceUsdt });
+      return { walletId: `w-${name}` };
     },
     pause: (botId, reason) => {
       calls.paused.push({ botId, reason });
@@ -214,6 +219,19 @@ function harness(options: {
     }
   });
   return { duties, calls, sent, clock };
+}
+
+/** The duties that act on their own start on (ADR-0036); each test turns on the ones it covers. */
+function quiet(c: KeelConfig): KeelConfig {
+  return {
+    ...c,
+    fleet: {
+      ...c.fleet,
+      autopilotEnabled: false,
+      nightShiftEnabled: false,
+      rebalanceEnabled: false
+    }
+  };
 }
 
 const AUTOPILOT = (c: KeelConfig): KeelConfig => ({
@@ -268,6 +286,26 @@ describe("Drift watch", () => {
     expect(calls.paused[0]?.reason).toMatch(/^Drift watch brought it back to harbour/);
     expect(sent.map((m) => m.severity)).toEqual(["WARNING"]);
   });
+
+  it("retires a drifting Autopilot boat, so its stake and place go to the next idea", async () => {
+    const { duties, calls, sent } = harness({
+      configure: (c) => ({
+        ...AUTOPILOT(c),
+        fleet: { ...AUTOPILOT(c).fleet, driftWatchEnabled: true }
+      }),
+      wallets: [AUTOPILOT_WALLET, { ...AUTOPILOT_WALLET, walletId: "wm", name: "Main Treasury" }],
+      bots: [
+        bot({ botId: "b1", walletId: "wa", maxDrawdownPct: 20 }),
+        bot({ botId: "b2", name: "Mine", walletId: "wm", maxDrawdownPct: 20 })
+      ]
+    });
+    await duties.run();
+    expect(calls.retired.map((r) => r.botId)).toEqual(["b1"]);
+    expect(calls.retired[0]?.reason).toMatch(/^Retired by the drift watch: its worst dip/);
+    // The operator's own boat waits in harbour for them
+    expect(calls.paused.map((p) => p.botId)).toEqual(["b2"]);
+    expect(sent.map((m) => m.title)).toContain("Trade Wind retired by the drift watch");
+  });
 });
 
 describe("Autopilot", () => {
@@ -307,7 +345,7 @@ describe("Autopilot", () => {
     );
   });
 
-  it("spends no more than the wallet holds, and waits for a wallet to draw from", async () => {
+  it("spends no more than the wallet holds, and opens its own wallet when there is none", async () => {
     const low = harness({
       configure: AUTOPILOT,
       wallets: [
@@ -320,9 +358,19 @@ describe("Autopilot", () => {
 
     const none = harness({ configure: AUTOPILOT, propositions: [proposition("p1")] });
     await none.duties.run();
-    expect(none.duties.status().find((d) => d.duty === "autopilot")?.note).toMatch(
-      /^Waiting for a wallet named "Autopilot"/
-    );
+    expect(none.calls.walletsOpened).toEqual([
+      { name: "Autopilot", startingBalanceUsdt: "10000.00000000" }
+    ]);
+    expect(none.sent.map((m) => m.title)).toEqual(["Autopilot opened Autopilot"]);
+  });
+
+  it("runs the whole loop by default: research around the clock, launch, rebalance", () => {
+    const fleet = createDefaultConfig().fleet;
+    expect(fleet.nightShiftEnabled).toBe(true);
+    expect(fleet.nightShiftCadence).toBe("continuous");
+    expect(fleet.autopilotEnabled).toBe(true);
+    expect(fleet.driftWatchEnabled).toBe(true);
+    expect(fleet.rebalanceEnabled).toBe(true);
   });
 });
 

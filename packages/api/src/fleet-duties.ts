@@ -26,6 +26,8 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Smallest stake a boat can be launched or rebalanced with. */
 const MIN_STAKE_USDT = ScaledDecimal.fromString("100");
+/** The paper balance the Autopilot opens its own wallet with when there is none. */
+export const AUTOPILOT_OPENING_USDT = "10000.00000000";
 
 /** What the duties need from the Fleet: its public operations, nothing internal. */
 export interface FleetDutiesPort {
@@ -50,6 +52,7 @@ export interface FleetDutiesPort {
     propositionId: string,
     input: { readonly name: string; readonly walletId: string; readonly allocationUsdt: string }
   ): Bot;
+  createWallet(name: string, startingBalanceUsdt: string): { readonly walletId: string };
   pause(botId: string, reason: string): Bot;
   retire(botId: string, reason: string): Bot;
   design(
@@ -289,14 +292,34 @@ export class FleetDuties {
     if (this.notify) void this.notify(message).catch(() => undefined);
   }
 
+  /**
+   * Docks a boat sailing clearly worse than its sea trial expected. A boat the Autopilot manages is
+   * retired instead, so its stake and its place go to the next seaworthy idea without waiting for
+   * the operator (ADR-0036). A boat the operator launched waits in harbour for them.
+   */
   private driftWatch(): void {
-    const docked: string[] = [];
-    for (const bot of this.fleet.overview().bots) {
+    const cfg = this.getConfig().fleet;
+    const overview = this.fleet.overview();
+    const autopilotWallet = cfg.autopilotEnabled
+      ? overview.wallets.find((w) => w.name === cfg.autopilotWalletName)
+      : undefined;
+    const caught: string[] = [];
+    for (const bot of overview.bots) {
       if (bot.status !== "running") continue;
       const drift = driftOf(bot);
       if (!drift) continue;
+      caught.push(bot.name);
+      if (bot.walletId === autopilotWallet?.walletId) {
+        this.fleet.retire(bot.botId, `Retired by the drift watch: ${drift}`);
+        this.send({
+          severity: "WARNING",
+          title: `${bot.name} retired by the drift watch`,
+          body: `${bot.name} was paper trading clearly worse than its sea trial expected: ${drift}. The Autopilot has retired it, and its stake is back in ${autopilotWallet.name} for the next seaworthy idea.`,
+          dedupKey: `drift-${bot.botId}`
+        });
+        continue;
+      }
       this.fleet.pause(bot.botId, `Drift watch brought it back to harbour: ${drift}`);
-      docked.push(bot.name);
       this.send({
         severity: "WARNING",
         title: `${bot.name} docked by the drift watch`,
@@ -306,7 +329,7 @@ export class FleetDuties {
     }
     this.done(
       "driftWatch",
-      docked.length > 0 ? `Docked ${docked.join(", ")}` : "Every running boat is on course"
+      caught.length > 0 ? `Caught ${caught.join(", ")}` : "Every running boat is on course"
     );
   }
 
@@ -381,15 +404,19 @@ export class FleetDuties {
   private autopilot(): void {
     const cfg = this.getConfig().fleet;
     const now = this.clock.nowMs();
-    const overview = this.fleet.overview();
-    const wallet = overview.wallets.find((w) => w.name === cfg.autopilotWalletName);
-    if (!wallet) {
-      this.notes.set(
-        "autopilot",
-        `Waiting for a wallet named "${cfg.autopilotWalletName}": open one in the Treasury`
-      );
-      return;
+    let overview = this.fleet.overview();
+    if (!overview.wallets.some((w) => w.name === cfg.autopilotWalletName)) {
+      this.fleet.createWallet(cfg.autopilotWalletName, AUTOPILOT_OPENING_USDT);
+      this.send({
+        severity: "INFO",
+        title: `Autopilot opened ${cfg.autopilotWalletName}`,
+        body: `The Autopilot opened a paper wallet named ${cfg.autopilotWalletName} with ${ScaledDecimal.fromString(AUTOPILOT_OPENING_USDT).toFixed(2)} USDT to sail its boats from.`,
+        dedupKey: "autopilot-wallet"
+      });
+      overview = this.fleet.overview();
     }
+    const wallet = overview.wallets.find((w) => w.name === cfg.autopilotWalletName);
+    if (!wallet) return;
     const sailing = overview.bots.filter((b) => b.status !== "retired");
     const managed = overview.bots.filter(
       (b) => b.walletId === wallet.walletId && b.status === "running"

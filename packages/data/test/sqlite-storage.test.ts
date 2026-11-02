@@ -239,6 +239,60 @@ describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => 
     }
   });
 
+  it("switches an older database's Fleet to full autonomy once, and leaves new ones as seeded", () => {
+    const dbPath = join(tempDir, "keel.sqlite");
+    const clock = new ManualClock(1_793_000_000_000);
+    const handsOn = createDefaultConfig();
+    const old = {
+      ...handsOn,
+      fleet: {
+        ...handsOn.fleet,
+        nightShiftEnabled: false,
+        nightShiftCadence: "daily" as const,
+        autopilotEnabled: false,
+        rebalanceEnabled: false,
+        autopilotMaxBoats: 5
+      }
+    };
+    // A new database keeps the config it was seeded with
+    let store = createSqliteDataStore({ dbPath, clock, initialConfig: old });
+    expect(store.configRepo.getActiveConfig().config.fleet.autopilotEnabled).toBe(false);
+    store.close();
+
+    // As a database from before full autonomy was the default
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("DELETE FROM data_migrations");
+    raw.close();
+    store = createSqliteDataStore({ dbPath, clock });
+    try {
+      const active = store.configRepo.getActiveConfig();
+      expect(active.actor).toBe("system:migration");
+      expect(active.config.fleet).toMatchObject({
+        nightShiftEnabled: true,
+        nightShiftCadence: "continuous",
+        autopilotEnabled: true,
+        rebalanceEnabled: true,
+        autopilotMaxBoats: 5
+      });
+      // The operator can still turn it off, and it stays off
+      store.configRepo.saveConfigSnapshot({
+        config: { ...active.config, fleet: { ...active.config.fleet, autopilotEnabled: false } },
+        actor: "operator",
+        reason: "Hands on",
+        highestRiskClass: "confirm",
+        createdAtMs: clock.nowMs()
+      });
+    } finally {
+      store.close();
+    }
+    store = createSqliteDataStore({ dbPath, clock });
+    try {
+      expect(store.configRepo.getActiveConfig().config.fleet.autopilotEnabled).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
   it("purges synthetic series an older Keel wrote under real market ids, once", () => {
     const dbPath = join(tempDir, "keel.sqlite");
     const clock = new ManualClock(1_793_000_000_000);

@@ -132,7 +132,8 @@ export const FleetConfigSchema = z.object({
   digestEnabled: z.boolean().default(true),
   digestHourUtc: z.number().int().min(0).max(23).default(7),
   driftWatchEnabled: z.boolean().default(true),
-  autopilotEnabled: z.boolean().default(false),
+  /** The Fleet runs itself by default (ADR-0036): research, launch, retire and replace. */
+  autopilotEnabled: z.boolean().default(true),
   autopilotWalletName: z.string().min(1).max(40).default("Autopilot"),
   autopilotMinScore: z.number().int().min(45).max(100).default(65),
   /** Designs the Fleet may ever replay on its unseen 2025 year (ADR-0035). */
@@ -144,7 +145,7 @@ export const FleetConfigSchema = z.object({
   autopilotReplaceMargin: z.number().int().min(0).max(50).default(10),
   /** Days at sea before a boat's Standing counts and it can be replaced. */
   autopilotMinLiveDays: z.number().int().min(3).max(90).default(14),
-  nightShiftEnabled: z.boolean().default(false),
+  nightShiftEnabled: z.boolean().default(true),
   /** "continuous": a new round as soon as the slipway is clear, with nightShiftGapMinutes between. */
   nightShiftCadence: z.enum(["continuous", "daily", "weekly"]).default("continuous"),
   nightShiftGapMinutes: z.number().int().min(10).max(1440).default(30),
@@ -152,7 +153,7 @@ export const FleetConfigSchema = z.object({
   nightShiftCount: z.number().int().min(2).max(6).default(4),
   /** How many proven boats the night shift asks Claude to improve each time it runs. */
   nightShiftUpgrades: z.number().int().min(0).max(3).default(1),
-  rebalanceEnabled: z.boolean().default(false)
+  rebalanceEnabled: z.boolean().default(true)
 });
 export type FleetConfig = z.infer<typeof FleetConfigSchema>;
 
@@ -775,8 +776,8 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "fleet.autopilotEnabled",
     label: "Autopilot",
     helpText:
-      "Manage the boats in the Autopilot wallet: launch seaworthy propositions until the fleet is full, then replace the weakest proven boat with one that clearly out-scores it.",
-    defaultValue: false,
+      "Manage the boats in the Autopilot wallet, opening it if there is none: launch seaworthy propositions until the fleet is full, retire any the drift watch catches, and replace the weakest proven boat with one that clearly out-scores it.",
+    defaultValue: true,
     riskClass: "confirm"
   },
   {
@@ -851,8 +852,8 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     path: "fleet.nightShiftEnabled",
     label: "Night Shift",
     helpText:
-      "Each night, show Claude every boat's record and the ideas that failed, and have it draft new ideas and Upgrades for the sea trial.",
-    defaultValue: false,
+      "Show Claude every boat's record and the ideas that failed, and have it draft new ideas and Upgrades for the sea trial.",
+    defaultValue: true,
     riskClass: "safe"
   },
   {
@@ -908,7 +909,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     label: "Weekly Stake Rebalancing",
     helpText:
       "Every Monday, move paper stake between a wallet's running boats so each risks the same share.",
-    defaultValue: false,
+    defaultValue: true,
     riskClass: "confirm"
   },
   {

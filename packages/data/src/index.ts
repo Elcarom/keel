@@ -281,6 +281,69 @@ function purgeSyntheticUnderRealIds(db: DatabaseSyncType, nowMs: number): void {
   db.prepare("INSERT INTO data_migrations (name, applied_at_ms) VALUES (?, ?)").run(name, nowMs);
 }
 
+function markDataMigration(db: DatabaseSyncType, name: string, nowMs: number): void {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY, applied_at_ms INTEGER NOT NULL)"
+  );
+  db.prepare("INSERT OR IGNORE INTO data_migrations (name, applied_at_ms) VALUES (?, ?)").run(
+    name,
+    nowMs
+  );
+}
+
+const FULL_AUTONOMY_MIGRATION = "full-autonomy-by-default";
+
+/**
+ * The Fleet runs itself by default (ADR-0036). A database saved before that keeps its old
+ * switches, so once per database this saves a new config version with the night shift (around the
+ * clock), the Autopilot and stake rebalancing turned on. Everything else is kept, and the operator
+ * can turn any of them off again afterwards.
+ */
+function switchOnFullAutonomy(db: DatabaseSyncType, nowMs: number): void {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY, applied_at_ms INTEGER NOT NULL)"
+  );
+  if (db.prepare("SELECT 1 FROM data_migrations WHERE name = ?").get(FULL_AUTONOMY_MIGRATION)) {
+    return;
+  }
+  const row = db
+    .prepare("SELECT config_json FROM config_snapshots ORDER BY version DESC LIMIT 1")
+    .get();
+  if (row) {
+    const current = KeelConfigSchema.parse(JSON.parse(String(row["config_json"])) as unknown);
+    const fleet = current.fleet;
+    if (
+      !fleet.nightShiftEnabled ||
+      fleet.nightShiftCadence !== "continuous" ||
+      !fleet.autopilotEnabled ||
+      !fleet.rebalanceEnabled
+    ) {
+      const next = KeelConfigSchema.parse({
+        ...current,
+        fleet: {
+          ...fleet,
+          nightShiftEnabled: true,
+          nightShiftCadence: "continuous",
+          autopilotEnabled: true,
+          rebalanceEnabled: true
+        }
+      });
+      db.prepare(
+        `INSERT INTO config_snapshots (config_hash, config_json, actor, reason, highest_risk_class, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        computeConfigHash(next),
+        JSON.stringify(next),
+        "system:migration",
+        "Full autonomy by default: night shift around the clock, Autopilot and rebalancing on",
+        "confirm",
+        nowMs
+      );
+    }
+  }
+  markDataMigration(db, FULL_AUTONOMY_MIGRATION, nowMs);
+}
+
 export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDataStore {
   if (options.dbPath !== ":memory:") {
     mkdirSync(dirname(options.dbPath), { recursive: true });
@@ -362,7 +425,10 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   // Seed default version 1 config if empty
   const existingCountRow = db.prepare("SELECT COUNT(*) AS cnt FROM config_snapshots").get();
   const existingCount = Number(existingCountRow?.["cnt"] ?? 0);
-  if (existingCount === 0) {
+  if (existingCount > 0) {
+    switchOnFullAutonomy(db, options.clock.nowMs());
+  } else {
+    markDataMigration(db, FULL_AUTONOMY_MIGRATION, options.clock.nowMs());
     const seedConfig = options.initialConfig ?? createDefaultConfig();
     const seedHash = computeConfigHash(seedConfig);
     db.prepare(
