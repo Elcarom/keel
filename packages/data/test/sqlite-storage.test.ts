@@ -293,6 +293,49 @@ describe("@keel/data — SQLite (WAL) Storage Engine & Repository Ports", () => 
     }
   });
 
+  it("moves an older database to quicker research rounds once, keeping a pace the operator chose", () => {
+    const dbPath = join(tempDir, "keel.sqlite");
+    const clock = new ManualClock(1_793_000_000_000);
+    const base = createDefaultConfig();
+    const pace = (count: number, gap: number) => ({
+      ...base,
+      fleet: { ...base.fleet, nightShiftCount: count, nightShiftGapMinutes: gap }
+    });
+    const reopen = () => {
+      const raw = new DatabaseSync(dbPath);
+      raw.exec("DELETE FROM data_migrations");
+      raw.close();
+      return createSqliteDataStore({ dbPath, clock });
+    };
+
+    createSqliteDataStore({ dbPath, clock, initialConfig: pace(4, 30) }).close();
+    let store = reopen();
+    try {
+      expect(store.configRepo.getActiveConfig().config.fleet).toMatchObject({
+        nightShiftCount: 6,
+        nightShiftGapMinutes: 10
+      });
+      store.configRepo.saveConfigSnapshot({
+        config: pace(3, 60),
+        actor: "operator",
+        reason: "My own pace",
+        highestRiskClass: "safe",
+        createdAtMs: clock.nowMs()
+      });
+    } finally {
+      store.close();
+    }
+    store = reopen();
+    try {
+      expect(store.configRepo.getActiveConfig().config.fleet).toMatchObject({
+        nightShiftCount: 3,
+        nightShiftGapMinutes: 60
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   it("purges synthetic series an older Keel wrote under real market ids, once", () => {
     const dbPath = join(tempDir, "keel.sqlite");
     const clock = new ManualClock(1_793_000_000_000);

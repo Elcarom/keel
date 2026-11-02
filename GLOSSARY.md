@@ -196,6 +196,10 @@ _Avoid_: Auto-trader
 The Fleet Duty that has Claude research the fleet, around the clock by default: Claude sees every Boat's record and the ideas that failed, then drafts new Propositions and Upgrades.
 _Avoid_: Research agent, background AI
 
+**Research Theme**:
+The ground one Night Shift round is steered to explore, such as funding and crowding or lead and lag between markets: the theme the recent ideas covered least.
+_Avoid_: Topic, prompt
+
 **Standing**:
 How a Boat ranks against Propositions: its Sea Trial score, moved up or down by how its live trades compare with what that Sea Trial expected, by more the longer its record. A Boat is proven, and can be replaced, once it has sailed long enough to judge.
 _Avoid_: Rank (a Proposition's rank is within its design batch), live score

@@ -94,6 +94,22 @@ describe("Bot designer: the Shipwright", () => {
     expect(calls[0]?.output_config?.format).toBeUndefined();
   });
 
+  it("shows Claude the ideas already tried and this round's focus", async () => {
+    const { designer, calls } = shipwrightWith([{ propositions: [{ name: "Night Watch" }] }]);
+    await designer.design({ ...BRIEF, count: 2 }, [], "", {
+      fleetReport: [],
+      lessons: [],
+      triedIdeas: ["Old Salt (BTC): Fades the dip. Did not pass its sea trial."],
+      focus: { title: "Funding and crowding", brief: "Who pays to hold." },
+      improve: null
+    });
+    const sent = JSON.stringify(calls[0]?.messages);
+    expect(sent).toContain("ideasAlreadyTried");
+    expect(sent).toContain("Old Salt (BTC): Fades the dip.");
+    expect(sent).toContain("thisRoundsFocus");
+    expect(sent).toContain("Funding and crowding");
+  });
+
   it("never reuses a name already in the fleet or the batch", async () => {
     const { designer } = shipwrightWith([
       { propositions: [{ name: "Trade Wind" }, { name: "Trade Wind" }] }

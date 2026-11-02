@@ -30,6 +30,10 @@ export interface DesignResearch {
   readonly fleetReport: readonly string[];
   /** Recent ideas that failed their sea trial, and why. */
   readonly lessons: readonly string[];
+  /** Ideas already drawn up, newest first, each with what it was built from and if it passed. */
+  readonly triedIdeas?: readonly string[] | undefined;
+  /** Where this round should look: the ground the recent ideas covered least (ADR-0037). */
+  readonly focus?: { readonly title: string; readonly brief: string } | null | undefined;
   /** The boat an Upgrade should improve on; null when the brief fills gaps. */
   readonly improve: {
     readonly name: string;
@@ -44,6 +48,23 @@ function researchFields(research: DesignResearch | undefined): Record<string, un
   return {
     fleetReport: research.fleetReport.length > 0 ? research.fleetReport : "no boats at sea yet",
     lessonsFromFailedIdeas: research.lessons.length > 0 ? research.lessons : "none yet",
+    ...(research.triedIdeas && research.triedIdeas.length > 0
+      ? {
+          ideasAlreadyTried: {
+            rule: "Never offer any of these again, nor a near-variant with nudged numbers, another coin or one more filter. Each new idea must rest on a mechanism none of them uses.",
+            ideas: research.triedIdeas
+          }
+        }
+      : {}),
+    ...(research.focus
+      ? {
+          thisRoundsFocus: {
+            theme: research.focus.title,
+            brief: research.focus.brief,
+            rule: "The fleet's research has covered this least. Build at least half of this round's ideas around it, each from a different angle; the rest may roam anywhere new."
+          }
+        }
+      : {}),
     ...(research.improve
       ? {
           upgrade: {

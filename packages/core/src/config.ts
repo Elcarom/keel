@@ -148,9 +148,9 @@ export const FleetConfigSchema = z.object({
   nightShiftEnabled: z.boolean().default(true),
   /** "continuous": a new round as soon as the slipway is clear, with nightShiftGapMinutes between. */
   nightShiftCadence: z.enum(["continuous", "daily", "weekly"]).default("continuous"),
-  nightShiftGapMinutes: z.number().int().min(10).max(1440).default(30),
+  nightShiftGapMinutes: z.number().int().min(10).max(1440).default(10),
   nightShiftHourUtc: z.number().int().min(0).max(23).default(2),
-  nightShiftCount: z.number().int().min(2).max(6).default(4),
+  nightShiftCount: z.number().int().min(2).max(8).default(6),
   /** How many proven boats the night shift asks Claude to improve each time it runs. */
   nightShiftUpgrades: z.number().int().min(0).max(3).default(1),
   rebalanceEnabled: z.boolean().default(true)
@@ -872,7 +872,7 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
     unit: "min",
     min: 10,
     max: 1440,
-    defaultValue: 30,
+    defaultValue: 10,
     riskClass: "safe"
   },
   {
@@ -888,10 +888,10 @@ const RAW_FIELD_SPECS: readonly RawFieldSpec[] = [
   {
     path: "fleet.nightShiftCount",
     label: "Night Shift Ideas",
-    helpText: "How many propositions each night shift asks for.",
+    helpText: "How many new ideas each research round asks Claude for.",
     min: 2,
-    max: 6,
-    defaultValue: 4,
+    max: 8,
+    defaultValue: 6,
     riskClass: "safe"
   },
   {

@@ -14,6 +14,7 @@ import {
 } from "@keel/core";
 import { type DesignResearch } from "@keel/ai";
 import { weeklyCorrelation } from "./sea-trial.js";
+import { nextTheme, triedIdeas } from "./research-themes.js";
 
 // ============================================================================
 // The Fleet's unattended duties (ADR-0030, ADR-0033). The scheduler runs them after every Fleet
@@ -26,6 +27,8 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Smallest stake a boat can be launched or rebalanced with. */
 const MIN_STAKE_USDT = ScaledDecimal.fromString("100");
+/** How many earlier ideas each research round shows Claude, so it does not offer them again. */
+const TRIED_IDEAS_SHOWN = 40;
 /** The paper balance the Autopilot opens its own wallet with when there is none. */
 export const AUTOPILOT_OPENING_USDT = "10000.00000000";
 
@@ -608,7 +611,21 @@ export class FleetDuties {
     const left = bots
       .filter((b) => /^(Drift watch|Replaced by)/.test(b.statusReason ?? ""))
       .map((b) => `${b.name} (${b.rig.archetype}) left the fleet: ${b.statusReason ?? ""}`);
-    return { fleetReport, lessons: [...left, ...failed].slice(0, 15), improve: null };
+    const recent = this.fleet
+      .listDesigns(50)
+      .filter((batch) => batch.brief.upgradeOf === null)
+      .flatMap((batch) => batch.propositions);
+    const rounds = this.repo.listBatches(100_000).length;
+    return {
+      fleetReport,
+      lessons: [...left, ...failed].slice(0, 15),
+      triedIdeas: triedIdeas(recent, TRIED_IDEAS_SHOWN),
+      focus: nextTheme(
+        recent.slice(0, TRIED_IDEAS_SHOWN).map((p) => p.rig),
+        rounds
+      ),
+      improve: null
+    };
   }
 
   /** Proven running boats, weakest first, that the night shift has not tried to improve lately. */
@@ -678,8 +695,7 @@ export class FleetDuties {
           instruments: [...FLEET_INSTRUMENTS],
           direction: "any",
           count: cfg.nightShiftCount,
-          notes:
-            "Night shift: fill the gaps in the fleet with ideas unlike the boats already sailing, and learn from the ideas that failed."
+          notes: `Night shift: ${research.focus ? `this round explores ${research.focus.title.toLowerCase()}. ` : ""}Fill the gaps in the fleet with ideas unlike the boats already sailing and unlike every idea already tried, and learn from the ideas that failed.`
         },
         research,
         null
@@ -699,6 +715,7 @@ export class FleetDuties {
           },
           {
             ...research,
+            focus: null,
             improve: {
               name: boat.name,
               rig: boat.rig,

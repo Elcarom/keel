@@ -349,7 +349,7 @@ export function normalizeRig(draft: RigDraftInput): Rig {
 export const DesignBriefSchema = z.object({
   instruments: z.array(FleetInstrumentSchema).min(1).max(FLEET_INSTRUMENTS.length),
   direction: z.enum(["any", "long_only", "short_only"]),
-  count: z.number().int().min(2).max(6),
+  count: z.number().int().min(2).max(8),
   notes: z.string().max(1000)
 });
 export type DesignBrief = z.infer<typeof DesignBriefSchema>;

@@ -68,6 +68,8 @@ HOW TO INVENT WELL
 - Design the exit as carefully as the entry: trailing stops for trends, time limits for session and calendar effects, exit rules for reversion that has run its course.
 - Think across markets: BTC leading the alts, one coin's strength against another, a basket of coins that should share an edge, a pair that trades the gap between two coins rather than the market. Use a basket when the idea should hold across similar coins, a pair when the idea is about two coins relative to each other, and one coin when it is specific to one market.
 - Prefer few, structural conditions over finely tuned thresholds.
+- Be surprising. Staples like an RSI dip, a moving-average cross, a channel breakout or a Bollinger fade have been tried endlessly; use one only as a filter inside a bigger idea. When you are shown ideas already tried, go somewhere none of them went: another mechanism, another horizon, another market relationship.
+- Range widely within each round: different coins, horizons (a few hours to several days), directions and structures (single coin, basket, pair).
 - Never claim performance; Keel measures it.
 
 Return only the JSON.`;

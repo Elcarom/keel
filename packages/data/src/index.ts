@@ -344,6 +344,51 @@ function switchOnFullAutonomy(db: DatabaseSyncType, nowMs: number): void {
   markDataMigration(db, FULL_AUTONOMY_MIGRATION, nowMs);
 }
 
+const QUICKER_RESEARCH_MIGRATION = "quicker-research-rounds";
+
+/**
+ * Research rounds ask for more ideas, more often (ADR-0037). Once per database, a saved config
+ * still on the old defaults (4 ideas a round, 30 minutes apart) moves to the new ones (6 ideas,
+ * 10 minutes apart). A value the operator chose is kept.
+ */
+function quickenResearch(db: DatabaseSyncType, nowMs: number): void {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY, applied_at_ms INTEGER NOT NULL)"
+  );
+  if (db.prepare("SELECT 1 FROM data_migrations WHERE name = ?").get(QUICKER_RESEARCH_MIGRATION)) {
+    return;
+  }
+  const row = db
+    .prepare("SELECT config_json FROM config_snapshots ORDER BY version DESC LIMIT 1")
+    .get();
+  if (row) {
+    const current = KeelConfigSchema.parse(JSON.parse(String(row["config_json"])) as unknown);
+    const fleet = current.fleet;
+    if (fleet.nightShiftCount === 4 || fleet.nightShiftGapMinutes === 30) {
+      const next = KeelConfigSchema.parse({
+        ...current,
+        fleet: {
+          ...fleet,
+          nightShiftCount: fleet.nightShiftCount === 4 ? 6 : fleet.nightShiftCount,
+          nightShiftGapMinutes: fleet.nightShiftGapMinutes === 30 ? 10 : fleet.nightShiftGapMinutes
+        }
+      });
+      db.prepare(
+        `INSERT INTO config_snapshots (config_hash, config_json, actor, reason, highest_risk_class, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(
+        computeConfigHash(next),
+        JSON.stringify(next),
+        "system:migration",
+        "Quicker research: 6 ideas a round, 10 minutes apart",
+        "safe",
+        nowMs
+      );
+    }
+  }
+  markDataMigration(db, QUICKER_RESEARCH_MIGRATION, nowMs);
+}
+
 export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDataStore {
   if (options.dbPath !== ":memory:") {
     mkdirSync(dirname(options.dbPath), { recursive: true });
@@ -427,8 +472,10 @@ export function createSqliteDataStore(options: SqliteDataStoreOptions): SqliteDa
   const existingCount = Number(existingCountRow?.["cnt"] ?? 0);
   if (existingCount > 0) {
     switchOnFullAutonomy(db, options.clock.nowMs());
+    quickenResearch(db, options.clock.nowMs());
   } else {
     markDataMigration(db, FULL_AUTONOMY_MIGRATION, options.clock.nowMs());
+    markDataMigration(db, QUICKER_RESEARCH_MIGRATION, options.clock.nowMs());
     const seedConfig = options.initialConfig ?? createDefaultConfig();
     const seedHash = computeConfigHash(seedConfig);
     db.prepare(

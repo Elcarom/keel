@@ -886,5 +886,29 @@
     "claim": "ADR-0036: The Autopilot scraps every proposition that can never sail and keeps a seaworthy lookalike for later.",
     "testFile": "packages/api/test/fleet-duties.test.ts",
     "testName": "scraps propositions that can never sail, and keeps a seaworthy lookalike for later"
+  },
+  {
+    "id": "CLAIM-ADR-0037-THEME",
+    "claim": "ADR-0037: Each research round explores the theme the recent ideas covered least, taking ties in turn.",
+    "testFile": "packages/api/test/research-themes.test.ts",
+    "testName": "sends the next round where recent ideas have been least, taking ties in turn"
+  },
+  {
+    "id": "CLAIM-ADR-0037-TRIED",
+    "claim": "ADR-0037: Claude sees the ideas already tried and whether they passed, never which checks failed.",
+    "testFile": "packages/api/test/research-themes.test.ts",
+    "testName": "lists ideas already tried with whether they passed, never which checks failed"
+  },
+  {
+    "id": "CLAIM-ADR-0037-PROMPT",
+    "claim": "ADR-0037: The Shipwright's request carries the ideas already tried and the round's focus.",
+    "testFile": "packages/ai/test/bot-designer.test.ts",
+    "testName": "shows Claude the ideas already tried and this round's focus"
+  },
+  {
+    "id": "CLAIM-ADR-0037-PACE",
+    "claim": "ADR-0037: An older database moves to 6 ideas a round, 10 minutes apart, once, keeping a pace the operator chose.",
+    "testFile": "packages/data/test/sqlite-storage.test.ts",
+    "testName": "moves an older database to quicker research rounds once, keeping a pace the operator chose"
   }
 ]

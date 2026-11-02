@@ -433,11 +433,11 @@ describe("Scheduled duties", () => {
     const { duties, calls, clock } = harness({ configure: constant });
     await duties.run();
     expect(calls.designed).toBe(1);
-    // Not again inside the 30-minute gap, then again once it has passed, at any hour
-    clock.advanceMs(20 * 60_000);
+    // Not again inside the 10-minute gap, then again once it has passed, at any hour
+    clock.advanceMs(8 * 60_000);
     await duties.run();
     expect(calls.designed).toBe(1);
-    clock.advanceMs(15 * 60_000);
+    clock.advanceMs(3 * 60_000);
     await duties.run();
     expect(calls.designed).toBe(2);
 
@@ -684,9 +684,16 @@ describe("The night shift's research round", () => {
     );
     // Only that the idea failed: never which checks, or by how much (ADR-0035)
     expect(gaps?.research.lessons).toEqual(["Idea s1 (momentum, BTC) did not pass its sea trial"]);
+    // Every idea already tried, so Claude does not offer it again, and where to look next
+    expect(gaps?.research.triedIdeas).toEqual([
+      "Idea s1 (BTC): Rides the wind. Built from price and indicators alone. Did not pass its sea trial."
+    ]);
+    expect(gaps?.research.focus?.title).toBe("Funding and crowding");
+    expect(gaps?.notes).toMatch(/^Night shift: this round explores funding and crowding\./);
     expect(upgrade?.research.improve?.name).toBe("Leaky Hull");
+    expect(upgrade?.research.focus).toBeNull();
     expect(duties.status().find((d) => d.duty === "nightShift")?.note).toBe(
-      "Drafted 4 new ideas; Upgrades of Leaky Hull"
+      "Drafted 6 new ideas; Upgrades of Leaky Hull"
     );
   });
 
