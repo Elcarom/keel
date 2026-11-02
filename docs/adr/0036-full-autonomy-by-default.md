@@ -20,6 +20,7 @@ The loop already existed, but four things still needed the operator:
 - **On by default.** The night shift (around the clock), the Autopilot, the drift watch, stake rebalancing and the digest all start on.
 - **The Autopilot opens its own wallet.** If no wallet has the Autopilot's name, it opens a paper wallet with 10,000 USDT and says so on Discord.
 - **The Autopilot retires what fails.** A boat in the Autopilot's wallet that the drift watch catches is retired, not docked. Its stake goes back to the wallet and its place goes to the next seaworthy idea. A boat the operator launched in another wallet is still only docked, for the operator to decide.
+- **The Autopilot scraps what can never sail.** Before it launches anything, it discards every settled proposition the Autopilot could never launch: one whose sea trial could not run, one that is not seaworthy, one without a passed Blind Trial on OKX history, and one under the Autopilot's minimum score. A seaworthy lookalike stays on the slipway, since it may sail once its twin leaves. A scrapped idea keeps its verdict, so the night shift still learns from it.
 - **Existing databases switch over once.** On start-up, a one-off migration saves a new config version with the night shift (around the clock), the Autopilot and rebalancing on. Every other setting is kept. A new database keeps whatever config it is seeded with. The operator can turn any duty off again, and the migration never runs a second time.
 
 ## Consequences

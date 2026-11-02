@@ -157,7 +157,8 @@ function harness(options: {
     designed: 0,
     briefs: [] as { notes: string; research: DesignResearch; upgradeOf: string | null }[],
     rebalanced: [] as string[],
-    walletsOpened: [] as { name: string; startingBalanceUsdt: string }[]
+    walletsOpened: [] as { name: string; startingBalanceUsdt: string }[],
+    discarded: [] as string[]
   };
   const port: FleetDutiesPort = {
     overview: () => ({
@@ -189,6 +190,9 @@ function harness(options: {
     createWallet: (name, startingBalanceUsdt) => {
       calls.walletsOpened.push({ name, startingBalanceUsdt });
       return { walletId: `w-${name}` };
+    },
+    discard: (propositionId) => {
+      calls.discarded.push(propositionId);
     },
     pause: (botId, reason) => {
       calls.paused.push({ botId, reason });
@@ -328,6 +332,38 @@ describe("Autopilot", () => {
     expect(calls.launched).toEqual([
       { propositionId: "p2", name: "Idea p2", allocationUsdt: "500.00" }
     ]);
+  });
+
+  it("scraps propositions that can never sail, and keeps a seaworthy lookalike for later", async () => {
+    const { duties, calls } = harness({
+      configure: AUTOPILOT,
+      wallets: [AUTOPILOT_WALLET],
+      propositions: [
+        proposition("sinks", { verdict: "sinks", score: 20 }),
+        proposition("choppy", { verdict: "choppy", score: 50 }),
+        proposition("promising", { verdict: "promising", score: 64 }),
+        proposition("low", { score: 60 }),
+        proposition("unblind", { score: 90, blindTrial: null }),
+        proposition("synthetic", { score: 90, dataSource: "synthetic" }),
+        proposition("twin", {
+          score: 95,
+          lookalike: { name: "X", kind: "boat", correlation: 0.9 }
+        }),
+        proposition("good", { score: 80 }),
+        { ...proposition("broken"), status: "failed", assessment: null, error: "no history" }
+      ]
+    });
+    await duties.run();
+    expect(calls.discarded).toEqual([
+      "sinks",
+      "choppy",
+      "promising",
+      "low",
+      "unblind",
+      "synthetic",
+      "broken"
+    ]);
+    expect(calls.launched.map((l) => l.propositionId)).toEqual(["good"]);
   });
 
   it("never launches a copy of a boat already sailing", async () => {

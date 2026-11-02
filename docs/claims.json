@@ -880,5 +880,11 @@
     "claim": "ADR-0036: An older database is switched to full autonomy once; the operator can turn it off and it stays off.",
     "testFile": "packages/data/test/sqlite-storage.test.ts",
     "testName": "switches an older database's Fleet to full autonomy once, and leaves new ones as seeded"
+  },
+  {
+    "id": "CLAIM-ADR-0036-SCRAP",
+    "claim": "ADR-0036: The Autopilot scraps every proposition that can never sail and keeps a seaworthy lookalike for later.",
+    "testFile": "packages/api/test/fleet-duties.test.ts",
+    "testName": "scraps propositions that can never sail, and keeps a seaworthy lookalike for later"
   }
 ]

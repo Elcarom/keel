@@ -189,7 +189,7 @@ One of the Fleet's unattended, rule-based jobs that run after every scheduler st
 _Avoid_: Bot, agent, automation
 
 **Autopilot**:
-The Fleet Duty that manages the Boats in the Autopilot wallet, whose balance is its whole cap. It opens that wallet if there is none, launches seaworthy, original Propositions until the fleet is full, retires any of its Boats the Drift Watch catches, and replaces the weakest proven Boat with a Proposition or Upgrade whose score clearly beats its Standing.
+The Fleet Duty that manages the Boats in the Autopilot wallet, whose balance is its whole cap. It opens that wallet if there is none, scraps every Proposition that can never sail, launches seaworthy, original Propositions until the fleet is full, retires any of its Boats the Drift Watch catches, and replaces the weakest proven Boat with a Proposition or Upgrade whose score clearly beats its Standing.
 _Avoid_: Auto-trader
 
 **Night Shift**:

@@ -53,6 +53,7 @@ export interface FleetDutiesPort {
     input: { readonly name: string; readonly walletId: string; readonly allocationUsdt: string }
   ): Bot;
   createWallet(name: string, startingBalanceUsdt: string): { readonly walletId: string };
+  discard(propositionId: string): unknown;
   pause(botId: string, reason: string): Bot;
   retire(botId: string, reason: string): Bot;
   design(
@@ -351,7 +352,6 @@ export class FleetDuties {
    * gate and a passed Blind Trial on OKX history; older verdicts without one never sail (ADR-0035).
    */
   private candidates(): Candidate[] {
-    const cfg = this.getConfig().fleet;
     return this.fleet
       .listDesigns(50)
       .flatMap((batch) =>
@@ -361,18 +361,37 @@ export class FleetDuties {
           upgradeOf: batch.brief.upgradeOf
         }))
       )
-      .filter(({ proposition: p }) => {
-        const a = p.assessment;
-        return (
-          p.status === "ranked" &&
-          a !== null &&
-          a.verdict === "seaworthy" &&
-          a.dataSource === "okx" &&
-          a.blindTrial?.outcome === "passed" &&
-          a.score >= cfg.autopilotMinScore
-        );
-      })
+      .filter(({ proposition: p }) => p.status === "ranked" && this.canSail(p))
       .sort((x, y) => y.score - x.score);
+  }
+
+  /** Whether the Autopilot may ever launch this proposition, lookalikes aside. */
+  private canSail(p: Proposition): boolean {
+    const a = p.assessment;
+    return (
+      a !== null &&
+      a.verdict === "seaworthy" &&
+      a.dataSource === "okx" &&
+      a.blindTrial?.outcome === "passed" &&
+      a.score >= this.getConfig().fleet.autopilotMinScore
+    );
+  }
+
+  /**
+   * Scraps every settled proposition that can never sail (ADR-0036): one whose sea trial could not
+   * run, one that is not seaworthy, has no passed Blind Trial on OKX history, or is under the
+   * Autopilot's minimum score. A seaworthy lookalike stays, since it may sail once its twin leaves.
+   * The night shift still learns from what was scrapped. Returns the names scrapped.
+   */
+  private scrap(): string[] {
+    const scrapped: string[] = [];
+    for (const p of this.fleet.listDesigns(50).flatMap((batch) => batch.propositions)) {
+      const never = p.status === "failed" || (p.status === "ranked" && !this.canSail(p));
+      if (!never) continue;
+      this.fleet.discard(p.propositionId);
+      scrapped.push(p.rig.name);
+    }
+    return scrapped;
   }
 
   /**
@@ -399,11 +418,19 @@ export class FleetDuties {
    * Keeps the Autopilot wallet's fleet at its best (ADR-0033). In order: an Upgrade that clearly
    * beats the boat it improves on takes its place; a fleet with room launches the best original
    * proposition; a full fleet swaps its weakest proven boat for a proposition that clearly
-   * out-scores it. At most one boat is replaced a day.
+   * out-scores it. At most one boat is replaced a day. Propositions that can never sail are
+   * scrapped first.
    */
   private autopilot(): void {
     const cfg = this.getConfig().fleet;
     const now = this.clock.nowMs();
+    const scrapped = this.scrap();
+    if (scrapped.length > 0) {
+      this.done(
+        "autopilot",
+        `Scrapped ${scrapped.length} proposition${scrapped.length === 1 ? "" : "s"} that cannot sail`
+      );
+    }
     let overview = this.fleet.overview();
     if (!overview.wallets.some((w) => w.name === cfg.autopilotWalletName)) {
       this.fleet.createWallet(cfg.autopilotWalletName, AUTOPILOT_OPENING_USDT);
@@ -569,7 +596,8 @@ export class FleetDuties {
       .filter((p) => p.createdAtMs >= now - 30 * DAY_MS)
       .flatMap((p) => {
         const a = p.assessment;
-        if (p.status === "failed") {
+        // A scrapped proposition keeps its error or verdict, so its lesson is not lost
+        if (p.status === "failed" || (a === null && p.error)) {
           return [
             `${p.rig.name} (${p.rig.archetype}, ${coin(p)}) could not be tested: ${p.error ?? "unknown error"}`
           ];
