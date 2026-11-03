@@ -8,6 +8,7 @@ import {
   type BotArchetype,
   type Rig,
   type ConfirmedBar,
+  type FleetInstrument,
   type SeaTrial,
   type SeaTrialCheck,
   type SeaTrialCheckKey,
@@ -42,9 +43,15 @@ const WEEK_MS = 7 * DAY_MS;
  * Correlation of two weekly equity curves' week-on-week changes, or null when either is too
  * flat or too short to say (ADR-0030).
  */
-export function weeklyCorrelation(a: readonly number[], b: readonly number[]): number | null {
-  const n = Math.min(a.length, b.length);
+export function weeklyCorrelation(
+  longer: readonly number[],
+  other: readonly number[]
+): number | null {
+  // Both curves end on the window's last week; compare the weeks they share
+  const n = Math.min(longer.length, other.length);
   if (n < 12) return null;
+  const a = longer.slice(longer.length - n);
+  const b = other.slice(other.length - n);
   const da: number[] = [];
   const db: number[] = [];
   for (let i = 1; i < n; i++) {
@@ -68,12 +75,31 @@ export function weeklyCorrelation(a: readonly number[], b: readonly number[]): n
 }
 
 /**
- * The backtest window: the two years before 2024-12-01. In-sample data, clear of the sealed
- * holdout (2025 onward).
+ * The longest backtest window: the four years before 2024-12-01 (ADR-0038). In-sample data, clear
+ * of the sealed holdout (2025 onward). A trial whose coins OKX listed later starts later.
  */
 export const BACKTEST_TO_TS = 1_733_011_200_000; // 2024-12-01 00:00:00 UTC
-export const BACKTEST_DAYS = 730;
-export const BACKTEST_FROM_TS = BACKTEST_TO_TS - BACKTEST_DAYS * DAY_MS;
+export const BACKTEST_DAYS = 1461;
+export const BACKTEST_FROM_TS = BACKTEST_TO_TS - BACKTEST_DAYS * DAY_MS; // 2020-12-01
+
+/** The first full day of OKX hourly history, for the coins OKX listed after the window opens. */
+export const OKX_HISTORY_FROM: Readonly<Partial<Record<FleetInstrument, number>>> = {
+  "SOL-USDT-SWAP": Date.UTC(2021, 0, 23),
+  "BNB-USDT-SWAP": Date.UTC(2022, 11, 24)
+};
+
+/**
+ * A sea trial's window: as much of the four years as every market it reads has OKX history for,
+ * so a trial never waits on history that does not exist.
+ */
+export function trialWindowFor(markets: readonly FleetInstrument[]): {
+  readonly fromTs: number;
+  readonly toTs: number;
+  readonly days: number;
+} {
+  const fromTs = Math.max(BACKTEST_FROM_TS, ...markets.map((m) => OKX_HISTORY_FROM[m] ?? 0));
+  return { fromTs, toTs: BACKTEST_TO_TS, days: Math.round((BACKTEST_TO_TS - fromTs) / DAY_MS) };
+}
 
 /**
  * The Blind Trial's year: 2025, the sealed holdout, which no sea trial and no Shipwright prompt
@@ -545,7 +571,9 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
   const weeklyEquityPct: number[] = [];
   let cursor = 0;
   let equityNow = initial;
-  for (let ts = main.fromTs; ts <= main.toTs; ts += WEEK_MS) {
+  // Counted back from the window's end, so trials of different lengths share the same weeks
+  const firstWeek = main.toTs - Math.floor((main.toTs - main.fromTs) / WEEK_MS) * WEEK_MS;
+  for (let ts = firstWeek; ts <= main.toTs; ts += WEEK_MS) {
     while (cursor < curve.length && (curve[cursor]?.ts ?? Infinity) <= ts) {
       equityNow = curve[cursor]?.equity ?? equityNow;
       cursor++;

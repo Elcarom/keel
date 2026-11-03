@@ -23,7 +23,7 @@ const NOW_MS = 1_793_000_000_000;
 
 const HOUR_MS = 3_600_000;
 /** Where the stand-in history starts; every sea-trial and Blind Trial window lies after it. */
-const HISTORY_FROM_TS = Date.UTC(2022, 0, 1);
+const HISTORY_FROM_TS = Date.UTC(2020, 10, 1);
 /** Where it ends: the live hours after it come from each test's own bars. */
 const HISTORY_TO_TS = Date.UTC(2026, 0, 1);
 const BASE_PRICES: Readonly<Record<string, number>> = {
@@ -192,9 +192,10 @@ describe("Fleet API", () => {
     for (const p of batch.propositions) {
       expect(p.status).toBe("ranked");
       expect(p.assessment?.dataSource).toBe("okx");
-      // In-sample only: two years ending before the sealed holdout (2025-01-01)
+      // In-sample only: up to four years, ending before the sealed holdout (2025-01-01)
       expect(p.assessment?.toTs).toBeLessThanOrEqual(1_735_689_600_000);
-      expect(p.assessment?.days).toBe(730);
+      expect(p.assessment?.days).toBeGreaterThanOrEqual(700);
+      expect(p.assessment?.days).toBeLessThanOrEqual(1461);
 
       // Every proposition goes through the full sea trial
       const trial = p.assessment?.seaTrial;
@@ -218,7 +219,7 @@ describe("Fleet API", () => {
       ]);
     }
     expect(new Set(batch.propositions.map((p) => p.rig.name)).size).toBe(3);
-  }, 60_000);
+  }, 180_000);
 
   it("waits for OKX history rather than trial a stand-in, and tries again every hour", async () => {
     let online = false;
@@ -286,7 +287,7 @@ describe("Fleet API", () => {
       expect(p.rig.instrumentId).toBe("SOL-USDT-SWAP");
       expect(p.assessment?.seaTrial?.sibling?.instrumentId).toBe("AVAX-USDT-SWAP");
     }
-  }, 60_000);
+  }, 180_000);
 
   it("writes a chat prompt carrying the brief, the language and the names already taken", async () => {
     const { call, designAndWait, launch } = await setup();
@@ -310,7 +311,7 @@ describe("Fleet API", () => {
     // Baskets and other markets are on offer, not just one coin
     expect(prompt).toContain('"basket" ([] or up to 4 more coins)');
     expect(prompt).toContain("Markets the rules may read as signals: any of Keel's ten");
-  }, 60_000);
+  }, 180_000);
 
   it("imports a chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
     const { call } = await setup();
@@ -386,7 +387,7 @@ describe("Fleet API", () => {
     expect(allBad.status).toBe(200);
     expect(allBad.body["batch"]).toBeNull();
     expect(allBad.body["rejected"]).toHaveLength(1);
-  }, 60_000);
+  }, 180_000);
 
   it("evens out the stakes of a wallet's flat boats on Monday, moving no money out of the wallet", async () => {
     // The test clock is Monday 2026-10-26, 07:33 UTC
@@ -455,7 +456,7 @@ describe("Fleet API", () => {
       kind: "proposition",
       correlation: 1
     });
-    expect(byName.get("First Mate")?.assessment?.seaTrial?.weeklyEquityPct.length).toBe(105);
+    expect(byName.get("First Mate")?.assessment?.seaTrial?.weeklyEquityPct.length).toBe(209);
     expect(byName.get("First Mate")?.assessment?.seaTrial?.avgHoldHours).toBeGreaterThan(0);
   }, 120_000);
 
@@ -709,7 +710,7 @@ describe("Fleet API", () => {
     expect((await overview()).bots[0]?.lastBarAtMs).toBe(
       Math.floor(clock.nowMs() / 3_600_000) * 3_600_000
     );
-  }, 90_000);
+  }, 180_000);
 
   it("launches a ranked proposition as a paper bot funded from the wallet", async () => {
     const { designAndWait, launch, overview } = await setup();
@@ -728,7 +729,7 @@ describe("Fleet API", () => {
 
     // The same proposition cannot become two bots
     expect((await launch(batch, "100", "Another")).status).toBe(409);
-  }, 60_000);
+  }, 180_000);
 
   it("refuses an allocation larger than the wallet holds", async () => {
     const { designAndWait, launch } = await setup();
@@ -736,7 +737,7 @@ describe("Fleet API", () => {
     const res = await launch(batch, "10000.01");
     expect(res.status).toBe(400);
     expect(String(res.body["error"])).toMatch(/only has 10000.00 USDT/);
-  }, 60_000);
+  }, 180_000);
 
   it("trades only confirmed bars that close after launch, and retiring returns equity to the wallet", async () => {
     const { designAndWait, launch, call, clock, dataStore, overview } = await setup();
@@ -772,7 +773,7 @@ describe("Fleet API", () => {
       0.01
     );
     expect(wallet.allocatedUsdt).toBe("0.00000000");
-  }, 60_000);
+  }, 180_000);
 
   it("pauses, resumes and deletes a bot", async () => {
     const { designAndWait, launch, call, overview } = await setup();
@@ -792,7 +793,7 @@ describe("Fleet API", () => {
     expect(fleet.bots).toEqual([]);
     // Deleting retires first, so the allocation is back in the wallet
     expect(fleet.wallets[0]?.availableUsdt).toBe("10000.00000000");
-  }, 60_000);
+  }, 180_000);
 
   it("opens and tops up extra paper wallets", async () => {
     const { call } = await setup();

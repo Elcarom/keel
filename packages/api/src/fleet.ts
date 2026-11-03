@@ -70,6 +70,7 @@ import {
   BLIND_DAYS,
   BLIND_FROM_TS,
   BLIND_TO_TS,
+  trialWindowFor,
   DEFAULT_SEA_TRIAL_SETTINGS,
   REPLAYS_PER_SEA_TRIAL,
   assessSeaTrial,
@@ -758,14 +759,21 @@ export class FleetService {
     const markets = rigMarkets(b);
     const references = referenceMarketsOf(b);
     const needed = [...new Set([...markets, ...references])];
+    const legs = pairLegs(b);
+    const siblingPair = legs ? siblingPairFor(legs, references) : null;
+    const siblingId = legs ? null : siblingFor(markets, references);
+    // Up to four years: as far back as every market this trial reads has OKX history (ADR-0038)
+    const window: TrialWindow = {
+      ...trialWindowFor([...needed, ...(siblingPair ?? []), ...(siblingId ? [siblingId] : [])]),
+      blind: false
+    };
 
     for (const market of needed) {
-      say(`charting ${BACKTEST_DAYS} days of ${coin(market)} history`);
-      await this.ensureBacktestData(market);
+      say(`charting ${window.days} days of ${coin(market)} history`);
+      await this.ensureBacktestData(market, window);
       await this.breathe();
     }
 
-    const legs = pairLegs(b);
     say(
       legs
         ? `full backtest of ${coin(legs[0])} against ${coin(legs[1])}, cost stress and walk-forward`
@@ -773,7 +781,7 @@ export class FleetService {
           ? `full backtest on ${markets.map(coin).join(", ")}, cost stress and walk-forward`
           : "full backtest, cost stress and walk-forward"
     );
-    const main = await this.replayBoat(b, proposition.propositionId, trials, true);
+    const main = await this.replayBoat(b, proposition.propositionId, trials, true, window);
 
     const neighbours: SeaTrialVariant[] = [];
     for (const [i, n] of neighbourRigs(b).entries()) {
@@ -781,43 +789,44 @@ export class FleetService {
       neighbours.push(
         variantOf(
           n.label,
-          await this.replayBoat(n.rig, `${proposition.propositionId}_n${i}`, trials, false),
+          await this.replayBoat(n.rig, `${proposition.propositionId}_n${i}`, trials, false, window),
           initial
         )
       );
     }
 
     let sibling: (SeaTrialVariant & { instrumentId: string }) | null = null;
-    if (legs) {
+    if (siblingPair) {
       // A pair travels well if the same rules work on another pair of coins
-      const pair = siblingPairFor(legs, references);
+      const pair = siblingPair;
       const label = `${coin(pair[0])}/${coin(pair[1])}`;
       say(`sailing the same course on ${label}`);
       try {
-        for (const m of pair) await this.ensureBacktestData(m);
+        for (const m of pair) await this.ensureBacktestData(m, window);
         await this.breathe();
         const run = this.replayPair(
           { ...b, instrumentId: pair[0], pairWith: pair[1] },
           pair,
           `${proposition.propositionId}_sib`,
           trials,
-          false
+          false,
+          window
         );
         sibling = { ...variantOf(label, run, initial), instrumentId: label };
       } catch {
         // No sibling data: the check fails rather than the whole trial
       }
-    } else {
-      const siblingId = siblingFor(markets, references);
+    } else if (siblingId) {
       say(`sailing the same course on ${coin(siblingId)}`);
       try {
-        await this.ensureBacktestData(siblingId);
+        await this.ensureBacktestData(siblingId, window);
         await this.breathe();
         const run = this.replay(
           { ...b, instrumentId: siblingId, basket: [] },
           `${proposition.propositionId}_sib`,
           trials,
-          false
+          false,
+          window
         );
         sibling = { ...variantOf(siblingId, run, initial), instrumentId: siblingId };
       } catch {
@@ -832,8 +841,8 @@ export class FleetService {
       repo.getConfirmedBarsInRange({
         instrumentId,
         timeframe: "1H",
-        fromOpenTs: BACKTEST_FROM_TS,
-        toCloseTs: BACKTEST_TO_TS
+        fromOpenTs: window.fromTs,
+        toCloseTs: window.toTs
       })
     );
     const bars = legs
@@ -845,10 +854,10 @@ export class FleetService {
       (instrumentId) =>
         repo.getSettledFundingInRange({
           instrumentId,
-          fromTs: BACKTEST_FROM_TS,
-          toTs: BACKTEST_TO_TS
+          fromTs: window.fromTs,
+          toTs: window.toTs
         }).length >=
-        ((BACKTEST_DAYS * 24) / 8) * 0.95
+        ((window.days * 24) / 8) * 0.95
     );
     const inSample = assessSeaTrial({
       main,
@@ -859,7 +868,7 @@ export class FleetService {
       funding: settled ? "settled" : "assumed",
       gate: this.researchGate(),
       trials,
-      days: BACKTEST_DAYS,
+      days: window.days,
       seed: seedFromString(proposition.propositionId),
       settings: this.seaTrialSettings
     });

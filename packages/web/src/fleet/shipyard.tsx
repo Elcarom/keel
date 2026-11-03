@@ -172,7 +172,7 @@ export function PropositionCard({
               {proposition.assessment?.lookalike && (
                 <span
                   data-testid="lookalike-badge"
-                  title="Its two-year backtest moved almost in step with this one, week by week: launching both doubles the same bet."
+                  title="Its backtest moved almost in step with this one, week by week: launching both doubles the same bet."
                   className="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] font-semibold text-amber-200"
                 >
                   ≈ Sails like {proposition.assessment.lookalike.name} (

@@ -12,6 +12,7 @@ import {
   combineRuns,
   neighbourRigs,
   passesBlindTrial,
+  trialWindowFor,
   weeklyCorrelation,
   withBlindTrial,
   type SeaTrialInput
@@ -213,7 +214,34 @@ describe("Basket sea trials", () => {
   });
 });
 
+describe("The sea trial's window", () => {
+  it("covers up to four years, from where every market it reads has OKX history", () => {
+    const DAY = 24 * HOUR_MS;
+    // December 2020 to December 2024
+    expect(trialWindowFor(["BTC-USDT-SWAP", "ETH-USDT-SWAP"])).toEqual({
+      fromTs: Date.UTC(2020, 11, 1),
+      toTs: Date.UTC(2024, 11, 1),
+      days: 1461
+    });
+    // OKX listed SOL in January 2021 and BNB in December 2022
+    expect(trialWindowFor(["SOL-USDT-SWAP", "AVAX-USDT-SWAP"]).fromTs).toBe(Date.UTC(2021, 0, 23));
+    const withBnb = trialWindowFor(["ETH-USDT-SWAP", "BNB-USDT-SWAP"]);
+    expect(withBnb.fromTs).toBe(Date.UTC(2022, 11, 24));
+    expect(withBnb.days).toBe((Date.UTC(2024, 11, 1) - Date.UTC(2022, 11, 24)) / DAY);
+    // Never past the sealed holdout
+    expect(trialWindowFor(["BTC-USDT-SWAP"]).toTs).toBeLessThan(BLIND_FROM_TS);
+  });
+});
+
 describe("Lookalikes", () => {
+  it("compares a long trial with a short one over the weeks they share, which end together", () => {
+    const wave = Array.from({ length: 200 }, (_, i) => Math.sin(i / 3) * 5 + i * 0.2);
+    // A trial half as long, rebased to its own start, still moves in step with the long one
+    const shortTail = wave.slice(100).map((v) => v - (wave[100] ?? 0));
+    expect(weeklyCorrelation(wave, shortTail)).toBe(1);
+    expect(weeklyCorrelation(shortTail, wave)).toBe(1);
+  });
+
   it("measures how closely two weekly equity curves move together", () => {
     const wave = Array.from({ length: 40 }, (_, i) => Math.sin(i / 3) * 5 + i * 0.2);
     expect(weeklyCorrelation(wave, wave)).toBe(1);

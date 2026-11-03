@@ -910,5 +910,17 @@
     "claim": "ADR-0037: An older database moves to 6 ideas a round, 10 minutes apart, once, keeping a pace the operator chose.",
     "testFile": "packages/data/test/sqlite-storage.test.ts",
     "testName": "moves an older database to quicker research rounds once, keeping a pace the operator chose"
+  },
+  {
+    "id": "CLAIM-ADR-0038-WINDOW",
+    "claim": "ADR-0038: A sea trial covers up to four years, from where every market it reads has OKX history, and never reaches the holdout.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "covers up to four years, from where every market it reads has OKX history"
+  },
+  {
+    "id": "CLAIM-ADR-0038-LOOKALIKE",
+    "claim": "ADR-0038: Trials of different lengths are compared over the weeks they share.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "compares a long trial with a short one over the weeks they share, which end together"
   }
 ]

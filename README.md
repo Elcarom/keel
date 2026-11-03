@@ -2,7 +2,7 @@
 
 **Keel** is a self-hosted lab for systematic crypto-perpetuals strategies, run as one container on your own server: Unraid, or any Docker host. A keel keeps a ship steady, and the whole product follows the sea:
 
-- **The Shipyard** drafts strategy **Propositions**. The **Shipwright** has Claude, on your subscription, write brand-new entry rules; the **Shipwright via a chat** does the same with any model you choose and brings its answer back as a file. Every Proposition then faces a **Sea Trial** before it is ranked: two years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
+- **The Shipyard** drafts strategy **Propositions**. The **Shipwright** has Claude, on your subscription, write brand-new entry rules; the **Shipwright via a chat** does the same with any model you choose and brings its answer back as a file. Every Proposition then faces a **Sea Trial** before it is ranked: up to four years of hourly data, doubled costs, walk-forward, nudged settings and a sibling market.
 - **The Fleet** is where launched **Boats** paper-trade. Each Boat runs one Proposition on one coin, a **Basket** of up to five, or a **Pair Boat** that holds one coin against another, from its own **Boat Book** and stake.
 - **The Treasury** holds the paper **Wallets** that fund the Fleet.
 - **The Engine Room** links Claude and Discord, switches on the Fleet's autonomy, and holds the Kill Switch, backups and the audit trail.
@@ -163,7 +163,7 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 
 ## A tour of the ship
 
-- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a two-year **Sea Trial** on real OKX prices (and settled funding where OKX still has it), and is ranked: seaworthy, promising, choppy or sinks. Only a design that clears the research gate and then passes a **Blind Trial** on 2025, a year the Sea Trial and the Shipwright never see, is seaworthy. When OKX is out of reach, trials wait and retry hourly. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
+- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a **Sea Trial** of up to four years (December 2020 to December 2024, shorter for coins OKX listed later; [ADR-0038](./docs/adr/0038-four-year-sea-trials.md)) on real OKX prices (and settled funding where OKX still has it), and is ranked: seaworthy, promising, choppy or sinks. Only a design that clears the research gate and then passes a **Blind Trial** on 2025, a year the Sea Trial and the Shipwright never see, is seaworthy. When OKX is out of reach, trials wait and retry hourly. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
 - **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
 - **Treasury:** the paper wallets that fund the boats.
 - **Logbook:** recent trades across the Fleet, and what the unattended duties have done.
