@@ -257,11 +257,11 @@ The examination every Proposition faces before it is ranked: its backtest on rea
 _Avoid_: Backtest (a Sea Trial contains several), audition
 
 **Research Gate**:
-The bar a design must clear before it may face a Blind Trial: enough trades, a positive average trade at doubled costs, a Sharpe ratio that survives the luck adjustment for every backtest run, beating holding and most random entries, and a shallow worst dip. One standard for research replays and the Fleet alike.
+The bar a design must clear before it may face a Blind Trial: enough trades, a positive average trade at doubled costs, a Sharpe ratio of at least 1, beating holding and most random entries, and a shallow worst dip. The luck adjustment for every independent idea tried is scored but does not block; the Blind Trial is the test of luck. One standard for research replays and the Fleet alike.
 _Avoid_: Strict gate, replay gate (as if separate from seaworthy)
 
 **Blind Trial**:
-A single replay of a design that cleared the Research Gate on a year no Sea Trial and no Shipwright prompt ever sees, judged by a rule fixed beforehand. Only its outcome is kept, never its numbers, and the Fleet may run only a set number of them.
+A single replay of a design that cleared the Research Gate on a year no Sea Trial and no Shipwright prompt ever sees, judged by a rule fixed beforehand: enough trades, the Research Gate's Sharpe ratio, a positive average trade at doubled costs and a shallow worst dip. Only its outcome is kept, never its numbers, and the Fleet may run only a set number of them.
 _Avoid_: Out-of-sample check (the Sea Trial's later folds are not unseen), holdout test, validation run
 
 **Verdict**:

@@ -72,11 +72,11 @@ import {
   BLIND_TO_TS,
   trialWindowFor,
   DEFAULT_SEA_TRIAL_SETTINGS,
-  REPLAYS_PER_SEA_TRIAL,
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
   earnsBlindTrial,
+  effectiveTrials,
   neighbourRigs,
   passesBlindTrial,
   variantOf,
@@ -492,12 +492,14 @@ export class FleetService {
 
   private async assessBatch(batchId: string): Promise<void> {
     const pending = this.repo.listPropositions(batchId).filter((p) => p.status === "assessing");
-    // Every backtest of every idea ever drafted counts as a trial: the main run, its nudged
-    // versions and its sibling market. The more looks at the same history, the more luck is
-    // discounted (ADR-0035)
-    const trials =
-      Math.max(this.repo.listPropositions(batchId).length, this.repo.countPropositions()) *
-      REPLAYS_PER_SEA_TRIAL;
+    // Every idea ever drafted is a look at the same history, ideas that move alike counted as one
+    // (ADR-0039)
+    const trials = effectiveTrials(
+      this.repo
+        .listBatches(100_000)
+        .flatMap((batch) => this.repo.listPropositions(batch.batchId))
+        .map((p) => p.assessment?.seaTrial?.weeklyEquityPct ?? [])
+    );
     this.waiting.delete(batchId);
     try {
       for (const [index, proposition] of pending.entries()) {

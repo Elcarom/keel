@@ -1,4 +1,5 @@
 import {
+  LOOKALIKE_CORRELATION,
   SEALED_HOLDOUT_END_TS,
   SEALED_HOLDOUT_START_TS,
   ScaledDecimal,
@@ -109,11 +110,58 @@ export const BLIND_FROM_TS = SEALED_HOLDOUT_START_TS;
 export const BLIND_TO_TS = SEALED_HOLDOUT_END_TS - 1;
 export const BLIND_DAYS = 365;
 
+/** Ideas the trial count clusters at most; past it, a fixed sample stands in for the rest. */
+const TRIAL_CLUSTER_SAMPLE = 2_000;
+/** The weeks two ideas are compared over: the last two years, which every trial window holds. */
+const TRIAL_COMPARE_WEEKS = 104;
+
+/** A curve's last weeks as week-on-week changes scaled to unit length, or null if flat or short. */
+function unitChanges(curve: readonly number[]): Float64Array | null {
+  if (curve.length < TRIAL_COMPARE_WEEKS + 1) return null;
+  const tail = curve.slice(curve.length - TRIAL_COMPARE_WEEKS - 1);
+  const changes = new Float64Array(TRIAL_COMPARE_WEEKS);
+  for (let i = 0; i < TRIAL_COMPARE_WEEKS; i++) changes[i] = (tail[i + 1] ?? 0) - (tail[i] ?? 0);
+  const mean = changes.reduce((acc, v) => acc + v, 0) / TRIAL_COMPARE_WEEKS;
+  let norm = 0;
+  for (let i = 0; i < TRIAL_COMPARE_WEEKS; i++) {
+    const v = (changes[i] ?? 0) - mean;
+    changes[i] = v;
+    norm += v * v;
+  }
+  if (norm < 1e-9) return null;
+  const scale = 1 / Math.sqrt(norm);
+  for (let i = 0; i < TRIAL_COMPARE_WEEKS; i++) changes[i] = (changes[i] ?? 0) * scale;
+  return changes;
+}
+
 /**
- * Backtests behind every sea trial: the main run, four nudged versions and the sibling market.
- * Each one is a look at the same history, so each counts towards the luck adjustment.
+ * How many independent ideas the luck adjustment counts (ADR-0039): one per idea ever drafted,
+ * except that ideas whose weekly curves move as one bet (correlated at the Lookalike threshold or
+ * more) count once. The nudged versions and the sibling market check an idea and are never chosen
+ * among, so they do not count. An idea without a curve to compare, not yet trialled or never
+ * trading, counts in full.
  */
-export const REPLAYS_PER_SEA_TRIAL = 6;
+export function effectiveTrials(curves: readonly (readonly number[])[]): number {
+  const vectors = curves.map(unitChanges);
+  const comparable = vectors.filter((v): v is Float64Array => v !== null);
+  const uncomparable = vectors.length - comparable.length;
+  // A fixed stride through the ideas, so the same ideas always give the same count
+  const stride = Math.max(1, Math.ceil(comparable.length / TRIAL_CLUSTER_SAMPLE));
+  const sample = comparable.filter((_, i) => i % stride === 0);
+  const leaders: Float64Array[] = [];
+  for (const v of sample) {
+    const alike = leaders.some((l) => {
+      let dot = 0;
+      for (let i = 0; i < TRIAL_COMPARE_WEEKS; i++) dot += (l[i] ?? 0) * (v[i] ?? 0);
+      return dot >= LOOKALIKE_CORRELATION;
+    });
+    if (!alike) leaders.push(v);
+  }
+  // A sample finds fewer twins than the whole, so scaling it up never undercounts
+  const clusters =
+    sample.length === 0 ? 0 : Math.round((leaders.length / sample.length) * comparable.length);
+  return Math.max(1, clusters + uncomparable);
+}
 
 /**
  * OKX's public API keeps only recent funding history, so most of the window has none. Every open
@@ -368,7 +416,9 @@ interface CheckSpec {
 /**
  * Weights sum to 60; the other 40 points come from the headline performance. The critical checks
  * together are Keel's research gate (ADR-0009, ADR-0035): a design must pass them all, and then
- * its Blind Trial, to be seaworthy.
+ * its Blind Trial, to be seaworthy. The luck adjustment scores but no longer blocks: past a few
+ * hundred ideas it asks more of an edge than real markets give, and the Blind Trial on unseen
+ * data is the honest test of luck (ADR-0039).
  */
 const CHECKS: Readonly<Record<SeaTrialCheckKey, CheckSpec>> = {
   enough_trades: { label: "Enough trades to judge", weight: 3, critical: true },
@@ -377,7 +427,7 @@ const CHECKS: Readonly<Record<SeaTrialCheckKey, CheckSpec>> = {
   robust_parameters: { label: "Robust to nudged settings", weight: 8, critical: true },
   steady_quarters: { label: "Steady across the seasons", weight: 7, critical: false },
   travels_well: { label: "Works on a sibling market", weight: 6, critical: false },
-  luck_adjusted: { label: "More skill than luck", weight: 6, critical: true },
+  luck_adjusted: { label: "More skill than luck", weight: 6, critical: false },
   research_gate: { label: "Clears the research gate", weight: 4, critical: true },
   survives_resampling: { label: "Survives reshuffled trades", weight: 5, critical: false },
   beats_holding: { label: "Beats holding, risk-adjusted", weight: 2, critical: false },
@@ -509,7 +559,7 @@ export function assessSeaTrial(input: SeaTrialInput): Assessment {
     },
     luck_adjusted: {
       passed: main.deflatedSharpeRatio >= gate.minDeflatedSharpe,
-      detail: `${Math.round(main.deflatedSharpeRatio * 100)}% confidence after ${input.trials} backtests (needs ${Math.round(gate.minDeflatedSharpe * 100)}%)`
+      detail: `${Math.round(main.deflatedSharpeRatio * 100)}% confidence after ${input.trials} independent ideas (needs ${Math.round(gate.minDeflatedSharpe * 100)}%)`
     },
     research_gate: {
       passed: gateMisses.length === 0,
@@ -666,16 +716,19 @@ export function earnsBlindTrial(a: Pick<Assessment, "score" | "seaTrial">): bool
 }
 
 /**
- * The Blind Trial's rule, fixed before any design sees 2025 (ADR-0035): over the unseen year the
- * design trades at least half the gate's two-year minimum, its average trade stays positive with
- * every cost doubled, and its worst dip stays within the gate's limit.
+ * The Blind Trial's rule, fixed before any design sees 2025 (ADR-0035, ADR-0039): over the unseen
+ * year the design trades at least half the gate's minimum, earns at least the gate's Sharpe ratio,
+ * keeps its average trade positive with every cost doubled, and keeps its worst dip within the
+ * gate's limit.
  */
 export function passesBlindTrial(
-  run: Pick<TrialRun, "totalTrades" | "stressNetExpectancyR" | "maxDrawdownPct">,
+  run: Pick<TrialRun, "totalTrades" | "sharpeRatio" | "stressNetExpectancyR" | "maxDrawdownPct">,
   gate: ResearchGate
 ): boolean {
   return (
     run.totalTrades >= Math.ceil(gate.minTrades / 2) &&
+    Number.isFinite(run.sharpeRatio) &&
+    run.sharpeRatio >= gate.minSharpe &&
     run.stressNetExpectancyR > 0 &&
     run.maxDrawdownPct <= GATE_MAX_DRAWDOWN_PCT
   );

@@ -303,11 +303,6 @@ export function createFleetRepository(db: DatabaseSync): FleetRepository {
         .map(mapProposition);
     },
 
-    countPropositions(): number {
-      const row = db.prepare(`SELECT COUNT(*) AS n FROM fleet_propositions`).get();
-      return row ? Number(row["n"]) : 0;
-    },
-
     // Keyed by instrument and window start, so a longer window is filled afresh
     getBacktestDataSource(instrumentId: string, windowFromTs: number): "okx" | "synthetic" | null {
       const row = db

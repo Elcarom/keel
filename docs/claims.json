@@ -846,10 +846,22 @@
     "testName": "holds every design to the research gate: Sharpe, holding, random entries and the worst dip"
   },
   {
-    "id": "CLAIM-ADR-0035-LUCK-CRITICAL",
-    "claim": "ADR-0035: The luck adjustment is critical and counts every backtest run.",
+    "id": "CLAIM-ADR-0039-LUCK-SCORED",
+    "claim": "ADR-0039: The luck adjustment costs points but no longer blocks; the Blind Trial decides.",
     "testFile": "packages/api/test/sea-trial.test.ts",
-    "testName": "makes the luck adjustment critical: an edge that many tries could find by chance never sails"
+    "testName": "scores the luck adjustment but leaves the verdict on luck to the Blind Trial"
+  },
+  {
+    "id": "CLAIM-ADR-0039-DISTINCT-IDEAS",
+    "claim": "ADR-0039: The luck adjustment counts each distinct idea once, ideas that move alike as one.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "counts each distinct idea once towards the luck adjustment, ideas that move alike as one"
+  },
+  {
+    "id": "CLAIM-ADR-0039-BLIND-SHARPE",
+    "claim": "ADR-0039: The Blind Trial needs the research gate's Sharpe ratio on the unseen year.",
+    "testFile": "packages/api/test/sea-trial.test.ts",
+    "testName": "fixes the Blind Trial's rule in advance: half the gate's trades, the gate's Sharpe, positive stressed R, a shallow dip"
   },
   {
     "id": "CLAIM-ADR-0035-COST-PARITY",

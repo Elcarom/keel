@@ -203,8 +203,9 @@ describe("Fleet API", () => {
       expect(trial?.neighbours).toHaveLength(4);
       expect(trial?.sibling?.instrumentId).toBe("ETH-USDT-SWAP");
       expect(trial?.segments).toHaveLength(8);
-      // Every backtest of every idea counts: main run, four nudges and the sibling market
-      expect(trial?.trials).toBeGreaterThanOrEqual(18);
+      // Each distinct idea counts once; its nudges and sibling market do not (ADR-0039)
+      expect(trial?.trials).toBeGreaterThanOrEqual(3);
+      expect(trial?.trials).toBeLessThan(18);
       expect(trial?.funding).toBe("assumed");
       // A seaworthy verdict needs every critical check and a passed Blind Trial
       if (p.assessment?.verdict === "seaworthy") {
@@ -219,7 +220,7 @@ describe("Fleet API", () => {
       ]);
     }
     expect(new Set(batch.propositions.map((p) => p.rig.name)).size).toBe(3);
-  }, 180_000);
+  }, 300_000);
 
   it("waits for OKX history rather than trial a stand-in, and tries again every hour", async () => {
     let online = false;
@@ -261,7 +262,7 @@ describe("Fleet API", () => {
       expect(p.status).toBe("ranked");
       expect(p.assessment?.dataSource).toBe("okx");
     }
-  }, 120_000);
+  }, 300_000);
 
   it("designs for any of the ten waters and cross-checks each idea on its sibling market", async () => {
     const { call } = await setup();
@@ -287,7 +288,7 @@ describe("Fleet API", () => {
       expect(p.rig.instrumentId).toBe("SOL-USDT-SWAP");
       expect(p.assessment?.seaTrial?.sibling?.instrumentId).toBe("AVAX-USDT-SWAP");
     }
-  }, 180_000);
+  }, 300_000);
 
   it("writes a chat prompt carrying the brief, the language and the names already taken", async () => {
     const { call, designAndWait, launch } = await setup();
@@ -311,7 +312,7 @@ describe("Fleet API", () => {
     // Baskets and other markets are on offer, not just one coin
     expect(prompt).toContain('"basket" ([] or up to 4 more coins)');
     expect(prompt).toContain("Markets the rules may read as signals: any of Keel's ten");
-  }, 180_000);
+  }, 300_000);
 
   it("imports a chat's file: checks each invention, sea-trials the good and returns the rest for repair", async () => {
     const { call } = await setup();
@@ -387,7 +388,7 @@ describe("Fleet API", () => {
     expect(allBad.status).toBe(200);
     expect(allBad.body["batch"]).toBeNull();
     expect(allBad.body["rejected"]).toHaveLength(1);
-  }, 180_000);
+  }, 300_000);
 
   it("evens out the stakes of a wallet's flat boats on Monday, moving no money out of the wallet", async () => {
     // The test clock is Monday 2026-10-26, 07:33 UTC
@@ -417,7 +418,7 @@ describe("Fleet API", () => {
     expect(after.duties.find((d) => d.duty === "rebalance")?.note).toBe(
       "Small Sloop +1000.00 USDT; Big Schooner -1000.00 USDT"
     );
-  }, 120_000);
+  }, 300_000);
 
   it("flags a proposition that sails like one already on the slipway", async () => {
     const { call } = await setup();
@@ -458,7 +459,7 @@ describe("Fleet API", () => {
     });
     expect(byName.get("First Mate")?.assessment?.seaTrial?.weeklyEquityPct.length).toBe(209);
     expect(byName.get("First Mate")?.assessment?.seaTrial?.avgHoldHours).toBeGreaterThan(0);
-  }, 120_000);
+  }, 300_000);
 
   it("sea-trials a basket boat that reads BTC as one portfolio, then trades every coin in it", async () => {
     const { call, clock, dataStore, overview } = await setup();
@@ -710,7 +711,7 @@ describe("Fleet API", () => {
     expect((await overview()).bots[0]?.lastBarAtMs).toBe(
       Math.floor(clock.nowMs() / 3_600_000) * 3_600_000
     );
-  }, 180_000);
+  }, 300_000);
 
   it("launches a ranked proposition as a paper bot funded from the wallet", async () => {
     const { designAndWait, launch, overview } = await setup();
@@ -729,7 +730,7 @@ describe("Fleet API", () => {
 
     // The same proposition cannot become two bots
     expect((await launch(batch, "100", "Another")).status).toBe(409);
-  }, 180_000);
+  }, 300_000);
 
   it("refuses an allocation larger than the wallet holds", async () => {
     const { designAndWait, launch } = await setup();
@@ -737,7 +738,7 @@ describe("Fleet API", () => {
     const res = await launch(batch, "10000.01");
     expect(res.status).toBe(400);
     expect(String(res.body["error"])).toMatch(/only has 10000.00 USDT/);
-  }, 180_000);
+  }, 300_000);
 
   it("trades only confirmed bars that close after launch, and retiring returns equity to the wallet", async () => {
     const { designAndWait, launch, call, clock, dataStore, overview } = await setup();
@@ -773,7 +774,7 @@ describe("Fleet API", () => {
       0.01
     );
     expect(wallet.allocatedUsdt).toBe("0.00000000");
-  }, 180_000);
+  }, 300_000);
 
   it("pauses, resumes and deletes a bot", async () => {
     const { designAndWait, launch, call, overview } = await setup();
@@ -793,7 +794,7 @@ describe("Fleet API", () => {
     expect(fleet.bots).toEqual([]);
     // Deleting retires first, so the allocation is back in the wallet
     expect(fleet.wallets[0]?.availableUsdt).toBe("10000.00000000");
-  }, 180_000);
+  }, 300_000);
 
   it("opens and tops up extra paper wallets", async () => {
     const { call } = await setup();

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amends ADR-0025 (Sea Trials), ADR-0030 and ADR-0033 (the Autopilot and night shift), and ADR-0014 (one cost model). Records how the 2025 Sealed Holdout (ADR-0009) is used after Phase D.
+Accepted. Amended by ADR-0039: the luck adjustment no longer blocks and counts distinct ideas, and the Blind Trial also needs the gate's Sharpe ratio. Amends ADR-0025 (Sea Trials), ADR-0030 and ADR-0033 (the Autopilot and night shift), and ADR-0014 (one cost model). Records how the 2025 Sealed Holdout (ADR-0009) is used after Phase D.
 
 ## Context
 

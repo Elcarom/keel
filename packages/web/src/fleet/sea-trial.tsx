@@ -227,8 +227,8 @@ export function SeaTrialPanel({ assessment, trial }: { assessment: Assessment; t
           <dt className="text-[11px] text-slate-500">Is the edge real?</dt>
           <dd className="text-slate-200">
             t = {trial.tStat.toFixed(2)}, p ={" "}
-            {trial.pValue < 0.001 ? "<0.001" : trial.pValue.toFixed(3)} · {trial.trials} backtests
-            counted
+            {trial.pValue < 0.001 ? "<0.001" : trial.pValue.toFixed(3)} · {trial.trials} independent
+            ideas counted
           </dd>
         </div>
         <div>

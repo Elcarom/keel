@@ -10,6 +10,7 @@ import {
   assessSeaTrial,
   basketIndexBars,
   combineRuns,
+  effectiveTrials,
   neighbourRigs,
   passesBlindTrial,
   trialWindowFor,
@@ -293,22 +294,59 @@ describe("Sea trial", () => {
     expect(withBlindTrial(weak, { outcome: "passed", ...year }).verdict).toBe(weak.verdict);
   });
 
-  it("fixes the Blind Trial's rule in advance: half the gate's trades, positive stressed R, a shallow dip", () => {
-    const year = { totalTrades: 30, stressNetExpectancyR: 0.05, maxDrawdownPct: 12 };
+  it("fixes the Blind Trial's rule in advance: half the gate's trades, the gate's Sharpe, positive stressed R, a shallow dip", () => {
+    const year = {
+      totalTrades: 30,
+      sharpeRatio: 1.2,
+      stressNetExpectancyR: 0.05,
+      maxDrawdownPct: 12
+    };
     expect(passesBlindTrial(year, GATE)).toBe(true);
     expect(passesBlindTrial({ ...year, totalTrades: 29 }, GATE)).toBe(false);
+    expect(passesBlindTrial({ ...year, sharpeRatio: 0.9 }, GATE)).toBe(false);
     expect(passesBlindTrial({ ...year, stressNetExpectancyR: 0 }, GATE)).toBe(false);
     expect(passesBlindTrial({ ...year, maxDrawdownPct: 25.5 }, GATE)).toBe(false);
   });
 
-  it("makes the luck adjustment critical: an edge that many tries could find by chance never sails", () => {
-    const a = trial({ main: result({ trades: STEADY, deflatedSharpeRatio: 0.6 }), trials: 600 });
-    const luck = a.seaTrial?.checks.find((c) => c.key === "luck_adjusted");
-    expect(luck?.critical).toBe(true);
+  it("scores the luck adjustment but leaves the verdict on luck to the Blind Trial", () => {
+    const lucky = trial({
+      main: result({ trades: STEADY, deflatedSharpeRatio: 0.6 }),
+      trials: 600
+    });
+    const sure = trial({ main: result({ trades: STEADY }), trials: 600 });
+    const luck = lucky.seaTrial?.checks.find((c) => c.key === "luck_adjusted");
+    expect(luck?.critical).toBe(false);
     expect(luck?.passed).toBe(false);
-    expect(luck?.detail).toBe("60% confidence after 600 backtests (needs 80%)");
-    expect(a.gatePassed).toBe(false);
-    expect(a.verdict).not.toBe("seaworthy");
+    expect(luck?.detail).toBe("60% confidence after 600 independent ideas (needs 80%)");
+    expect(lucky.score).toBe(sure.score - 6);
+    // Still earns its Blind Trial, which alone can make it seaworthy
+    expect(lucky.gatePassed).toBe(true);
+    expect(lucky.verdict).toBe("promising");
+    const year = { fromTs: BLIND_FROM_TS, toTs: BLIND_TO_TS };
+    expect(withBlindTrial(lucky, { outcome: "failed", ...year }).verdict).toBe("choppy");
+  });
+
+  it("counts each distinct idea once towards the luck adjustment, ideas that move alike as one", () => {
+    // Weekly curves: a shared wobble, and wobbles of their own
+    const wobble = (seed: number) =>
+      Array.from({ length: 209 }, (_, w) => Math.sin(w * (0.7 + seed * 0.37) + seed * 1.3) * 5);
+    const twin = wobble(1);
+    expect(effectiveTrials(Array.from({ length: 50 }, () => twin))).toBe(1);
+    const distinct = Array.from({ length: 50 }, (_, i) => wobble(i + 2));
+    const n = effectiveTrials(distinct);
+    expect(n).toBeGreaterThan(45);
+    expect(n).toBeLessThanOrEqual(50);
+    // Five copies each of 80 ideas are 80 ideas
+    const copies = Array.from({ length: 400 }, (_, i) => wobble((i % 80) + 2));
+    expect(effectiveTrials(copies)).toBeGreaterThan(70);
+    expect(effectiveTrials(copies)).toBeLessThanOrEqual(80);
+    // Ideas not yet trialled have no curve and count in full
+    expect(effectiveTrials(Array.from({ length: 7 }, () => []))).toBe(7);
+    expect(effectiveTrials([])).toBe(1);
+    // Past the sample size the count stays fixed for the same ideas, and still merges copies
+    const many = Array.from({ length: 5_000 }, (_, i) => wobble((i % 100) + 2));
+    expect(effectiveTrials(many)).toBe(effectiveTrials(many));
+    expect(effectiveTrials(many)).toBeLessThanOrEqual(100 * 3);
   });
 
   it("holds every design to the research gate: Sharpe, holding, random entries and the worst dip", () => {

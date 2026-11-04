@@ -59,6 +59,10 @@ The money path never asks a model anything. It uses fixed-point `ScaledDecimal` 
   - [ADR-0033: A Self-Managing Fleet, Researched by Claude on the Owner's Subscription](./docs/adr/0033-self-managing-fleet.md)
   - [ADR-0034: The Shipwright Designs Every Boat, and Blueprints Become Rigs](./docs/adr/0034-shipwright-only-shipyard.md)
   - [ADR-0035: The Blind Trial, the Research Gate for Seaworthy, and Real History Only](./docs/adr/0035-blind-trial-and-honest-sea-trials.md)
+  - [ADR-0036: Full Autonomy by Default](./docs/adr/0036-full-autonomy-by-default.md)
+  - [ADR-0037: Wider Research](./docs/adr/0037-wider-research.md)
+  - [ADR-0038: Four-Year Sea Trials](./docs/adr/0038-four-year-sea-trials.md)
+  - [ADR-0039: The Blind Trial Judges Luck](./docs/adr/0039-blind-trial-judges-luck.md)
 - **Unraid Deployment Guide**: [`docs/unraid.md`](./docs/unraid.md)
 - **Operational Runbooks**:
   - [`docs/runbooks/go-live-checklist.md`](./docs/runbooks/go-live-checklist.md)
@@ -163,7 +167,7 @@ If Keel is only ever reached through the tunnel, set `KEEL_ALLOW_INSECURE_HTTP=f
 
 ## A tour of the ship
 
-- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a **Sea Trial** of up to four years (December 2020 to December 2024, shorter for coins OKX listed later; [ADR-0038](./docs/adr/0038-four-year-sea-trials.md)) on real OKX prices (and settled funding where OKX still has it), and is ranked: seaworthy, promising, choppy or sinks. Only a design that clears the research gate and then passes a **Blind Trial** on 2025, a year the Sea Trial and the Shipwright never see, is seaworthy. When OKX is out of reach, trials wait and retry hourly. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
+- **Shipyard:** draw up a brief and Keel drafts Propositions. Each one faces a **Sea Trial** of up to four years (December 2020 to December 2024, shorter for coins OKX listed later; [ADR-0038](./docs/adr/0038-four-year-sea-trials.md)) on real OKX prices (and settled funding where OKX still has it), and is ranked: seaworthy, promising, choppy or sinks. Only a design that clears the research gate and then passes a **Blind Trial** on 2025, a year the Sea Trial and the Shipwright never see, is seaworthy. The luck adjustment counts one try per distinct idea and costs points, but the Blind Trial, which asks for a Sharpe of 1 on that year, is what decides ([ADR-0039](./docs/adr/0039-blind-trial-judges-luck.md)). When OKX is out of reach, trials wait and retry hourly. Pair Boats are trialled on both coins at once. Tick up to three to compare them side by side. A Proposition that trades almost exactly like one you already have is flagged as a **Lookalike**.
 - **Fleet:** your boats at sea, as cards or a table, each with a health badge (New, On course or Drifting). Open a boat to see its equity against what its Sea Trial expected, coin by coin.
 - **Treasury:** the paper wallets that fund the boats.
 - **Logbook:** recent trades across the Fleet, and what the unattended duties have done.

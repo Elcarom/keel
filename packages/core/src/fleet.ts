@@ -758,8 +758,6 @@ export interface FleetRepository {
   saveProposition(proposition: PropositionRecord): PropositionRecord;
   getProposition(propositionId: string): PropositionRecord | null;
   listPropositions(batchId: string): readonly PropositionRecord[];
-  /** Every proposition ever drafted: the trial count behind the luck adjustment. */
-  countPropositions(): number;
 
   /** When an unattended Fleet duty last ran (ADR-0030), or null if never. */
   getDutyLastRun(duty: string): number | null;

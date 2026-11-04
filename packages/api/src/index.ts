@@ -38,6 +38,7 @@ export {
   earnsBlindTrial,
   neighbourRigs,
   passesBlindTrial,
+  effectiveTrials,
   weeklyCorrelation,
   withBlindTrial,
   type ResearchGate,
