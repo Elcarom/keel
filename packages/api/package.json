@@ -22,7 +22,7 @@
     "@noble/hashes": "^1.7.1",
     "@ts-rest/core": "^3.52.1",
     "@ts-rest/fastify": "^3.52.1",
-    "fastify": "^5.2.0",
+    "fastify": "^5.12.8",
     "pino": "^9.6.0",
     "zod": "^3.24.1"
   }
